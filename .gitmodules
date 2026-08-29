@@ -1,0 +1,4 @@
+[submodule "third_party/jetkvm"]
+	path = third_party/jetkvm
+	url = http://10.64.76.34:3000/8362/B518_JetKVM_Mirror.git
+	branch = dev

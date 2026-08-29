@@ -1,0 +1,19 @@
+# python -m pip install -r requirements.txt
+# 影像比對
+opencv-python
+numpy
+
+# JetKVM 直接連線 (WebRTC 視訊 + 控制)
+aiortc
+av
+requests
+websockets
+
+# GUI 影像顯示 (串流視窗 / 創建Pattern)
+pillow
+
+# SN 文字辨識 (OCR)
+rapidocr_onnxruntime
+
+# 打包 (可選)
+pyinstaller

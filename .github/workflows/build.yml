@@ -1,0 +1,46 @@
+name: Build Mac Executable
+
+on:
+  push:
+    branches: [ main, master ] # 當你推送程式碼到 main 或 master 分支時自動執行
+  workflow_dispatch: # 允許你在 GitHub 網頁上點擊按鈕手動執行
+
+jobs:
+  build-macos:
+    runs-on: macos-13 # 使用 Intel 架構的 Mac 雲端環境（相容性最高）
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11' # 使用穩定的 Python 版本
+
+    - name: Install macOS System Dependencies
+      run: |
+        # PyAutoGUI 在 Mac 執行時必須依賴的系統圖形庫
+        miniconda_dir=$CONDA
+        # 安裝剪貼簿與螢幕擷取必備的系統套件
+        which osascript || echo "osascript exists"
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip upgrade pip
+        # 安裝你專案需要的所有套件，以及打包工具 PyInstaller
+        pip install opencv-python numpy pyautogui pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller
+
+    - name: Build with PyInstaller
+      working-directory: host-app
+      run: |
+        # --onefile: 打包成單一執行檔
+        # --noconsole: 執行時不彈出終端機黑視窗（若需要看 print 紀錄，可把這行刪除）
+        # --add-data: 把你的範本圖片一起打包進去 (格式為 檔名:打包後的相對路徑)
+        pyinstaller --onefile --noconsole --add-data "target.png:." test_kyle.py
+
+    - name: Upload Executable Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Mac-Executable # 網頁上下載時顯示的名稱
+        path: host-app/dist/test_kyle # 打包完成後的成品路徑

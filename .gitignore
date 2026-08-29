@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.zip
+host-app/build/
+host-app/dist/
+host-app/__pycache__/
+host-app/.venv/
