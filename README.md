@@ -10,6 +10,13 @@
 - `tests/`：方案測試說明與未來測試。
 - `third_party/jetkvm/`：固定版本的 JetKVM private mirror submodule。
 
+## 接手與設備流程文件
+
+- [專案開發與接手摘要（2026-09-01）](docs/PROJECT_SUMMARY_20260901.md)
+- [DFU 設備工作流程](docs/workflow_DFU.md)
+- [FCT 設備工作流程](docs/workflow_FCT.md)
+- [BT 設備工作流程](docs/workflow_BT.md)
+
 ## 取得原始碼
 
 ```sh
