@@ -2,7 +2,7 @@
 # ============================================================
 #  在 Mac 上一鍵打包 ui_app.py 成 .app
 #  使用方式:
-#    1. 把整個資料夾 (含 ui_app.py / target.png / requirements.txt) 拷到 Mac
+#    1. 把整個資料夾 (含 ui_app.py / requirements.txt) 拷到 Mac
 #    2. 在「終端機」執行:  chmod +x build_mac.command
 #    3. 直接雙擊 build_mac.command  (或在終端機執行 ./build_mac.command)
 #  完成後在 dist/ 內會看到 AtlasTest.app
@@ -30,10 +30,8 @@ echo "==> 清除舊的打包結果"
 rm -rf build dist AtlasTest.spec
 
 echo "==> 開始用 PyInstaller 打包 (.app, 單一檔案, 視窗模式)"
-# 注意: macOS 的 --add-data 分隔符號是冒號 ":"
 pyinstaller --noconfirm --windowed --onefile \
     --name AtlasTest \
-    --add-data "FCT:FCT" \
     ui_app.py
 
 echo ""

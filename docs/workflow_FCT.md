@@ -12,25 +12,25 @@
 
 - JetKVM HDMI IN 已連到 FCT 測試機畫面，USB HID 已連到測試機。
 - 上位機已建立 JetKVM WebRTC 連線，並持續取得最新影格。
-- FCT profile 至少提供下列畫面樣板：
-  - target.png：可穩定定位的 FCT 視窗區域。
-  - Testing_target.png：測試進行中的狀態。
-  - Pass_target.png、Fail_target.png：單列測試結果。
-- 若需要由上位機輸入 SN 或啟動測試，另提供 Input_target.png 與 Button_target.png。
+- FCT 樣板固定存於 `~/Documents/template/FCT/`：
+  - `FCT_window.png`：可穩定定位的 FCT 視窗區域。
+  - `FCT_testing.png`：測試進行中的狀態。
+  - `FCT_pass.png`、`FCT_fail.png`：單列測試結果。
+  - 需要輸入 SN 或啟動測試時，使用 `FCT_input.png` 與 `FCT_button.png`。
 
 ## 畫面操作流程
 
-1. 取得最新 JetKVM 影格，使用 target.png 定位 FCT 視窗。
-2. 輸入 SN 時，定位 Input_target.png、點擊輸入區、送出 SN 與 Enter。
-3. 啟動測試時，定位 Button_target.png 並點擊；只有前置目標辨識成功時才允許操作。
+1. 取得最新 JetKVM 影格，使用 `FCT_window.png` 定位 FCT 視窗。
+2. 輸入 SN 時，定位 `FCT_input.png`、點擊輸入區、送出 SN 與 Enter。
+3. 啟動測試時，定位 `FCT_button.png` 並點擊；只有前置目標辨識成功時才允許操作。
 4. 每次 HID 動作後檢查 JetKVM RPC 是否回報 USB HID endpoint 錯誤。
 5. 視窗、輸入框或按鈕未命中時，停止該步驟並回報錯誤，不依固定座標盲點。
 
 ## 視覺結果判讀
 
-1. 使用 target.png 定位 FCT 視窗；若視窗未命中，回覆視覺目標未找到。
-2. 在視窗範圍搜尋 Testing_target.png。命中時，結果為測試中，回覆 action_done,testing。
-3. 未命中 Testing 時，搜尋所有 Pass_target.png 與 Fail_target.png。
+1. 使用 `FCT_window.png` 定位 FCT 視窗；若視窗未命中，回覆視覺目標未找到。
+2. 在視窗範圍搜尋 `FCT_testing.png`。命中時，結果為測試中，回覆 `action_done,testing`。
+3. 未命中 Testing 時，搜尋所有 `FCT_pass.png` 與 `FCT_fail.png`。
 4. 依畫面垂直位置將所有 PASS／FAIL 標記由上而下排序。
 5. 將視窗寬度 22%～51% 的區域作為 SN 欄，使用 OCR 一次讀取所有可見 SN，再以垂直位置配對結果列。
 6. 回覆 action_done,index:SN:pass|fail,...。這是本 repo 的正式視覺判讀結果，不等待或合併機台本地 Log。
@@ -49,7 +49,7 @@
 ## 目前實作狀態
 
 - host-app/auto_flow.py 已實作本文件的視窗定位、Testing 判讀、PASS／FAIL 多列搜尋、OCR SN 配對、通用輸入與按鈕操作。
-- host-app/FCT 已有上述 FCT 樣板與辨識疊圖範例。
+- `host-app/FCT` 的舊圖片只作歷史參考；執行時只讀取 `~/Documents/template/FCT/`。
 - check 是純讀取畫面，不會操作 HID；input 與 button 分別執行單筆 SN 輸入與按鈕點擊。
 
 ## 驗收準則

@@ -12,6 +12,17 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 - `tests/`：方案測試說明與未來測試。
 - `third_party/jetkvm/`：固定版本的 JetKVM private mirror submodule。
 
+## 視覺模板
+
+正式模板是上位機使用者可編輯的外部資料，固定存放於 `~/Documents/template`，不隨程式打包：
+
+- `DFU/DFU_<template_key>.png`
+- `FCT/FCT_<template_key>.png`
+- `BT/BT_<template_key>.png`
+- `_captures/jetkvm_frame.png`：原始擷取畫面，不能作為正式模板。
+
+請在「創建Pattern」視窗選擇設備與模板種類；程式會自動決定唯讀檔名及輸出位置。`host-app/FCT` 中的圖片僅保留為歷史參考，執行程式不會讀取它。
+
 ## 接手與設備流程文件
 
 - [專案開發與接手摘要（2026-09-01）](docs/PROJECT_SUMMARY_20260901.md)

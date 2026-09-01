@@ -53,8 +53,10 @@ UI 顯示的 Log 區是本程式自身的操作與診斷訊息，不是測試機
 | host-app/auto_flow.py | 多尺寸 pattern matching、Testing／PASS／FAIL 辨識、OCR SN、輸入與按鈕操作 |
 | host-app/ocr_sn.py | RapidOCR 延遲初始化、英數 SN 清理與列位置 |
 | host-app/pattern_tools.py | 從 JetKVM 影格互動框選 pattern |
+| host-app/template_catalog.py | 模板設備／種類清單、canonical 命名、Documents 路徑與安全儲存規則 |
 | host-app/stream_view.py | 可縮放串流視窗、滑鼠／鍵盤 HID 轉送 |
-| host-app/FCT | 現行唯一設備 pattern 與辨識疊圖範例 |
+| ~/Documents/template | 正式 DFU／FCT／BT 模板與原始擷取圖；不隨程式打包 |
+| host-app/FCT | 歷史 pattern 參考，不由執行程式讀取 |
 | host-app/debug_tool | 早期 WebRTC、HID、框選與 GUI 備份工具；不是產品入口 |
 | docs | 專案摘要、設備 workflow、JetKVM 能力研究 |
 | config | 未來放站別與 KVM 設定範例；目前無實際 config |

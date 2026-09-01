@@ -28,19 +28,18 @@ jobs:
     - name: Install Python Dependencies
       run: |
         python -m pip upgrade pip
-        # 安裝你專案需要的所有套件，以及打包工具 PyInstaller
-        pip install opencv-python numpy pyautogui pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller
+        # 正式模板位於使用者 Documents，不內嵌到應用程式。
+        pip install -r host-app/requirements.txt
 
     - name: Build with PyInstaller
       working-directory: host-app
       run: |
         # --onefile: 打包成單一執行檔
         # --noconsole: 執行時不彈出終端機黑視窗（若需要看 print 紀錄，可把這行刪除）
-        # --add-data: 把你的範本圖片一起打包進去 (格式為 檔名:打包後的相對路徑)
-        pyinstaller --onefile --noconsole --add-data "target.png:." test_kyle.py
+        pyinstaller --onefile --noconsole ui_app.py
 
     - name: Upload Executable Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Mac-Executable # 網頁上下載時顯示的名稱
-        path: host-app/dist/test_kyle # 打包完成後的成品路徑
+        path: host-app/dist/ui_app # 打包完成後的成品路徑

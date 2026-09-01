@@ -22,7 +22,7 @@ except Exception:
     pass
 
 import tkinter as tk
-from tkinter import filedialog
+from template_catalog import TemplateCatalog
 
 # cv2 用於「擷取影像」存檔 (延遲匯入，缺少時於 Log 提示)
 try:
@@ -48,17 +48,6 @@ except Exception as e:
 
 # ---- 邏輯視窗尺寸 = 圖片尺寸 / 2 ----
 WIN_W, WIN_H = 800, 1180
-
-
-def get_resource_path(relative_path):
-    """外部資源 (Pattern 資料夾 FCT/DFU/BT 等) 的路徑。
-    打包成 exe 後放在「exe 同層目錄」(可編輯、可換 Pattern);
-    未打包時放在此 .py 同層。"""
-    if getattr(sys, "frozen", False):          # PyInstaller 打包後
-        base_path = os.path.dirname(sys.executable)
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
 
 
 class AtlasUI(tk.Tk):
@@ -92,6 +81,7 @@ class AtlasUI(tk.Tk):
         self._switch_busy = False               # Switch 流程進行中
         self._streamer = None                   # 串流視窗 (StreamerWindow)
         self._cmd_lock = threading.Lock()       # TCP 指令序列化處理
+        self._templates = TemplateCatalog()
 
         self._build_widgets()
 
@@ -181,14 +171,12 @@ class AtlasUI(tk.Tk):
         pat = tk.LabelFrame(self, text="Pattern", font=self.f_label)
         pat.pack(fill="x", padx=PADX, pady=GAP)
 
-        tk.Label(pat, text="Pattern Path：", font=self.f_label).pack(anchor="w", padx=8, pady=(6, 0))
-        path_row = tk.Frame(pat)
-        path_row.pack(fill="x", padx=8)
-        self.e_pattern_path = tk.Entry(path_row, font=self.f_entry)
-        self.e_pattern_path.insert(0, get_resource_path(os.path.join("FCT", "target.png")))
-        self.e_pattern_path.pack(side="left", fill="x", expand=True, ipady=3)
-        tk.Button(path_row, text="Path", font=self.f_btn,
-                  command=self.on_pick_path).pack(side="left", padx=(6, 0))
+        tk.Label(pat, text="模板根目錄（由設備與模板種類自動命名）：", font=self.f_label).pack(
+            anchor="w", padx=8, pady=(6, 0))
+        template_root = tk.Entry(pat, font=self.f_entry)
+        template_root.insert(0, str(self._templates.root))
+        template_root.config(state="readonly")
+        template_root.pack(fill="x", padx=8, ipady=3)
 
         pat_btns = tk.Frame(pat)
         pat_btns.pack(fill="x", padx=8, pady=6)
@@ -394,37 +382,16 @@ class AtlasUI(tk.Tk):
     # ------------------------------------------------------------------
     # Pattern: 擷取影像 / 創建 Pattern
     # ------------------------------------------------------------------
-    def on_pick_path(self):
-        """彈出檔案選擇視窗, 把選定路徑填回 Pattern Path 欄位。"""
-        cur = self.e_pattern_path.get().strip()
-        init_dir = os.path.dirname(cur) if cur else get_resource_path("FCT")
-        init_file = os.path.basename(cur) if cur else "target.png"
-        path = filedialog.asksaveasfilename(
-            parent=self, title="選擇 Pattern 路徑",
-            initialdir=init_dir, initialfile=init_file,
-            defaultextension=".png",
-            filetypes=[("PNG 影像", "*.png"), ("所有檔案", "*.*")])
-        if path:
-            self.e_pattern_path.delete(0, "end")
-            self.e_pattern_path.insert(0, os.path.normpath(path))
-
-    def _pattern_dir(self):
-        """Pattern Path 所在的資料夾 (jetkvm_frame.png 也存這裡)。"""
-        p = self.e_pattern_path.get().strip()
-        d = os.path.dirname(p) if p else ""
-        return d if d else get_resource_path("FCT")
-
     def on_capture_image(self):
-        """擷取『測試畫面IP』的影像, 存成 jetkvm_frame.png (與 Pattern Path 同層)。
+        """擷取『測試畫面IP』的影像，存為模板根目錄下的原始擷取圖。
         已建立 KVM 連線就直接用最新影格; 否則一次性連線擷取。"""
-        save_dir = self._pattern_dir()
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = os.path.join(save_dir, "jetkvm_frame.png")
+        save_path = self._templates.capture_path()
+        save_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 已連線: 直接用保持中的最新影格
         if self._kvm and self._kvm.connected and self._kvm.frame is not None:
             try:
-                cv2.imwrite(save_path, self._kvm.frame)
+                cv2.imwrite(str(save_path), self._kvm.frame)
                 self._append_log(f"已擷取影像 (使用現有連線) -> {save_path}")
             except Exception as e:
                 self._append_log(f"擷取影像存檔失敗: {e}")
@@ -449,7 +416,7 @@ class AtlasUI(tk.Tk):
                 if frame is None:
                     self._post_log("擷取失敗: 沒有影格 (確認遠端有畫面)")
                     return
-                cv2.imwrite(save_path, frame)
+                cv2.imwrite(str(save_path), frame)
                 self._post_log(f"已擷取影像 -> {save_path}")
             except Exception as e:
                 self._post_log(f"擷取影像失敗: {e or type(e).__name__}")
@@ -457,21 +424,17 @@ class AtlasUI(tk.Tk):
         fut.add_done_callback(done)
 
     def on_create_pattern(self):
-        """從 jetkvm_frame.png 框選裁切, 存到 Pattern Path 欄位指定的路徑。"""
+        """開啟設備／模板種類選單，從最新擷取圖製作標準化模板。"""
         if not _KVM_OK:
             self._append_log(f"無法創建 Pattern (缺套件): {_KVM_ERR}")
             return
-        out_path = self.e_pattern_path.get().strip()
-        if not out_path:
-            self._append_log("請先在『Pattern Path』填入要存的 Pattern 路徑")
-            return
-        src = os.path.join(self._pattern_dir(), "jetkvm_frame.png")
-        if not os.path.exists(src):
+        src = self._templates.capture_path()
+        if not src.exists():
             self._append_log(f"找不到影格 {src}，請先按『擷取影像』")
             return
-        self._append_log("請在彈出視窗中框選 Pattern (Esc 取消)")
-        PatternCropper(self, src, out_path,
-                       on_done=lambda ok, msg: self._append_log(msg))
+        self._append_log("請在彈出視窗選擇設備／模板種類並框選 Pattern (Esc 取消)")
+        PatternCropper(self, self._templates, str(src), device="FCT", template_key="window",
+                       on_saved=self._append_log)
 
     # ------------------------------------------------------------------
     # Switch: 自動流程 (找視窗 -> 輸入 SN -> 點 OK), 用已連線的 KVM
@@ -486,15 +449,15 @@ class AtlasUI(tk.Tk):
             self._append_log("請先按『KVM連接』建立連線, 再按 Switch")
             return
 
-        fct_dir = self._pattern_dir()
-        annotate = os.path.join(fct_dir, "jetkvm_detected.png")
+        annotate = self._templates.diagnostic_path("FCT", "jetkvm_detected.png")
+        annotate.parent.mkdir(parents=True, exist_ok=True)
         self._switch_busy = True
         self.btn_switch.config(state="disabled")
         self._append_log("Switch: 開始自動流程 ...")
 
         fut = self._kvm_loop.submit(
-            run_flow(self._kvm, fct_dir, sn_text="SN_ABC", threshold=0.8,
-                     log=self._post_log, annotate_path=annotate))
+            run_flow(self._kvm, "FCT", template_root=self._templates.root, sn_text="SN_ABC", threshold=0.8,
+                     log=self._post_log, annotate_path=str(annotate)))
 
         def done(f):
             self._switch_busy = False
@@ -620,16 +583,15 @@ class AtlasUI(tk.Tk):
             return "error:invalid format (need device,no,KVM_IP,command[,SN])\r\n"
         dev_type, dev_no, kvm_ip, func = parts[0], parts[1], parts[2], parts[3].lower()
         sn = parts[4] if len(parts) > 4 else ""
+        try:
+            dev_type = self._templates.normalize_device(dev_type)
+        except ValueError:
+            return f"error:unknown device ({parts[0]})\r\n"
 
         # 更新「服務端」區的顯示欄位 (設備種類 / 編號 / 指令)
         self._run_on_ui(lambda: (self.var_dev_type.set(dev_type),
                                  self.var_dev_no.set(dev_no),
                                  self.var_func.set(func)))
-
-        # pattern 資料夾 = 設備種類 (DFU/FCT/BT)
-        fct_dir = get_resource_path(dev_type)
-        if not os.path.isdir(fct_dir):
-            return f"error:pattern folder not found ({dev_type})\r\n"
 
         # KVM IP 填入欄位並連線
         self._run_on_ui(lambda: (self.e_kvm_ip.delete(0, "end"),
@@ -639,20 +601,21 @@ class AtlasUI(tk.Tk):
         except Exception as e:
             return f"error:KVM connect failed ({e or type(e).__name__})\r\n"
 
-        annotate = os.path.join(fct_dir, "cmd_detected.png")
+        annotate = self._templates.diagnostic_path(dev_type, "cmd_detected.png")
+        annotate.parent.mkdir(parents=True, exist_ok=True)
         try:
             if func == "input":
                 r = self._kvm_loop.submit(run_flow(
-                    kvm, fct_dir, sn_text=sn, mode="input",
-                    log=self._post_log, annotate_path=annotate)).result(timeout=60)
+                    kvm, dev_type, template_root=self._templates.root, sn_text=sn, mode="input",
+                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
             elif func == "button":
                 r = self._kvm_loop.submit(run_flow(
-                    kvm, fct_dir, mode="button",
-                    log=self._post_log, annotate_path=annotate)).result(timeout=60)
+                    kvm, dev_type, template_root=self._templates.root, mode="button",
+                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
             elif func == "check":
                 r = self._kvm_loop.submit(run_check(
-                    kvm, fct_dir,
-                    log=self._post_log, annotate_path=annotate)).result(timeout=60)
+                    kvm, dev_type, template_root=self._templates.root,
+                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
                 if not r or not r.get("ok"):
                     return "error:window not found\r\n"
                 if r.get("testing"):

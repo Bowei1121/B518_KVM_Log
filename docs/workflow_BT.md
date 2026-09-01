@@ -18,12 +18,12 @@
 ## 目標畫面流程
 
 1. 接收並驗證 JOB 的設備、KVM IP、動作與 SN。
-2. 取得最新 JetKVM 影格，使用 BT target.png 定位 HMI。
+2. 取得最新 JetKVM 影格，使用 `~/Documents/template/BT/BT_window.png` 定位 HMI。
 3. 若需要操作 slot，先以 slot 標籤與 checkbox／選擇器樣板讀取並複驗目前狀態，只調整與 JOB 不符的 slot。
-4. 若需要輸入 SN，定位 Input_target.png，點擊輸入區、輸入 SN，並依 BT HMI 已驗證的規則送 Enter 或其他確認鍵。
-5. 若需要啟動測試，定位 Button_target.png 並點擊。
-6. 測試中以 Testing_target.png 判斷，回覆 action_done,testing。
-7. 測試完成後，使用 Pass_target.png 與 Fail_target.png 尋找所有結果列，依由上而下的畫面順序整理；若 HMI 有可見 SN 欄，使用 OCR 與結果列的垂直位置配對。
+4. 若需要輸入 SN，定位 `BT_input.png`，點擊輸入區、輸入 SN，並依 BT HMI 已驗證的規則送 Enter 或其他確認鍵。
+5. 若需要啟動測試，定位 `BT_button.png` 並點擊。
+6. 測試中以 `BT_testing.png` 判斷，回覆 action_done,testing。
+7. 測試完成後，使用 `BT_pass.png` 與 `BT_fail.png` 尋找所有結果列，依由上而下的畫面順序整理；若 HMI 有可見 SN 欄，使用 OCR 與結果列的垂直位置配對。
 8. 回覆 action_done,index:SN:pass|fail,...。此回覆是本 repo 的正式視覺結果。
 
 ## 需要補齊的現場資料
@@ -31,7 +31,7 @@
 目前 repo 沒有 host-app/BT pattern 資料夾，也沒有完整的 BT HMI 操作定義。實作前必須蒐集下列資料：
 
 - 各螢幕解析度、縮放比例與未聚焦／已聚焦的 BT HMI 截圖。
-- 穩定的 target.png、輸入框、開始按鈕、Testing、PASS、FAIL、slot 標籤與 checkbox／選擇器樣板。
+- 穩定的 `BT_window.png`、輸入框、開始按鈕、Testing、PASS、FAIL、slot 標籤與 checkbox／選擇器樣板。
 - SN 輸入順序、每筆輸入後 Enter 的實際行為、slot 是否自動跳轉，以及何時允許按下開始按鈕。
 - 4-slot 的實際版型、稀疏 slot 的選取規則與結果列對應方式。
 - Mojave 10.14.5 上 JetKVM 鍵盤、絕對滑鼠、相對滑鼠的實機操作紀錄。

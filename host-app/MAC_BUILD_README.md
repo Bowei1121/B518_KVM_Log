@@ -10,10 +10,8 @@
 把整個資料夾拷到 Mac（例如放到「文件」），至少包含：
 
 - `ui_app.py`
-- `target.png`  ← **見下方第四點，通常要在 Mac 上重新截**
 - `requirements.txt`
 - `build_mac.command`
-- `capture_target.py`（之後在 Mac 上重截 target 用）
 
 ---
 
@@ -48,18 +46,9 @@ dist/AtlasTest.app
 
 ---
 
-## 四、⚠️ target.png 必須是「Mac 螢幕上」截的
+## 四、建立 JetKVM 視覺模板
 
-影像比對是**比對畫面像素**。目前的 `target.png` 是在 Windows 的記事本截的，
-拿到 Mac 上**一定比對不到**。請在 Mac 上重新截目標：
-
-```bash
-source .venv/bin/activate      # 用同一個虛擬環境
-python3 capture_target.py      # 在目標所在螢幕拖一個小框，存成 target.png
-```
-
-建議只框**小而穩定、純圖形**的特徵（例如某個圖示），避開會變動的文字。
-重截後**要重新跑一次 `./build_mac.command`** 把新的 target.png 打包進去。
+影像比對是**比對畫面像素**。啟動 App 後按「擷取影像」再按「創建Pattern」，在視窗中選擇設備與模板種類並框選。正式模板會自動存入 `~/Documents/template/<DEVICE>/`，例如 `FCT_window.png`；模板不會被打包，更新後不需要重新執行打包。
 
 ---
 
@@ -80,12 +69,12 @@ python3 capture_target.py      # 在目標所在螢幕拖一個小框，存成 t
 
 ## 六、常見問題
 
-- **打包成功但一打開就閃退**：多半是少了某個套件或 target.png 沒打包進去。
+- **打包成功但一打開就閃退**：多半是少了某個套件。
   可改用「終端機」直接執行內部的執行檔看錯誤訊息：
   ```bash
   ./dist/AtlasTest.app/Contents/MacOS/AtlasTest
   ```
-- **辨識不到**：確認 target.png 是 Mac 上重截的，且已重新打包（第四點）。
+- **辨識不到**：確認已用 Mac 上的 JetKVM 影格建立相應設備的正式模板（第四點）。
 - **點擊沒反應**：通常是「輔助使用」權限沒給或沒重開 App。
 - **想要更小/開很快的版本**：把 `build_mac.command` 裡的 `--onefile` 拿掉，
   會改成 `dist/AtlasTest.app`（資料夾形式），啟動較快但體積較大。

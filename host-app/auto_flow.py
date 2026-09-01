@@ -2,17 +2,16 @@
 """
 自動流程模組 (模組化 jetkvm_auto.py)
 =====================================
-run_flow(kvm, fct_dir, ...): 用「已連線的 JetKVMClient」跑完整流程:
-  取最新影格 -> cv2 兩層比對 (target.png 視窗 -> 視窗內 Input/Button)
+run_flow(kvm, device, template_root, ...): 用「已連線的 JetKVMClient」跑完整流程:
+  取最新影格 -> cv2 兩層比對 (window 視窗 -> 視窗內 input/button)
   -> 點輸入框輸入 SN -> 點 OK。座標= 影格像素, 經 KVM 的 absMouseReport 換算。
 
 供 ui_app.py 的「Switch」按鈕使用。
 """
 import asyncio
-import os
-
 import cv2
 import numpy as np
+from template_catalog import TemplateCatalog
 
 try:
     from ocr_sn import read_lines
@@ -92,13 +91,26 @@ def find_all(gray, tmpl, threshold=0.8):
     return kept
 
 
-async def run_check(kvm, fct_dir, threshold=0.8, log=print, annotate_path=None):
-    """check 指令: 找視窗 -> 若有 Testing_target.png 則回 testing;
-    否則由上而下找所有 Pass_target.png / Fail_target.png, 回每列結果。
+def _load_template(catalog, device, template_key, log):
+    path = catalog.path(device, template_key)
+    image = load_gray(str(path))
+    if image is None:
+        log(f"讀不到模板，期待檔案: {path}")
+    return image
+
+
+async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, annotate_path=None):
+    """check 指令: 找視窗 -> 若有 testing 模板則回 testing;
+    否則由上而下找所有 pass / fail 模板，回每列結果。
     回傳 dict: {ok, window, testing(bool), rows:[(index, 'pass'/'fail'), ...]}"""
-    win_g = load_gray(os.path.join(fct_dir, "target.png"))
+    catalog = TemplateCatalog(template_root)
+    try:
+        device = catalog.normalize_device(device)
+    except ValueError as exc:
+        log(str(exc))
+        return {"ok": False}
+    win_g = _load_template(catalog, device, "window", log)
     if win_g is None:
-        log(f"讀不到 {os.path.join(fct_dir, 'target.png')}")
         return {"ok": False}
     if kvm.frame is None:
         log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
@@ -118,8 +130,8 @@ async def run_check(kvm, fct_dir, threshold=0.8, log=print, annotate_path=None):
     roi = gray[wt:H, wl:wl + ww]
     cv2.rectangle(frame, (wl, wt), (wl + ww, H - 1), (0, 255, 0), 2)
 
-    # 1) 是否在測試中 (Testing_target.png)
-    testing_g = load_gray(os.path.join(fct_dir, "Testing_target.png"))
+    # 1) 是否在測試中
+    testing_g = _load_template(catalog, device, "testing", log)
     if testing_g is not None:
         tv, tl, tt, ttw, tth = locate(roi, testing_g, downscale=False)
         log(f"[Testing] 相似度 {tv:.2f}")
@@ -131,10 +143,9 @@ async def run_check(kvm, fct_dir, threshold=0.8, log=print, annotate_path=None):
             return {"ok": True, "testing": True, "rows": []}
 
     # 2) 由上而下找所有 Pass / Fail
-    pass_g = load_gray(os.path.join(fct_dir, "Pass_target.png"))
-    fail_g = load_gray(os.path.join(fct_dir, "Fail_target.png"))
+    pass_g = _load_template(catalog, device, "pass", log)
+    fail_g = _load_template(catalog, device, "fail", log)
     if pass_g is None or fail_g is None:
-        log("讀不到 Pass_target.png / Fail_target.png")
         return {"ok": False}
 
     # 先找出所有 PASS/FAIL 的位置 (roi 座標, roi 與下方 SN 欄同origin=wt)
@@ -179,7 +190,7 @@ async def run_check(kvm, fct_dir, threshold=0.8, log=print, annotate_path=None):
     return {"ok": True, "testing": False, "rows": rows}
 
 
-async def run_flow(kvm, fct_dir, sn_text="SN_ABC", threshold=0.8,
+async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=0.8,
                    log=print, annotate_path=None, mode="both", do_action=True):
     """用已連線的 kvm (JetKVMClient) 跑流程。
     mode: "input"=只找輸入框並輸入; "button"=只找按鈕並點擊;
@@ -189,17 +200,20 @@ async def run_flow(kvm, fct_dir, sn_text="SN_ABC", threshold=0.8,
     do_button = mode in ("button", "both", "check")
     act = do_action and mode != "check"
 
-    win_g = load_gray(os.path.join(fct_dir, "target.png"))
-    if win_g is None:
-        log(f"讀不到 {os.path.join(fct_dir, 'target.png')}")
+    catalog = TemplateCatalog(template_root)
+    try:
+        device = catalog.normalize_device(device)
+    except ValueError as exc:
+        log(str(exc))
         return {"ok": False}
-    inp_g = load_gray(os.path.join(fct_dir, "Input_target.png")) if do_input else None
-    btn_g = load_gray(os.path.join(fct_dir, "Button_target.png")) if do_button else None
+    win_g = _load_template(catalog, device, "window", log)
+    if win_g is None:
+        return {"ok": False}
+    inp_g = _load_template(catalog, device, "input", log) if do_input else None
+    btn_g = _load_template(catalog, device, "button", log) if do_button else None
     if do_input and inp_g is None:
-        log(f"讀不到 {os.path.join(fct_dir, 'Input_target.png')}")
         return {"ok": False}
     if do_button and btn_g is None:
-        log(f"讀不到 {os.path.join(fct_dir, 'Button_target.png')}")
         return {"ok": False}
     if kvm.frame is None:
         log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
@@ -220,8 +234,8 @@ async def run_flow(kvm, fct_dir, sn_text="SN_ABC", threshold=0.8,
             cv2.imwrite(annotate_path, frame)
         log(f"找不到視窗 (相似度 {wv:.2f} < {threshold}), 建議重截 Pattern")
         return result
-    # 視窗 ROI: 從視窗(target.png 命中處)頂端往下延伸到畫面底部、維持同寬。
-    # 這樣 target.png 即使只截「上方工具列」這種穩定區塊, 也能涵蓋下方的
+    # 視窗 ROI: 從視窗模板命中處頂端往下延伸到畫面底部、維持同寬。
+    # 這樣 window 模板即使只截「上方工具列」這種穩定區塊, 也能涵蓋下方的
     # 輸入框/按鈕 (它們在視窗內、工具列下方)。origin = (wl, wt)。
     H = gray.shape[0]
     roi = gray[wt:H, wl:wl + ww]

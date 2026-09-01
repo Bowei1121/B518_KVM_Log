@@ -56,10 +56,10 @@
 
 `host-app/auto_flow.py` 的 `run_flow()` 目前可以：
 
-- 以 `target.png` 定位視窗。
-- 以 `Input_target.png` 定位輸入框。
+- 以 `~/Documents/template/DFU/DFU_window.png` 定位視窗。
+- 以 `DFU_input.png` 定位輸入框。
 - 點擊輸入框、輸入單筆 SN，並按 Enter。
-- 以 `Button_target.png` 定位並點擊按鈕。
+- 以 `DFU_button.png` 定位並點擊按鈕。
 
 尚未實作：
 

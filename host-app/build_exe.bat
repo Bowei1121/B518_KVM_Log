@@ -3,7 +3,7 @@ chcp 65001 >nul
 REM ============================================================
 REM  Build ui_app.py -> exe (onedir)
 REM  Output: dist\AtlasKVM\AtlasKVM.exe
-REM  Copy FCT / DFU / BT pattern folders into dist\AtlasKVM\
+REM  Templates stay external at %%USERPROFILE%%\Documents\template
 REM ============================================================
 cd /d "%~dp0"
 
@@ -12,6 +12,6 @@ python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM --collect-a
 echo.
 echo ============================================================
 echo  Done. exe at dist\AtlasKVM\AtlasKVM.exe
-echo  Copy FCT / DFU / BT pattern folders into dist\AtlasKVM\
+echo  Templates are external: %%USERPROFILE%%\Documents\template
 echo ============================================================
 pause
