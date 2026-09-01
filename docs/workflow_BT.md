@@ -2,79 +2,58 @@
 
 更新日期：2026-09-01（Asia/Taipei）
 
-## 文件定位
+## 文件定位與責任邊界
 
-本文件是 BT 設備工作流程的單一來源。內容來自前一套 Arduino + Log 方案的現場摘要，並與本 JetKVM repo 現況比對。
+本文件是 BT 設備畫面操作與測試結果判讀的單一來源。本 repo 使用 JetKVM 串流畫面定位 BT HMI、輸入 SN、操作 slot 與按鈕，並以畫面上的 Testing／PASS／FAIL 作為正式視覺結果。
 
-來源文件已明確定義 BT 結果 Log、slot 對應與舊 macOS 條件，但沒有完整記錄 BT HMI 的每個點擊與輸入元件。本文件不猜測未被記錄的操作；該部分必須用現場 HMI、舊版程式或影片補齊後再定稿。
+測試機本地 Log、CSV、Thread 與測試資料目錄由另一個專案負責。本 repo 不讀取、不監聽、不解析，也不將其納入結果仲裁。
 
 ## 已確認條件
 
 - BT 現場主機為 macOS Mojave 10.14.5。
-- Demo 視窗使用 4 slot，與舊版正式協定最多 4 slot 一致。
-- BT 結果來源為 `TestData/YYYY-MM-DD/PASSED|FAILED/*.csv`。
-- `Thread0`～`Thread3` 固定對應 slot1～slot4。
-- 無 SN Log Demo 只顯示，不回傳 TCP RESULT。
-- 正式 BT 過去需要影像定位與 HID，過程中會暫時隱藏 Agent 視窗，避免遮蓋或干擾測試 HMI。
+- 歷史 BT HMI 為 4-slot 版型；實際 slot 數與版型必須由現場畫面樣板驗證。
+- 正式 BT 操作使用 JetKVM HDMI 串流取得畫面，並以 JetKVM USB HID 操作測試機。
+- JetKVM 的鍵盤、絕對滑鼠與相對滑鼠必須在 Mojave 10.14.5 逐項實機驗證。
 
-## 目標流程
+## 目標畫面流程
 
-### 前置條件
+1. 接收並驗證 JOB 的設備、KVM IP、動作與 SN。
+2. 取得最新 JetKVM 影格，使用 BT target.png 定位 HMI。
+3. 若需要操作 slot，先以 slot 標籤與 checkbox／選擇器樣板讀取並複驗目前狀態，只調整與 JOB 不符的 slot。
+4. 若需要輸入 SN，定位 Input_target.png，點擊輸入區、輸入 SN，並依 BT HMI 已驗證的規則送 Enter 或其他確認鍵。
+5. 若需要啟動測試，定位 Button_target.png 並點擊。
+6. 測試中以 Testing_target.png 判斷，回覆 action_done,testing。
+7. 測試完成後，使用 Pass_target.png 與 Fail_target.png 尋找所有結果列，依由上而下的畫面順序整理；若 HMI 有可見 SN 欄，使用 OCR 與結果列的垂直位置配對。
+8. 回覆 action_done,index:SN:pass|fail,...。此回覆是本 repo 的正式視覺結果。
 
-- JetKVM HDMI IN 與 USB HID 已連到 BT Mac，上位機可收到影格並送出鍵鼠 report。
-- JOB 提供 1～4 個 slot 與 SN，且對應關係無歧義。
-- 使用者已明確選擇 BT `TestData` 根路徑。
-- 現場使用的 JetKVM 鍵盤、絕對滑鼠、相對滑鼠必須在 Mojave 10.14.5 逐項實機驗證，不可只以 Catalina 或新版 macOS 結果代替。
+## 需要補齊的現場資料
 
-### JOB 啟動階段
+目前 repo 沒有 host-app/BT pattern 資料夾，也沒有完整的 BT HMI 操作定義。實作前必須蒐集下列資料：
 
-1. 接收並驗證 JOB，確認 slot 範圍、SN 數量與重複值策略。
-2. 在任何輸入前，快照當日 `PASSED`／`FAILED` 內現有 CSV 的路徑、大小、修改時間與可用識別資訊，用來排除舊測試。
-3. 暫時隱藏或移開 Agent 視窗，取得無遮蓋的 BT HMI 影格。
-4. 依 BT profile 定位 HMI，處理 slot、SN 輸入與開始動作。
-5. 只有當所有必要元件都命中、slot 狀態驗證通過、HID 沒有回報錯誤時，才進入 Log 監聽。
+- 各螢幕解析度、縮放比例與未聚焦／已聚焦的 BT HMI 截圖。
+- 穩定的 target.png、輸入框、開始按鈕、Testing、PASS、FAIL、slot 標籤與 checkbox／選擇器樣板。
+- SN 輸入順序、每筆輸入後 Enter 的實際行為、slot 是否自動跳轉，以及何時允許按下開始按鈕。
+- 4-slot 的實際版型、稀疏 slot 的選取規則與結果列對應方式。
+- Mojave 10.14.5 上 JetKVM 鍵盤、絕對滑鼠、相對滑鼠的實機操作紀錄。
 
-> 待補規格：BT HMI 的 slot 選擇規則、SN 輸入順序、Enter 行為、開始按鈕與需要的 pattern 名稱，尚未在來源文件中完整定義。
+在以上資料補齊前，不得以固定座標或推測性操作自動控制 BT HMI。
 
-### CSV 結果監聽
+## 錯誤處理與驗收
 
-1. 監聽當日目錄：
-   - `TestData/YYYY-MM-DD/PASSED/*.csv`
-   - `TestData/YYYY-MM-DD/FAILED/*.csv`
-2. 只處理啟動快照後新增，或啟動後內容確實變動且已穩定的檔案。
-3. 由 CSV 內的 Thread 識別 slot：`Thread0` → slot1，`Thread1` → slot2，`Thread2` → slot3，`Thread3` → slot4。
-4. 由 CSV 內容取得 SN 並與 JOB 的 slot／SN 對應交叉檢查。若檔案所在目錄與 CSV 內狀態矛盾，不靜默選擇其一，應回報資料不一致。
-5. `PASSED` 定案 PASS，`FAILED` 定案 FAIL。每個 slot 只能定案一次，遲到的舊事件不得覆蓋。
-6. 所有要求 slot 定案後，整理為上位機 RESULT；缺少 slot、無法配對 SN 或逾時必須明確回報。
-
-### 無 SN Log Demo
-
-1. 由操作人員啟動 Demo，啟動前建立 CSV 基準快照。
-2. 只從新 Log 取得 SN、Thread／slot 與 PASS／FAIL。
-3. 在 Demo UI 顯示結果，不送出正式 TCP RESULT。
-
-## 錯誤處理
-
-| 錯誤 | 處理 |
+| 情況 | 處理 |
 |---|---|
-| Mojave 無法穩定接收 HID report | 停止自動操作，保留 JetKVM USB descriptor／endpoint 診斷，不假設動作已完成 |
-| 找不到 BT HMI 或 pattern 低於門檻 | 不送後續 HID，保留原圖與疊圖 |
-| `TestData` 路徑不存在／不可讀 | 在測試啟動前拒絕 JOB |
-| Thread 不在 0～3 | 標記為未知 slot，不納入正式結果 |
-| CSV SN 與 JOB SN 不符 | 回報配對錯誤，不將結果套給其他 slot |
-| 同一 slot 出現矛盾 PASS／FAIL | 保留全部證據並回報衝突，不靜默覆蓋 |
+| 無 HDMI 影格 | 回報 no_signal，不送 HID |
+| 找不到 HMI、輸入框、按鈕或 slot 樣板 | 回報低相似度錯誤，停止後續動作 |
+| slot 複驗失敗 | 不輸入 SN、不啟動測試 |
+| JetKVM HID endpoint 錯誤 | 回報 HID 錯誤，檢查 USB 線與 Mojave 的裝置辨識狀態 |
+| 找不到 Testing 或 PASS／FAIL 結果 | 回覆尚無可判讀畫面狀態；不以本地 Log 補結果 |
 
-## 目前 JetKVM 實作狀態
+- 以現場畫面驗證單 slot、全 slot、稀疏 slot、Testing、全 PASS、全 FAIL 與混合結果。
+- 驗證不同螢幕縮放、HMI 未聚焦、重連與長時間操作。
+- 每次視覺或 HID 失敗均保留原圖與辨識疊圖，供調整 pattern 與門檻。
 
-- Repo 內沒有 `host-app/BT/` pattern 資料夾。
-- `ui_app.py` 的 TCP parser 會將設備名稱當作 pattern 資料夾，因此傳入 `BT` 目前會回覆 `pattern folder not found (BT)`。
-- 通用 `run_flow()` 只支援單筆 SN 輸入、Enter 與單一按鈕，沒有 BT 特定的 slot 與多 SN 邏輯。
-- 尚未實作 `TestData` CSV 監聽、Thread 配對、啟動快照、終態保護與正式 RESULT 組裝。
+## 目前實作狀態
 
-## 驗收準則
-
-- 在 Mojave 10.14.5 實機驗證鍵盤、絕對滑鼠、相對滑鼠，包含長時間與重連測試。
-- 驗證 1～4 slot、稀疏 slot、不同 Thread 完成順序、混合 PASS／FAIL 與同 SN 重工。
-- 驗證啟動前舊 CSV 不會被誤配到新 JOB。
-- 每個 Thread 只能套用到固定 slot，CSV SN 必須與 JOB SN 一致。
-- 為未定義的 BT HMI 操作補齊現場證據後，再將「待補規格」改成可自動驗收的明確步驟。
+- 通用 run_flow 可重用於單筆 SN 輸入與按鈕點擊，run_check 可重用於 Testing／PASS／FAIL 與 OCR 結果列辨識。
+- ui_app.py 已可依設備名稱載入 pattern 資料夾；傳入 BT 現在會因資料夾尚未建立而回覆 pattern folder not found (BT)。
+- BT 專用的 profile、slot 狀態機、畫面樣板與現場驗證尚未實作。

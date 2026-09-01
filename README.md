@@ -1,6 +1,8 @@
 # B518 JetKVM + Log
 
-此 repo 是 B518 的 JetKVM + Log prototype，獨立於 Arduino + Log 方案。
+此 repo 是 B518 的 JetKVM 畫面控制 prototype：上位機透過 JetKVM 取得測試機串流畫面、判讀畫面結果，並以 USB HID 操作測試機鍵盤與滑鼠。
+
+Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本地 Log 的讀取與解析由另一個獨立專案負責，本 repo 不讀取 Log、不定義 CSV 格式，也不與該專案建立程式依賴。
 
 ## 目錄
 

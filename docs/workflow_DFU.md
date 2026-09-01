@@ -8,6 +8,8 @@
 
 內容來源為前一套 Arduino + Log 方案的 `PROJECT_SUMMARY.md`（最後更新 2026-08-31）與本 JetKVM repo 現行實作。前者是已經 FAE 現場確認的業務流程；後者目前僅實作通用的單筆 SN 輸入與按鈕點擊。
 
+本流程只以 JetKVM 串流畫面判斷狀態並送出 HID 操作；測試機本地 Log 與 CSV 不屬於本 repo 責任。
+
 ## 目標流程
 
 ### 前置條件
