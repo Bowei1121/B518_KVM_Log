@@ -32,15 +32,13 @@ _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
         TemplateSpec("dock_icon", "Dock 圖示"),
     ),
     "FCT": _COMMON_SPECS,
-    "BT": _COMMON_SPECS
-    + (
-        TemplateSpec("slot_label", "Slot 標籤"),
-        TemplateSpec("checkbox_checked", "已勾選核取方塊"),
-        TemplateSpec("checkbox_unchecked", "未勾選核取方塊"),
-        TemplateSpec("start_slot1", "啟動 Slot 1"),
-        TemplateSpec("start_slot2", "啟動 Slot 2"),
-        TemplateSpec("start_slot3", "啟動 Slot 3"),
-        TemplateSpec("start_slot4", "啟動 Slot 4"),
+    "BT": (
+        TemplateSpec("window", "視窗定位"),
+        TemplateSpec("testing", "測試中"),
+        TemplateSpec("pass", "通過結果"),
+        TemplateSpec("fail", "失敗結果"),
+        TemplateSpec("start_all", "Start All"),
+        TemplateSpec("dock_icon", "Dock Icon"),
     ),
 }
 
@@ -71,6 +69,29 @@ class TemplateCatalog:
 
     def keys(self, device: str) -> Tuple[str, ...]:
         return tuple(spec.key for spec in self.specs(device))
+
+    def selection_options(self, device: str) -> Tuple[Tuple[str, str], ...]:
+        """Return operator-facing template names paired with canonical keys."""
+        return tuple(
+            (spec.label if spec.key == "start_all" else spec.key, spec.key)
+            for spec in self.specs(device)
+        )
+
+    def action_template(self, device: str, action: str) -> str:
+        """Resolve a public operation name to the device's canonical template."""
+        normalized_device = self.normalize_device(device)
+        normalized_action = str(action or "").strip().lower()
+        if normalized_device == "BT" and normalized_action == "input":
+            raise ValueError("BT 不支援 input 操作")
+        if normalized_action != "button":
+            raise ValueError("未知操作: {}".format(action))
+        return "start_all" if normalized_device == "BT" else "button"
+
+    def pre_action_template(self, device: str, action: str) -> Optional[str]:
+        normalized_device = self.normalize_device(device)
+        if normalized_device == "BT" and str(action or "").strip().lower() == "button":
+            return "dock_icon"
+        return None
 
     def validate_key(self, device: str, template_key: str) -> str:
         normalized_device = self.normalize_device(device)

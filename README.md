@@ -23,6 +23,12 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 請在「創建Pattern」視窗選擇設備與模板種類；程式會自動決定唯讀檔名及輸出位置。`host-app/FCT` 中的圖片僅保留為歷史參考，執行程式不會讀取它。
 
+BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。
+
+## 匹配診斷
+
+主畫面的「匹配結果」會開啟最近一次流程的模板分數、命中狀態與逐步疊圖。每個設備的最近一次結果保存在 `~/Documents/template/_captures/match_diagnostics/<DEVICE>/latest/`；這些資料僅供問題追查，不影響 TCP 回覆或正式 PASS／FAIL 判定。
+
 ## 接手與設備流程文件
 
 - [專案開發與接手摘要（2026-09-01）](docs/PROJECT_SUMMARY_20260901.md)

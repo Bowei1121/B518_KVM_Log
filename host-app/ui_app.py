@@ -22,6 +22,9 @@ except Exception:
     pass
 
 import tkinter as tk
+from tkinter import messagebox, ttk
+from PIL import Image, ImageTk
+from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
 # cv2 用於「擷取影像」存檔 (延遲匯入，缺少時於 Log 提示)
@@ -48,6 +51,85 @@ except Exception as e:
 
 # ---- 邏輯視窗尺寸 = 圖片尺寸 / 2 ----
 WIN_W, WIN_H = 800, 1180
+
+
+class MatchResultsWindow(tk.Toplevel):
+    """Readonly viewer for each device's most recent persisted match diagnostics."""
+
+    def __init__(self, parent, catalog, device):
+        super().__init__(parent)
+        self.catalog = catalog
+        self.title("最近一次匹配結果")
+        self.geometry("980x700")
+        self.photo = None
+        self.summary = None
+        self.records = []
+
+        top = ttk.Frame(self, padding=8)
+        top.pack(fill="x")
+        ttk.Label(top, text="設備：").pack(side="left")
+        self.device_var = tk.StringVar(value=device)
+        self.device_box = ttk.Combobox(top, textvariable=self.device_var, values=catalog.devices(),
+                                       state="readonly", width=7)
+        self.device_box.pack(side="left")
+        self.device_box.bind("<<ComboboxSelected>>", lambda _event: self.load())
+        self.status_var = tk.StringVar()
+        ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=12)
+
+        body = ttk.Panedwindow(self, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        left = ttk.Frame(body, width=320)
+        right = ttk.Frame(body)
+        body.add(left, weight=1)
+        body.add(right, weight=3)
+        self.listbox = tk.Listbox(left, font=self.fallback_font(), exportselection=False)
+        self.listbox.pack(fill="both", expand=True)
+        self.listbox.bind("<<ListboxSelect>>", self._select)
+        self.image_label = ttk.Label(right, text="選擇左側項目以查看疊圖", anchor="center")
+        self.image_label.pack(fill="both", expand=True)
+        self.load()
+
+    @staticmethod
+    def fallback_font():
+        return ("Arial", 11)
+
+    def load(self):
+        self.summary = MatchDiagnostics.load(self.catalog.root, self.device_var.get())
+        self.records = [] if self.summary is None else self.summary.get("records", [])
+        self.listbox.delete(0, "end")
+        if not self.summary:
+            self.status_var.set("尚無最近一次診斷結果")
+            self.image_label.configure(text="請先執行 Switch 或 TCP 操作後再查看。", image="")
+            return
+        operation = self.summary.get("operation", "")
+        state = "完成" if self.summary.get("ok") else "失敗"
+        self.status_var.set("{}：{}，{} 個匹配步驟".format(operation, state, len(self.records)))
+        for record in self.records:
+            score = record.get("score")
+            score_text = "n/a" if score is None else "{:.3f}".format(score)
+            status = "命中" if record.get("matched") else "未命中"
+            self.listbox.insert("end", "{} | {} | {}".format(record.get("key"), score_text, status))
+        if self.records:
+            self.listbox.selection_set(0)
+            self._select()
+
+    def _select(self, _event=None):
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        record = self.records[selection[0]]
+        image_name = record.get("image")
+        if not image_name:
+            self.image_label.configure(text=record.get("note") or "此步沒有可顯示的影格", image="")
+            return
+        image_path = MatchDiagnostics.latest_directory(self.catalog.root, self.device_var.get()) / image_name
+        try:
+            image = Image.open(image_path)
+            image.thumbnail((620, 580))
+            self.photo = ImageTk.PhotoImage(image)
+            self.image_label.configure(image=self.photo, text="")
+        except Exception as exc:
+            self.image_label.configure(text="無法讀取疊圖：{}".format(exc), image="")
 
 
 class AtlasUI(tk.Tk):
@@ -195,6 +277,8 @@ class AtlasUI(tk.Tk):
         self.btn_switch = tk.Button(btm, text="Switch", font=self.f_btn, width=10,
                                     command=self.on_switch)
         self.btn_switch.grid(row=0, column=1)
+        tk.Button(btm, text="匹配結果", font=self.f_btn, width=10,
+                  command=self.on_show_match_results).grid(row=0, column=2)
 
     @staticmethod
     def _warm_ocr():
@@ -468,6 +552,13 @@ class AtlasUI(tk.Tk):
                 self._post_log(f"Switch 流程錯誤: {e or type(e).__name__}")
 
         fut.add_done_callback(done)
+
+    def on_show_match_results(self):
+        """Display the persisted matching diagnostics for the most recent device run."""
+        device = self.var_dev_type.get().strip().upper()
+        if device not in self._templates.devices():
+            device = "FCT"
+        MatchResultsWindow(self, self._templates, device)
 
     # ------------------------------------------------------------------
     # Streamer: 把 KVM 連線的遠端畫面即時投到視窗

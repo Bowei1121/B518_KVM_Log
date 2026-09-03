@@ -26,8 +26,14 @@ class TemplateCatalogTests(unittest.TestCase):
                     self.root / device / "{}_{}.png".format(device, key),
                 )
         self.assertIn("dock_icon", self.catalog.keys("DFU"))
-        self.assertIn("start_slot4", self.catalog.keys("BT"))
-        self.assertNotIn("start_slot1", self.catalog.keys("FCT"))
+        self.assertEqual(
+            self.catalog.keys("BT"),
+            ("window", "testing", "pass", "fail", "start_all", "dock_icon"),
+        )
+        self.assertEqual(self.catalog.path("BT", "start_all"), self.root / "BT" / "BT_start_all.png")
+        self.assertEqual(self.catalog.path("BT", "dock_icon"), self.root / "BT" / "BT_dock_icon.png")
+        self.assertNotIn("input", self.catalog.keys("BT"))
+        self.assertIn(("Start All", "start_all"), self.catalog.selection_options("BT"))
 
     def test_invalid_device_key_and_traversal_are_rejected(self):
         for device, key in (("UNKNOWN", "window"), ("FCT", "not_a_role"), ("../FCT", "window"),
@@ -58,6 +64,14 @@ class TemplateCatalogTests(unittest.TestCase):
             self.catalog.save_crop(image, (0, 0, 4, 4), "BT", "window")
         with self.assertRaises(ValueError):
             self.catalog.save_crop(image, (0, 0, 21, 5), "BT", "window")
+
+    def test_action_template_preserves_public_button_command(self):
+        self.assertEqual(self.catalog.action_template("BT", "button"), "start_all")
+        self.assertEqual(self.catalog.action_template("FCT", "button"), "button")
+        self.assertEqual(self.catalog.pre_action_template("BT", "button"), "dock_icon")
+        self.assertIsNone(self.catalog.pre_action_template("FCT", "button"))
+        with self.assertRaises(ValueError):
+            self.catalog.action_template("BT", "input")
 
 
 if __name__ == "__main__":

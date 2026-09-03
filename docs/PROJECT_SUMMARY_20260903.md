@@ -11,6 +11,8 @@
 - 正式模板由 TemplateCatalog 統一管理，根目錄為使用者 Documents 下的 template 資料夾。
 - 模板製作 UI 以設備與模板種類的唯讀選單控制命名，支援 DFU、FCT 與 BT。
 - 視覺流程只讀取新版模板位置，缺少模板時會回報預期完整路徑並停止。
+- BT 模板已精簡為 window、testing、pass、fail、start_all 與 dock_icon；既有 button 指令會操作 Start All，BT input 指令明確不支援。
+- 每次流程會保存該設備最近一次的模板匹配分數與疊圖；主畫面的「匹配結果」可在重開程式後檢視。
 - Windows 打包應在 Windows 實機或 Parallels Windows VM 使用 host-app/build_exe.bat 執行。
 
 ## Git 狀態

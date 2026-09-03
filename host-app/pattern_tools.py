@@ -65,16 +65,21 @@ class PatternCropper(tk.Toplevel):
         ttk.Button(footer, text="儲存模板", command=self._save).pack(side="right", padx=(0, 6))
 
     def _refresh_keys(self, preferred_key=None):
-        keys = self.catalog.keys(self.device_var.get())
-        self.key_box["values"] = keys
-        self.key_var.set(preferred_key if preferred_key in keys else keys[0])
+        options = self.catalog.selection_options(self.device_var.get())
+        self._key_by_label = dict(options)
+        self.key_box["values"] = tuple(label for label, _key in options)
+        selected = next((label for label, key in options if key == preferred_key), options[0][0])
+        self.key_var.set(selected)
+
+    def _selected_key(self):
+        return self._key_by_label[self.key_var.get()]
 
     def _on_device_changed(self, _event=None):
         self._refresh_keys()
         self._update_target()
 
     def _update_target(self, _event=None):
-        self.target_var.set(str(self.catalog.path(self.device_var.get(), self.key_var.get())))
+        self.target_var.set(str(self.catalog.path(self.device_var.get(), self._selected_key())))
 
     def _choose_image(self):
         path = filedialog.askopenfilename(parent=self, title="選擇 JetKVM 截圖",
@@ -137,7 +142,7 @@ class PatternCropper(tk.Toplevel):
         if self._selection is None:
             messagebox.showwarning("尚未框選", "請以滑鼠拖曳框選模板區域。", parent=self)
             return
-        device, key = self.device_var.get(), self.key_var.get()
+        device, key = self.device_var.get(), self._selected_key()
         target = self.catalog.path(device, key)
         overwrite = False
         if target.exists():
