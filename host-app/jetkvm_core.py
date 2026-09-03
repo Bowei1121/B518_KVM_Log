@@ -29,6 +29,7 @@ from aiortc.sdp import candidate_from_sdp
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 MOD_SHIFT = 0x02
+MOD_META = 0x08  # macOS Command / HID Left GUI
 _USAGE = {}
 for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
     _USAGE[_c] = (False, 0x04 + _i)
@@ -271,3 +272,7 @@ class JetKVMClient:
 
     async def press_enter(self):
         await self.press_key(0x28)   # HID usage: Enter
+
+    async def press_command_shift_m(self):
+        """Trigger the independent macOS Log monitor shortcut."""
+        await self.press_key(0x10, MOD_META | MOD_SHIFT)  # HID usage: M

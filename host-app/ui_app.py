@@ -41,6 +41,7 @@ try:
     from jetkvm_core import JetKVMClient, AsyncLoop, grab_one_frame
     from pattern_tools import PatternCropper
     from auto_flow import run_flow, run_check, run_focus
+    from dfu_flow import run_dfu_check, run_dfu_input, validate_input_request
     from stream_view import StreamerWindow
     _KVM_OK = True
     _KVM_ERR = ""
@@ -667,7 +668,8 @@ class AtlasUI(tk.Tk):
     def _process_command(self, line):
         """解析並執行一條指令, 回傳要回覆的字串。"""
         self._post_log(f"收到指令: {line}")
-        parts = [p.strip() for p in line.split(",")]
+        # The fifth field is a DFU multi-SN payload and may itself contain commas.
+        parts = [p.strip() for p in line.split(",", 4)]
         if len(parts) < 4:
             return "error:invalid format (need device,no,KVM_IP,command[,SN])\r\n"
         dev_type, dev_no, kvm_ip, func = parts[0], parts[1], parts[2], parts[3].lower()
@@ -684,6 +686,12 @@ class AtlasUI(tk.Tk):
 
         if func in ("input", "button") and not self._templates.supports_action(dev_type, func):
             return "error:{} 不支援 {} 操作\r\n".format(dev_type, func)
+        if dev_type == "DFU" and func == "input":
+            try:
+                # Do not connect or send HID when the job/profile itself is invalid.
+                validate_input_request(self._templates.root, dev_no, sn)
+            except ValueError as exc:
+                return "error:{}\r\n".format(exc)
 
         # KVM IP 填入欄位並連線
         self._run_on_ui(lambda: (self.e_kvm_ip.delete(0, "end"),
@@ -697,19 +705,29 @@ class AtlasUI(tk.Tk):
         annotate.parent.mkdir(parents=True, exist_ok=True)
         try:
             if func == "input":
-                r = self._kvm_loop.submit(run_flow(
-                    kvm, dev_type, template_root=self._templates.root, sn_text=sn, mode="input",
-                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
+                if dev_type == "DFU":
+                    r = self._kvm_loop.submit(run_dfu_input(
+                        kvm, dev_no, sn, template_root=self._templates.root,
+                        log=self._post_log)).result(timeout=90)
+                else:
+                    r = self._kvm_loop.submit(run_flow(
+                        kvm, dev_type, template_root=self._templates.root, sn_text=sn, mode="input",
+                        log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
             elif func == "button":
                 r = self._kvm_loop.submit(run_flow(
                     kvm, dev_type, template_root=self._templates.root, mode="button",
                     log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
             elif func == "check":
-                r = self._kvm_loop.submit(run_check(
-                    kvm, dev_type, template_root=self._templates.root,
-                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
+                if dev_type == "DFU":
+                    r = self._kvm_loop.submit(run_dfu_check(
+                        kvm, dev_no, template_root=self._templates.root,
+                        log=self._post_log)).result(timeout=90)
+                else:
+                    r = self._kvm_loop.submit(run_check(
+                        kvm, dev_type, template_root=self._templates.root,
+                        log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
                 if not r or not r.get("ok"):
-                    return "error:window not found\r\n"
+                    return "error:{}\r\n".format((r or {}).get("error", "window not found"))
                 if r.get("testing"):
                     return "action_done,testing\r\n"
                 # 每列: index:SN:result (SN 由 OCR 讀取)

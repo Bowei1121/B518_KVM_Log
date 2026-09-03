@@ -25,6 +25,8 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。FCT 使用五種模板：`FCT_window.png`、`FCT_testing.png`、`FCT_pass.png`、`FCT_fail.png`、`FCT_dock_icon.png`；FCT TCP `input` 與 `button` 均不支援，主畫面 Switch 僅執行 Dock 前景化。
 
+DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動獨立 Log 監控程式。`check` 會切換到 Log 視窗，從畫面辨識 Testing/PASS/FAIL/Notest。設備編號必須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`；可從 [設定範例](config/device_profiles.example.json) 複製後建立正式檔案。DFU 不支援對外 `button`。
+
 ## 匹配診斷
 
 主畫面的「匹配結果」會開啟最近一次流程的模板分數、命中狀態與逐步疊圖。每個設備的最近一次結果保存在 `~/Documents/template/_captures/match_diagnostics/<DEVICE>/latest/`；這些資料僅供問題追查，不影響 TCP 回覆或正式 PASS／FAIL 判定。

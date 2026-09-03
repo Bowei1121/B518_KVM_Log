@@ -26,6 +26,10 @@ class TemplateCatalogTests(unittest.TestCase):
                     self.root / device / "{}_{}.png".format(device, key),
                 )
         self.assertIn("dock_icon", self.catalog.keys("DFU"))
+        self.assertNotIn("slot_label", self.catalog.keys("DFU"))
+        self.assertNotIn("group_label", self.catalog.keys("DFU"))
+        self.assertIn("slot7_7slot", self.catalog.keys("DFU"))
+        self.assertIn("log_slot4_4slot", self.catalog.keys("DFU"))
         self.assertEqual(
             self.catalog.keys("BT"),
             ("window", "testing", "pass", "fail", "start_all", "dock_icon"),
@@ -78,6 +82,7 @@ class TemplateCatalogTests(unittest.TestCase):
             self.catalog.action_template("BT", "input")
         with self.assertRaises(ValueError):
             self.catalog.action_template("FCT", "button")
+        self.assertFalse(self.catalog.supports_action("DFU", "button"))
 
 
 if __name__ == "__main__":

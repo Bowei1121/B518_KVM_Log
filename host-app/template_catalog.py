@@ -25,11 +25,37 @@ _COMMON_SPECS = (
 _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
     "DFU": _COMMON_SPECS
     + (
-        TemplateSpec("slot_label", "Slot 標籤"),
-        TemplateSpec("group_label", "群組標籤"),
         TemplateSpec("checkbox_checked", "已勾選核取方塊"),
         TemplateSpec("checkbox_unchecked", "未勾選核取方塊"),
         TemplateSpec("dock_icon", "Dock 圖示"),
+        TemplateSpec("slot1_4slot", "4-slot：Slot 1 錨點"),
+        TemplateSpec("slot2_4slot", "4-slot：Slot 2 錨點"),
+        TemplateSpec("slot3_4slot", "4-slot：Slot 3 錨點"),
+        TemplateSpec("slot4_4slot", "4-slot：Slot 4 錨點"),
+        TemplateSpec("slot1_7slot", "7-slot：Slot 1 錨點"),
+        TemplateSpec("slot2_7slot", "7-slot：Slot 2 錨點"),
+        TemplateSpec("slot3_7slot", "7-slot：Slot 3 錨點"),
+        TemplateSpec("slot4_7slot", "7-slot：Slot 4 錨點"),
+        TemplateSpec("slot5_7slot", "7-slot：Slot 5 錨點"),
+        TemplateSpec("slot6_7slot", "7-slot：Slot 6 錨點"),
+        TemplateSpec("slot7_7slot", "7-slot：Slot 7 錨點"),
+        TemplateSpec("log_dock_icon", "Log Dock 圖示"),
+        TemplateSpec("log_window", "Log 視窗定位"),
+        TemplateSpec("log_testing", "Log：測試中"),
+        TemplateSpec("log_pass", "Log：通過結果"),
+        TemplateSpec("log_fail", "Log：失敗結果"),
+        TemplateSpec("log_notest", "Log：未測試"),
+        TemplateSpec("log_slot1_4slot", "Log 4-slot：Slot 1 錨點"),
+        TemplateSpec("log_slot2_4slot", "Log 4-slot：Slot 2 錨點"),
+        TemplateSpec("log_slot3_4slot", "Log 4-slot：Slot 3 錨點"),
+        TemplateSpec("log_slot4_4slot", "Log 4-slot：Slot 4 錨點"),
+        TemplateSpec("log_slot1_7slot", "Log 7-slot：Slot 1 錨點"),
+        TemplateSpec("log_slot2_7slot", "Log 7-slot：Slot 2 錨點"),
+        TemplateSpec("log_slot3_7slot", "Log 7-slot：Slot 3 錨點"),
+        TemplateSpec("log_slot4_7slot", "Log 7-slot：Slot 4 錨點"),
+        TemplateSpec("log_slot5_7slot", "Log 7-slot：Slot 5 錨點"),
+        TemplateSpec("log_slot6_7slot", "Log 7-slot：Slot 6 錨點"),
+        TemplateSpec("log_slot7_7slot", "Log 7-slot：Slot 7 錨點"),
     ),
     "FCT": (
         TemplateSpec("window", "視窗定位"),
@@ -99,7 +125,7 @@ class TemplateCatalog:
         normalized_device = self.normalize_device(device)
         normalized_action = str(action or "").strip().lower()
         return (
-            (normalized_device == "DFU" and normalized_action in ("input", "button"))
+            (normalized_device == "DFU" and normalized_action == "input")
             or (normalized_device == "BT" and normalized_action == "button")
         )
 

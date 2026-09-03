@@ -15,6 +15,7 @@
 - FCT 模板已精簡為 window、testing、pass、fail 與 dock_icon；FCT input／button 指令明確不支援，Switch 僅操作 Dock 前景化。
 - 每次流程會保存該設備最近一次的模板匹配分數與疊圖；主畫面的「匹配結果」可在重開程式後檢視。
 - Windows 打包應在 Windows 實機或 Parallels Windows VM 使用 host-app/build_exe.bat 執行。
+- DFU 已改為獨立 profile-aware 視覺狀態機：只提供多 SN `input` 與 Log 視覺判讀 `check`。profile 由使用者 Documents 下的 `device_profiles.json` 映射為 4slot／7slot；input 會 Dock 前景化、校正並複驗各 slot checkbox、按 slot 順序輸入 SN、只按一次 OK，再送出 `Command+Shift+M`。check 會切換到獨立 Log 監控視窗並回傳所有 slot 的 PASS／FAIL／Notest 或 testing；本 repo 不讀取本機 Log。
 
 ## Git 狀態
 
