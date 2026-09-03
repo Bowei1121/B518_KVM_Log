@@ -40,7 +40,7 @@ except Exception as e:  # pragma: no cover - 環境缺套件時
 try:
     from jetkvm_core import JetKVMClient, AsyncLoop, grab_one_frame
     from pattern_tools import PatternCropper
-    from auto_flow import run_flow, run_check
+    from auto_flow import run_flow, run_check, run_focus
     from stream_view import StreamerWindow
     _KVM_OK = True
     _KVM_ERR = ""
@@ -521,7 +521,7 @@ class AtlasUI(tk.Tk):
                        on_saved=self._append_log)
 
     # ------------------------------------------------------------------
-    # Switch: 自動流程 (找視窗 -> 輸入 SN -> 點 OK), 用已連線的 KVM
+    # Switch: FCT Dock 前景化，用已連線的 KVM
     # ------------------------------------------------------------------
     def on_switch(self):
         if not _KVM_OK:
@@ -533,15 +533,13 @@ class AtlasUI(tk.Tk):
             self._append_log("請先按『KVM連接』建立連線, 再按 Switch")
             return
 
-        annotate = self._templates.diagnostic_path("FCT", "jetkvm_detected.png")
-        annotate.parent.mkdir(parents=True, exist_ok=True)
         self._switch_busy = True
         self.btn_switch.config(state="disabled")
-        self._append_log("Switch: 開始自動流程 ...")
+        self._append_log("Switch: 開始 FCT Dock 前景化 ...")
 
         fut = self._kvm_loop.submit(
-            run_flow(self._kvm, "FCT", template_root=self._templates.root, sn_text="SN_ABC", threshold=0.8,
-                     log=self._post_log, annotate_path=str(annotate)))
+            run_focus(self._kvm, "FCT", template_root=self._templates.root, threshold=0.8,
+                      log=self._post_log))
 
         def done(f):
             self._switch_busy = False
@@ -683,6 +681,9 @@ class AtlasUI(tk.Tk):
         self._run_on_ui(lambda: (self.var_dev_type.set(dev_type),
                                  self.var_dev_no.set(dev_no),
                                  self.var_func.set(func)))
+
+        if func in ("input", "button") and not self._templates.supports_action(dev_type, func):
+            return "error:{} 不支援 {} 操作\r\n".format(dev_type, func)
 
         # KVM IP 填入欄位並連線
         self._run_on_ui(lambda: (self.e_kvm_ip.delete(0, "end"),

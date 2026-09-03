@@ -31,7 +31,13 @@ _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
         TemplateSpec("checkbox_unchecked", "未勾選核取方塊"),
         TemplateSpec("dock_icon", "Dock 圖示"),
     ),
-    "FCT": _COMMON_SPECS,
+    "FCT": (
+        TemplateSpec("window", "視窗定位"),
+        TemplateSpec("testing", "測試中"),
+        TemplateSpec("pass", "通過結果"),
+        TemplateSpec("fail", "失敗結果"),
+        TemplateSpec("dock_icon", "Dock Icon"),
+    ),
     "BT": (
         TemplateSpec("window", "視窗定位"),
         TemplateSpec("testing", "測試中"),
@@ -81,11 +87,27 @@ class TemplateCatalog:
         """Resolve a public operation name to the device's canonical template."""
         normalized_device = self.normalize_device(device)
         normalized_action = str(action or "").strip().lower()
+        if normalized_device == "FCT":
+            raise ValueError("{} 不支援 {} 操作".format(normalized_device, normalized_action))
         if normalized_device == "BT" and normalized_action == "input":
-            raise ValueError("BT 不支援 input 操作")
+            raise ValueError("{} 不支援 {} 操作".format(normalized_device, normalized_action))
         if normalized_action != "button":
             raise ValueError("未知操作: {}".format(action))
         return "start_all" if normalized_device == "BT" else "button"
+
+    def supports_action(self, device: str, action: str) -> bool:
+        normalized_device = self.normalize_device(device)
+        normalized_action = str(action or "").strip().lower()
+        return (
+            (normalized_device == "DFU" and normalized_action in ("input", "button"))
+            or (normalized_device == "BT" and normalized_action == "button")
+        )
+
+    def focus_template(self, device: str) -> str:
+        normalized_device = self.normalize_device(device)
+        if normalized_device not in ("BT", "FCT"):
+            raise ValueError("{} 不支援 Dock 前景化".format(normalized_device))
+        return "dock_icon"
 
     def pre_action_template(self, device: str, action: str) -> Optional[str]:
         normalized_device = self.normalize_device(device)

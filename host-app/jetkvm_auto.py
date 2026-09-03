@@ -17,7 +17,7 @@ import sys
 import cv2
 
 from jetkvm_core import JetKVMClient
-from auto_flow import run_flow
+from auto_flow import run_focus
 from template_catalog import TemplateCatalog
 
 # ====== 設定 ======
@@ -47,14 +47,13 @@ async def main():
         capture.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(capture), kvm.frame)
 
-    annotate = TEMPLATES.diagnostic_path(DEVICE, "jetkvm_detected.png")
-    annotate.parent.mkdir(parents=True, exist_ok=True)
-    await run_flow(kvm, DEVICE, template_root=TEMPLATES.root, sn_text=SN_TEXT, threshold=THRESHOLD,
-                   log=print, annotate_path=str(annotate),
-                   do_action=not DRY_RUN)
+    if DRY_RUN:
+        print("[DRY_RUN] FCT 不送 HID；請在 GUI 按 Switch 驗證 Dock 前景化。")
+    else:
+        await run_focus(kvm, DEVICE, template_root=TEMPLATES.root, threshold=THRESHOLD, log=print)
 
     if DRY_RUN:
-        print("[DRY_RUN] 只偵測不動作。確認標註圖正確後, 把 DRY_RUN 改 False。")
+        print("[DRY_RUN] 確認 FCT_dock_icon.png 正確後，再把 DRY_RUN 改 False。")
 
     await kvm.close()
 

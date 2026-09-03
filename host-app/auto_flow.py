@@ -209,6 +209,52 @@ async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, a
     return finish({"ok": True, "testing": False, "rows": rows})
 
 
+async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
+    """Locate and click a device Dock icon, preserving a diagnostic record."""
+    catalog = TemplateCatalog(template_root)
+    try:
+        device = catalog.normalize_device(device)
+        dock_key = catalog.focus_template(device)
+    except ValueError as exc:
+        log(str(exc))
+        return {"ok": False}
+    diagnostics = MatchDiagnostics(catalog.root, device)
+    result = {"ok": False, "dock_icon": None}
+
+    def finish():
+        diagnostics.finalize(result["ok"], "focus")
+        return result
+
+    dock_g = _load_template(catalog, device, dock_key, log, diagnostics, threshold)
+    if dock_g is None:
+        return finish()
+    if kvm.frame is None:
+        log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
+        diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
+        return finish()
+    if hasattr(kvm, "rpc_errors"):
+        kvm.rpc_errors.clear()
+    frame = kvm.frame.copy()
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    value, left, top, width, height = locate(gray, dock_g, downscale=False)
+    result["dock_icon"] = value
+    diagnostics.record(dock_key, value, threshold, frame,
+                       (left, top, width, height) if left is not None else None)
+    if left is None or value < threshold:
+        log("找不到 Dock icon (相似度 {:.2f} < {})".format(value, threshold))
+        return finish()
+    await kvm.click(int(left + width / 2), int(top + height / 2))
+    await asyncio.sleep(0.5)
+    errors = getattr(kvm, "rpc_errors", [])
+    if errors:
+        result["hid_error"] = errors[-1]
+        log("Dock HID 錯誤: {}".format(errors[-1]))
+        return finish()
+    result["ok"] = True
+    log("Dock 前景化完成")
+    return finish()
+
+
 async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=0.8,
                    log=print, annotate_path=None, mode="both", do_action=True):
     """用已連線的 kvm (JetKVMClient) 跑流程。
@@ -231,9 +277,15 @@ async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=
         diagnostics.finalize(result["ok"], mode)
         return result
 
-    if device == "BT" and do_input:
-        log("BT 不支援 input 操作")
-        diagnostics.record("input", None, threshold, note="BT 不支援 input 操作")
+    if do_input and not catalog.supports_action(device, "input"):
+        note = "{} 不支援 input 操作".format(device)
+        log(note)
+        diagnostics.record("input", None, threshold, note=note)
+        return finish()
+    if do_button and not catalog.supports_action(device, "button"):
+        note = "{} 不支援 button 操作".format(device)
+        log(note)
+        diagnostics.record("button", None, threshold, note=note)
         return finish()
     try:
         button_key = catalog.action_template(device, "button") if do_button else None

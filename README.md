@@ -23,7 +23,7 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 請在「創建Pattern」視窗選擇設備與模板種類；程式會自動決定唯讀檔名及輸出位置。`host-app/FCT` 中的圖片僅保留為歷史參考，執行程式不會讀取它。
 
-BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。
+BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。FCT 使用五種模板：`FCT_window.png`、`FCT_testing.png`、`FCT_pass.png`、`FCT_fail.png`、`FCT_dock_icon.png`；FCT TCP `input` 與 `button` 均不支援，主畫面 Switch 僅執行 Dock 前景化。
 
 ## 匹配診斷
 

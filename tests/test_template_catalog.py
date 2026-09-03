@@ -30,6 +30,10 @@ class TemplateCatalogTests(unittest.TestCase):
             self.catalog.keys("BT"),
             ("window", "testing", "pass", "fail", "start_all", "dock_icon"),
         )
+        self.assertEqual(
+            self.catalog.keys("FCT"),
+            ("window", "testing", "pass", "fail", "dock_icon"),
+        )
         self.assertEqual(self.catalog.path("BT", "start_all"), self.root / "BT" / "BT_start_all.png")
         self.assertEqual(self.catalog.path("BT", "dock_icon"), self.root / "BT" / "BT_dock_icon.png")
         self.assertNotIn("input", self.catalog.keys("BT"))
@@ -67,11 +71,13 @@ class TemplateCatalogTests(unittest.TestCase):
 
     def test_action_template_preserves_public_button_command(self):
         self.assertEqual(self.catalog.action_template("BT", "button"), "start_all")
-        self.assertEqual(self.catalog.action_template("FCT", "button"), "button")
         self.assertEqual(self.catalog.pre_action_template("BT", "button"), "dock_icon")
         self.assertIsNone(self.catalog.pre_action_template("FCT", "button"))
+        self.assertEqual(self.catalog.focus_template("FCT"), "dock_icon")
         with self.assertRaises(ValueError):
             self.catalog.action_template("BT", "input")
+        with self.assertRaises(ValueError):
+            self.catalog.action_template("FCT", "button")
 
 
 if __name__ == "__main__":

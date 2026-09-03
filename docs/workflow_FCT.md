@@ -1,6 +1,6 @@
 # FCT 設備工作流程
 
-更新日期：2026-09-01（Asia/Taipei）
+更新日期：2026-09-03（Asia/Shanghai）
 
 ## 文件定位與責任邊界
 
@@ -16,15 +16,14 @@
   - `FCT_window.png`：可穩定定位的 FCT 視窗區域。
   - `FCT_testing.png`：測試進行中的狀態。
   - `FCT_pass.png`、`FCT_fail.png`：單列測試結果。
-  - 需要輸入 SN 或啟動測試時，使用 `FCT_input.png` 與 `FCT_button.png`。
+  - `FCT_dock_icon.png`：Dock 上的 FCT 測試程式 icon，用於前景化。
 
 ## 畫面操作流程
 
-1. 取得最新 JetKVM 影格，使用 `FCT_window.png` 定位 FCT 視窗。
-2. 輸入 SN 時，定位 `FCT_input.png`、點擊輸入區、送出 SN 與 Enter。
-3. 啟動測試時，定位 `FCT_button.png` 並點擊；只有前置目標辨識成功時才允許操作。
-4. 每次 HID 動作後檢查 JetKVM RPC 是否回報 USB HID endpoint 錯誤。
-5. 視窗、輸入框或按鈕未命中時，停止該步驟並回報錯誤，不依固定座標盲點。
+1. 主畫面 Switch 取得最新 JetKVM 影格，使用 `FCT_dock_icon.png` 定位並點擊 FCT 程式 icon。
+2. 點擊後等待 0.5 秒讓 HMI 回到最前方；Dock 未命中或 HID 回報錯誤時立即停止。
+3. Switch 不輸入 SN、不點擊測試按鈕。
+4. FCT 的 TCP `input` 與 `button` 指令明確不支援，不建立 KVM 連線也不送 HID。
 
 ## 視覺結果判讀
 
@@ -48,9 +47,10 @@
 
 ## 目前實作狀態
 
-- host-app/auto_flow.py 已實作本文件的視窗定位、Testing 判讀、PASS／FAIL 多列搜尋、OCR SN 配對、通用輸入與按鈕操作。
+- host-app/auto_flow.py 已實作本文件的視窗定位、Testing 判讀、PASS／FAIL 多列搜尋、OCR SN 配對與 FCT Dock 前景化。
 - `host-app/FCT` 的舊圖片只作歷史參考；執行時只讀取 `~/Documents/template/FCT/`。
-- check 是純讀取畫面，不會操作 HID；input 與 button 分別執行單筆 SN 輸入與按鈕點擊。
+- check 是純讀取畫面，不會操作 HID；FCT input 與 button 指令會回覆不支援。
+- Switch 的 Dock 比對結果保存在 `~/Documents/template/_captures/match_diagnostics/FCT/latest/`，可由主畫面的「匹配結果」檢視。
 
 ## 驗收準則
 
