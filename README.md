@@ -25,7 +25,7 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。FCT 使用五種模板：`FCT_window.png`、`FCT_testing.png`、`FCT_pass.png`、`FCT_fail.png`、`FCT_dock_icon.png`；FCT TCP `input` 與 `button` 均不支援，主畫面 Switch 僅執行 Dock 前景化。
 
-DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正外部 DFU 視窗 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動 B518 Log Solution 監控。這個輸入 profile 仍可為 4／7 格；它不控制 Log 結果版型。`check` 直接讀最新 JetKVM BGR frame，依版本化 `KVM_DISPLAY_CONTRACT.md` 辨識 1–20 格與四種狀態，無舊四／七格 Log 結果模板或生產 fallback。它先觀察到監控中，待確認回覆暫停，且需兩張不同序號的新鮮完整畫面才會一次回覆本輪狀態。回覆列格式為 `slot::STATUS`，因畫面契約的色帶只提供狀態，不提供 SN；尚未確認外部 TCP 呼叫端是否接受此狀態列格式。設備編號仍須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`，但此 profile 僅用於 DFU 輸入。DFU 不支援對外 `button`。
+DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正外部 DFU 視窗 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動 B518 Log Solution 監控。這個輸入 profile 仍可為 4／7 格；它不控制 Log 結果版型。`check` 直接讀最新 JetKVM BGR frame，依版本化 `KVM_DISPLAY_CONTRACT.md` 辨識 1–20 格與四種狀態，無舊四／七格 Log 結果模板或生產 fallback。它先觀察到監控中，且需 JetKVM 呈現時間戳持續遞增、兩張不同序號的新鮮完整畫面才會一次回覆本輪狀態；缺少時間戳、時間戳倒退或容量在輪次中改變均拒絕取用。待確認回覆暫停。回覆列格式為 `slot::STATUS`，因畫面契約的色帶只提供狀態，不提供 SN；尚未確認外部 TCP 呼叫端是否接受此狀態列格式。設備編號仍須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`，但此 profile 僅用於 DFU 輸入。DFU 不支援對外 `button`。
 
 ## 匹配診斷
 

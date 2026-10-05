@@ -87,6 +87,7 @@ class JetKVMClient:
         self.size = None
         self.frame_sequence = 0
         self.frame_received_monotonic = None
+        self.frame_presentation_time = None
         self.stream_id = uuid.uuid4().hex
         self._frame_lock = threading.Lock()
         self.connected = False
@@ -141,10 +142,14 @@ class JetKVMClient:
                     except Exception:
                         return
                     decoded = f.to_ndarray(format="bgr24")
+                    presentation_time = None
+                    if f.pts is not None and f.time_base is not None:
+                        presentation_time = float(f.pts * f.time_base)
                     with self._frame_lock:
                         self.frame = decoded
                         self.frame_sequence += 1
                         self.frame_received_monotonic = time.monotonic()
+                        self.frame_presentation_time = presentation_time
                         if self.size is None:
                             self.size = (f.width, f.height)
                     if self.size == (f.width, f.height):
@@ -226,7 +231,8 @@ class JetKVMClient:
             if self.frame is None:
                 return None
             return (self.frame.copy(), self.frame_sequence,
-                    self.frame_received_monotonic, self.stream_id)
+                    self.frame_received_monotonic, self.stream_id,
+                    self.frame_presentation_time)
 
     async def _wait_ice(self, pc):
         if pc.iceGatheringState == "complete":

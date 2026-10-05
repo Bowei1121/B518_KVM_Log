@@ -141,6 +141,31 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(gate.observe(complete, 3, 4, now=4).kind, "waiting")
         self.assertEqual(gate.observe(complete, 4, 5, now=5).kind, "taken")
 
+    def test_prior_round_complete_with_older_source_timestamp_is_rejected(self):
+        gate = RoundFrameGate("device-1", stable_complete_frames=2,
+                              require_presentation_time=True)
+        monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
+        complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
+        self.assertEqual(gate.observe(monitoring, 1, 10, now=10, stream_id="s",
+                                      presentation_time=50.0).kind, "waiting")
+        stale = gate.observe(complete, 2, 10.1, now=10.1, stream_id="s",
+                             presentation_time=49.9)
+        self.assertEqual((stale.kind, stale.reason), ("unknown", "out_of_order_source_frame"))
+        self.assertFalse(gate.taken)
+        self.assertEqual(gate.observe(complete, 3, 10.2, now=10.2, stream_id="s",
+                                      presentation_time=50.1).kind, "waiting")
+        self.assertEqual(gate.observe(complete, 4, 10.3, now=10.3, stream_id="s",
+                                      presentation_time=50.2).kind, "taken")
+
+    def test_complete_capacity_must_match_observed_monitoring_round(self):
+        gate = RoundFrameGate("device-1", stable_complete_frames=1)
+        monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
+        changed_capacity = render_frame(MarkerState.COMPLETE, ["PASS"] * 3)
+        gate.observe(monitoring, 1, 1, now=1)
+        decision = gate.observe(changed_capacity, 2, 2, now=2)
+        self.assertEqual((decision.kind, decision.reason), ("waiting", "round_capacity_changed"))
+        self.assertFalse(gate.taken)
+
     def test_device_gates_do_not_share_taken_state(self):
         first = RoundFrameGate("one", stable_complete_frames=1)
         second = RoundFrameGate("two", stable_complete_frames=1)
@@ -181,30 +206,36 @@ class RoundFrameConsumerTests(unittest.TestCase):
                 self.frame = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
                 self.frame_sequence = 1
                 self.frame_received_monotonic = 10
+                self.frame_presentation_time = 1.0
                 self.stream_id = "controlled"
 
             def latest_frame(self):
-                return self.frame.copy(), self.frame_sequence, self.frame_received_monotonic, self.stream_id
+                return (self.frame.copy(), self.frame_sequence, self.frame_received_monotonic,
+                        self.stream_id, self.frame_presentation_time)
 
         kvm = FakeKvm()
-        gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 12)
+        gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 12,
+                              require_presentation_time=True)
         decision = observe_latest_round_frame(kvm, gate, now=10)
         self.assertEqual(decision.kind, "waiting")
         self.assertEqual(tcp_round_reply(decision), "action_waiting,monitoring\r\n")
         kvm.frame = render_frame(MarkerState.REVIEW, ["PASS", "FAIL"])
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
+        kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.1)
         self.assertEqual(decision.kind, "paused")
         self.assertEqual(tcp_round_reply(decision), "action_paused,review\r\n")
         kvm.frame = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
+        kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.2)
         self.assertEqual(decision.kind, "taken")
         self.assertEqual(tcp_round_reply(decision), "action_done,1::PASS,2::FAIL\r\n")
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
+        kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.3)
         self.assertEqual(decision.kind, "already_taken")
         self.assertNotEqual(tcp_round_reply(decision), "action_done,1::PASS,2::FAIL\r\n")

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import time
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -59,12 +60,12 @@ STATUS_COLORS = {
 @dataclass(frozen=True)
 class FrameObservation:
     reliable: bool
-    state: object = None
+    state: Optional[MarkerState] = None
     capacity: int = 0
-    statuses: tuple = ()
+    statuses: Tuple[str, ...] = ()
     reason: str = ""
     scale: float = 0.0
-    app_origin: tuple = ()
+    app_origin: Tuple[float, float] = ()
 
     @property
     def results_complete(self):
@@ -77,9 +78,9 @@ class FrameObservation:
 class TakeDecision:
     kind: str
     device_id: str
-    state: object = None
+    state: Optional[MarkerState] = None
     capacity: int = 0
-    results: tuple = ()
+    results: Tuple[Tuple[int, str], ...] = ()
     reason: str = ""
 
 
@@ -256,21 +257,26 @@ class RoundFrameGate:
     """Require monitoring then a stable complete frame, and take each device round once."""
 
     def __init__(self, device_id, stable_complete_frames=2, max_age=1.0,
-                 max_frame_gap=1.0, clock=time.monotonic):
+                 max_frame_gap=1.0, clock=time.monotonic,
+                 require_presentation_time=False):
         self.device_id = str(device_id)
         self.stable_complete_frames = max(1, int(stable_complete_frames))
         self.max_age = float(max_age)
         self.max_frame_gap = float(max_frame_gap)
         self.clock = clock
+        self.require_presentation_time = bool(require_presentation_time)
         self.armed = False
         self.taken = False
         self.last_sequence = None
         self.last_stream_id = None
         self.last_received_at = None
+        self.last_presentation_time = None
+        self.armed_capacity = None
         self._candidate_signature = None
         self._candidate_count = 0
 
-    def observe(self, frame, sequence, received_at, now=None, stream_id=None):
+    def observe(self, frame, sequence, received_at, now=None, stream_id=None,
+                presentation_time=None):
         """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown."""
         now = self.clock() if now is None else now
         if stream_id != self.last_stream_id:
@@ -280,11 +286,25 @@ class RoundFrameGate:
             # process/session. Require a fresh Monitoring frame on this stream.
             self.armed = False
             self.taken = False
+            self.last_presentation_time = None
+            self.armed_capacity = None
             self._candidate_signature = None
             self._candidate_count = 0
         if self.last_sequence is not None and sequence <= self.last_sequence:
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")
         self.last_sequence = sequence
+        if self.require_presentation_time and presentation_time is None:
+            self._candidate_signature = None
+            self._candidate_count = 0
+            return TakeDecision("unknown", self.device_id, reason="missing_source_frame_time")
+        if presentation_time is not None:
+            if (self.last_presentation_time is not None
+                    and presentation_time <= self.last_presentation_time):
+                self._candidate_signature = None
+                self._candidate_count = 0
+                return TakeDecision("unknown", self.device_id,
+                                    reason="out_of_order_source_frame")
+            self.last_presentation_time = presentation_time
         previous_received_at = self.last_received_at
         self.last_received_at = received_at
         observation = inspect_app_frame(frame, received_at, now, self.max_age)
@@ -300,6 +320,7 @@ class RoundFrameGate:
                                 observation.capacity, reason="confirmation_required")
         if observation.state == MarkerState.STANDBY:
             self.armed = False
+            self.armed_capacity = None
             self._candidate_signature = None
             self._candidate_count = 0
             return TakeDecision("waiting", self.device_id, observation.state,
@@ -307,6 +328,7 @@ class RoundFrameGate:
         if observation.state == MarkerState.MONITORING:
             self.armed = True
             self.taken = False
+            self.armed_capacity = observation.capacity
             self._candidate_signature = None
             self._candidate_count = 0
             return TakeDecision("waiting", self.device_id, observation.state,
@@ -317,6 +339,12 @@ class RoundFrameGate:
         if not self.armed:
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="monitoring_not_observed")
+        if observation.capacity != self.armed_capacity:
+            self.armed = False
+            self._candidate_signature = None
+            self._candidate_count = 0
+            return TakeDecision("waiting", self.device_id, observation.state,
+                                observation.capacity, reason="round_capacity_changed")
         if not observation.results_complete:
             self._candidate_signature = None
             self._candidate_count = 0
@@ -347,15 +375,19 @@ def observe_latest_round_frame(kvm, gate, now=None):
         snapshot = kvm.latest_frame()
         if snapshot is None:
             return TakeDecision("unknown", gate.device_id, reason="no_frame")
-        frame, sequence, received_at, stream_id = snapshot
+        if len(snapshot) < 5:
+            return TakeDecision("unknown", gate.device_id, reason="missing_source_frame_time")
+        frame, sequence, received_at, stream_id, presentation_time = snapshot[:5]
     else:
         frame = getattr(kvm, "frame", None)
         sequence = getattr(kvm, "frame_sequence", 1)
         received_at = getattr(kvm, "frame_received_monotonic", now)
         stream_id = getattr(kvm, "stream_id", "controlled-frame")
+        presentation_time = getattr(kvm, "frame_presentation_time", None)
     if frame is None:
         return TakeDecision("unknown", gate.device_id, reason="no_frame")
-    return gate.observe(frame, sequence, received_at, now=now, stream_id=stream_id)
+    return gate.observe(frame, sequence, received_at, now=now, stream_id=stream_id,
+                        presentation_time=presentation_time)
 
 
 def tcp_round_reply(decision):

@@ -61,6 +61,7 @@ def verify(evidence_dir):
     return {
         "source": "B518 Log Solution real Tk window captured locally through Quartz",
         "is_jetkvm_frame": False,
+        "presentation_timestamp_basis": "synthetic ordering for offline screenshots; not JetKVM source PTS",
         "contract_version": "1.0",
         "sequence": records,
         "taken_results": [[slot, status] for slot, status in enumerate(taken["statuses"], 1)],
@@ -71,6 +72,7 @@ def verify(evidence_dir):
             "result_taken_once": True,
             "capacity_external_black_cells_excluded": True,
             "real_jetkvm_and_device_action_tested": False,
+            "jetkvm_source_presentation_timestamp_tested": False,
         },
     }
 

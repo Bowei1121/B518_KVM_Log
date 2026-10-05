@@ -729,7 +729,7 @@ class AtlasUI(tk.Tk):
                     device_key = "{}:{}:{}".format(dev_type, dev_no, kvm_ip)
                     gate = self._round_frame_gates.get(device_key)
                     if gate is None:
-                        gate = RoundFrameGate(device_key)
+                        gate = RoundFrameGate(device_key, require_presentation_time=True)
                         self._round_frame_gates[device_key] = gate
                     decision = observe_latest_round_frame(kvm, gate)
                     reply = tcp_round_reply(decision)

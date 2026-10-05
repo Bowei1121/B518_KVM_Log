@@ -41,10 +41,10 @@ Log 結果不再使用 DFU 專屬視窗或 slot 模板。上位機直接讀取 B
 
 ## Check 狀態機
 
-1. 讀取 `JetKVMClient.latest_frame()` 的 BGR 影格、遞增序號與單調接收時間；過期、無序、裁切或無法定位畫面一律不取用。
+1. 讀取 `JetKVMClient.latest_frame()` 的 BGR 影格、遞增序號、單調接收時間及來源呈現時間戳；過期、來源時間戳缺少／倒退、無序、裁切或無法定位畫面一律不取用。
 2. 以兩個不對稱定位點確認方向與比例，再辨識 2×2 狀態標記及一至二十格結果色帶。容量由連續有效色格及其後容量外黑格判定，不讀取 4／7 格輸入 profile。
 3. 每個設備需先在本連線觀察到「監控中」才會接受後續完成畫面。待確認回覆 `action_paused,review`；待命、監控中、未知或尚在確認一致性的畫面回覆 `action_waiting,...`。
-4. 只有「本輪完成」標記、容量內全部為 PASS／FAIL／NOTEST／TIMEOUT，且兩張不同 frame sequence 的狀態與結果一致，才一次回覆 `action_done,1::PASS,2::FAIL,...`。這個畫面契約不含 SN，因此此介面只回傳位置與狀態，不聲稱 OCR 或 SN 追查已整合；外部 TCP 呼叫端仍待定位與相容確認。
+4. Monitoring 畫面會鎖定本輪容量；容量變更時要求重新觀察 Monitoring。完成候選的來源呈現時間戳也必須晚於已觀察的 Monitoring，才能排除晚到的舊輪 frame。只有「本輪完成」標記、容量內全部為 PASS／FAIL／NOTEST／TIMEOUT，且兩張不同 frame sequence 的狀態與結果一致，才一次回覆 `action_done,1::PASS,2::FAIL,...`。這個畫面契約不含 SN，因此此介面只回傳位置與狀態，不聲稱 OCR 或 SN 追查已整合；外部 TCP 呼叫端仍待定位與相容確認。
 5. 同一設備重複 check 不會重複取用。重連會清除監控 armed 狀態，必須重新看到監控中；各設備閘門互相隔離。結果回覆遺失後重複 check 只回 `action_waiting,already_taken`，不自動重做。
 
 DFU input 仍會覆寫 `~/Documents/template/_captures/match_diagnostics/DFU/latest/` 的最近一次模板診斷資料，可由主畫面「匹配結果」查看。Round check 的可重現 frame 證據及逐格辨識報告由 `tools/verify_ticket16_app_frames.py` 產生至指定隔離輸出路徑；所有未知、逾時、定位失敗及格式不一致均 fail closed。實際 JetKVM 影格／壓縮容差尚未驗收。
