@@ -12,13 +12,13 @@
 
 `input` 的 payload 必須是以逗號分隔的 `slot:SN`。slot 可稀疏、輸入順序可任意，但程式會按 slot 由小到大輸入。空 payload、重複 slot、空 SN、格式錯誤及不在 profile 範圍內的 slot一律在送 HID 前拒絕。DFU 不支援對外 `button`；OK 已整合在 `input` 最後一步。
 
-設備編號對應的版型只從 `~/Documents/template/device_profiles.json` 讀取，例如：
+設備編號對應的外部 DFU 輸入版型只從 `~/Documents/template/device_profiles.json` 讀取，例如：
 
 ```json
 {"DFU": {"1": "4slot", "2": "7slot"}}
 ```
 
-僅接受 `4slot`、`7slot`。沒有對應、JSON 無效或 profile 不合法時 fail closed，不從畫面猜測槽數。
+僅接受 `4slot`、`7slot`。此設定只描述 DFU 輸入視窗的實體欄位，不代表 B518 Log Solution 的結果容量；沒有對應、JSON 無效或 profile 不合法時，輸入操作 fail closed，不從畫面猜測欄位數。
 
 ## 模板
 
@@ -26,10 +26,7 @@
 
 - 主程式：`DFU_dock_icon.png`、`DFU_window.png`、`DFU_checkbox_checked.png`、`DFU_checkbox_unchecked.png`、`DFU_input.png`、`DFU_button.png`。
 - 主程式 slot 錨點：`DFU_slot1_4slot.png`～`DFU_slot4_4slot.png`，以及 `DFU_slot1_7slot.png`～`DFU_slot7_7slot.png`。
-- Log 視窗：`DFU_log_dock_icon.png`、`DFU_log_window.png`、`DFU_log_testing.png`、`DFU_log_pass.png`、`DFU_log_fail.png`、`DFU_log_notest.png`。
-- Log slot 錨點：`DFU_log_slot1_4slot.png`～`DFU_log_slot4_4slot.png`，以及 `DFU_log_slot1_7slot.png`～`DFU_log_slot7_7slot.png`。
-
-舊有通用 `slot_label`、`group_label` 不再是可製作或執行時讀取的模板。
+Log 結果不再使用 DFU 專屬視窗或 slot 模板。上位機直接讀取 B518 Log Solution 的 JetKVM frame，依 App repo 的 `docs/refactoring/KVM_DISPLAY_CONTRACT.md`（版本 1.0）定位點、黑白狀態標記與最多二十格色帶判讀。兩 repo 維持獨立，透過版號契約及受控樣本同步。
 
 ## Input 狀態機
 
@@ -44,10 +41,10 @@
 
 ## Check 狀態機
 
-1. 取影格，匹配並點擊 `DFU_log_dock_icon.png`，等待 0.3 秒。
-2. 重新取影格，定位 Log window 與 profile 專屬 Log slot 錨點。
-3. 每一列錨點右側 ROI 分別匹配 Testing、PASS、FAIL、Notest 並 OCR 該列 SN；狀態同樣要求分數至少 0.80、領先至少 0.05。
-4. 任一有效 slot 為 Testing 時回覆 `action_done,testing`。
-5. 全部完成時回覆所有 profile slot，例如 `action_done,1:SN123:pass,2::notest,3:SN789:fail`。PASS/FAIL 沒有有效 OCR SN 或狀態不明確時回覆錯誤，不能默認 Notest。
+1. 讀取 `JetKVMClient.latest_frame()` 的 BGR 影格、遞增序號與單調接收時間；過期、無序、裁切或無法定位畫面一律不取用。
+2. 以兩個不對稱定位點確認方向與比例，再辨識 2×2 狀態標記及一至二十格結果色帶。容量由連續有效色格及其後容量外黑格判定，不讀取 4／7 格輸入 profile。
+3. 每個設備需先在本連線觀察到「監控中」才會接受後續完成畫面。待確認回覆 `action_paused,review`；待命、監控中、未知或尚在確認一致性的畫面回覆 `action_waiting,...`。
+4. 只有「本輪完成」標記、容量內全部為 PASS／FAIL／NOTEST／TIMEOUT，且兩張不同 frame sequence 的狀態與結果一致，才一次回覆 `action_done,1::PASS,2::FAIL,...`。這個畫面契約不含 SN，因此此介面只回傳位置與狀態，不聲稱 OCR 或 SN 追查已整合；外部 TCP 呼叫端仍待定位與相容確認。
+5. 同一設備重複 check 不會重複取用。重連會清除監控 armed 狀態，必須重新看到監控中；各設備閘門互相隔離。結果回覆遺失後重複 check 只回 `action_waiting,already_taken`，不自動重做。
 
-每次 input/check 都會覆寫 `~/Documents/template/_captures/match_diagnostics/DFU/latest/` 的最近一次診斷資料，可由主畫面「匹配結果」查看。所有失敗均 fail closed。
+DFU input 仍會覆寫 `~/Documents/template/_captures/match_diagnostics/DFU/latest/` 的最近一次模板診斷資料，可由主畫面「匹配結果」查看。Round check 的可重現 frame 證據及逐格辨識報告由 `tools/verify_ticket16_app_frames.py` 產生至指定隔離輸出路徑；所有未知、逾時、定位失敗及格式不一致均 fail closed。實際 JetKVM 影格／壓縮容差尚未驗收。

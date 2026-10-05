@@ -11,7 +11,6 @@ import cv2
 
 from auto_flow import _load_template, locate
 from match_diagnostics import MatchDiagnostics
-from ocr_sn import read_sn
 from template_catalog import TemplateCatalog
 
 MATCH_THRESHOLD = 0.80
@@ -248,69 +247,6 @@ async def run_dfu_input(kvm, device_no, payload, template_root=None, threshold=M
         if _has_hid_error(kvm):
             raise ValueError("HID 錯誤: {}".format(_has_hid_error(kvm)))
         result.update(ok=True, profile=profile, serials=serials)
-        return finish()
-    except ValueError as exc:
-        return finish(str(exc))
-
-
-def _classify_log_row(frame, row_box, templates, slot, diagnostics, threshold):
-    x, y, width, height = row_box
-    row = cv2.cvtColor(frame[y:y + height, x:x + width], cv2.COLOR_BGR2GRAY)
-    candidates = []
-    for state in ("testing", "pass", "fail", "notest"):
-        value, left, top, w, h = locate(row, templates["log_" + state], downscale=False)
-        box = (x + left, y + top, w, h) if left is not None else None
-        _record(diagnostics, "log_slot{}_{}".format(slot, state), value, threshold, frame, box)
-        candidates.append((value, state, box))
-    candidates.sort(reverse=True, key=lambda entry: entry[0])
-    best, state, box = candidates[0]
-    if box is None or best < threshold or best - candidates[1][0] < MATCH_MARGIN:
-        raise ValueError("Log slot {} 狀態不明確（{:.2f}/{:.2f}）".format(slot, best, candidates[1][0]))
-    # Status is near the left-side anchor; OCR only the right-most row area to avoid it.
-    sn_roi = frame[y:y + height, x + int(width * 0.45):x + width]
-    sn = "" if state in ("testing", "notest") else read_sn(sn_roi)
-    diagnostics.record("log_slot{}_ocr".format(slot), None, threshold, sn_roi, note=sn or "沒有 OCR SN")
-    if state in ("pass", "fail") and not sn:
-        raise ValueError("Log slot {} {} 但 OCR 找不到 SN".format(slot, state))
-    return state, sn
-
-
-async def run_dfu_check(kvm, device_no, template_root=None, threshold=MATCH_THRESHOLD, log=print):
-    """Focus the separate Log monitor and return profile-complete visual results."""
-    catalog = TemplateCatalog(template_root)
-    diagnostics = MatchDiagnostics(catalog.root, "DFU")
-    result = {"ok": False, "testing": False, "rows": []}
-
-    def finish(note=""):
-        if note:
-            result["error"] = note
-            log(note)
-        diagnostics.finalize(result["ok"], "dfu_check")
-        return result
-
-    try:
-        profile, count = load_profile(catalog.root, device_no)
-        keys = ["log_dock_icon", "log_window", "log_testing", "log_pass", "log_fail", "log_notest"]
-        keys += ["log_slot{}_{}".format(i, profile) for i in range(1, count + 1)]
-        templates = _load(catalog, keys, diagnostics, threshold, log)
-        if hasattr(kvm, "rpc_errors"):
-            kvm.rpc_errors.clear()
-        await _focus_dock(kvm, templates["log_dock_icon"], diagnostics, "log_dock_icon", threshold, log)
-        frame = _frame(kvm, diagnostics, threshold, log)
-        if frame is None:
-            raise ValueError("Log 前景化後沒有 JetKVM 影格")
-        _, window = _window_match(frame, templates["log_window"], diagnostics, "log_window", threshold)
-        if window is None:
-            raise ValueError("找不到 DFU_log_window")
-        rows = _slot_rows(frame, window, templates, profile, "log_", diagnostics, threshold)
-        interpreted = []
-        for slot in range(1, count + 1):
-            state, sn = _classify_log_row(frame, rows[slot], templates, slot, diagnostics, threshold)
-            interpreted.append((slot, sn, state))
-        if any(state == "testing" for _slot, _sn, state in interpreted):
-            result.update(ok=True, testing=True, rows=[])
-        else:
-            result.update(ok=True, rows=interpreted, profile=profile)
         return finish()
     except ValueError as exc:
         return finish(str(exc))

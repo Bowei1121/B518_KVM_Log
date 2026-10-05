@@ -17,6 +17,8 @@ import asyncio
 import base64
 import json
 import threading
+import time
+import uuid
 
 import cv2
 import numpy as np
@@ -83,6 +85,10 @@ class JetKVMClient:
         self.rpc = None
         self.frame = None
         self.size = None
+        self.frame_sequence = 0
+        self.frame_received_monotonic = None
+        self.stream_id = uuid.uuid4().hex
+        self._frame_lock = threading.Lock()
         self.connected = False
         self._id = 0
         self._ws = None
@@ -134,9 +140,14 @@ class JetKVMClient:
                         f = await track.recv()
                     except Exception:
                         return
-                    self.frame = f.to_ndarray(format="bgr24")
-                    if self.size is None:
-                        self.size = (f.width, f.height)
+                    decoded = f.to_ndarray(format="bgr24")
+                    with self._frame_lock:
+                        self.frame = decoded
+                        self.frame_sequence += 1
+                        self.frame_received_monotonic = time.monotonic()
+                        if self.size is None:
+                            self.size = (f.width, f.height)
+                    if self.size == (f.width, f.height):
                         first_frame.set()
 
             asyncio.ensure_future(consume())
@@ -208,6 +219,14 @@ class JetKVMClient:
                                "請確認來源電腦有輸出 HDMI 到 JetKVM 且螢幕已喚醒")
         await asyncio.sleep(0.3)
         self.connected = True
+
+    def latest_frame(self):
+        """Return an immutable-in-practice frame copy with stream freshness metadata."""
+        with self._frame_lock:
+            if self.frame is None:
+                return None
+            return (self.frame.copy(), self.frame_sequence,
+                    self.frame_received_monotonic, self.stream_id)
 
     async def _wait_ice(self, pc):
         if pc.iceGatheringState == "complete":
