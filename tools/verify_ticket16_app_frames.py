@@ -8,7 +8,7 @@ import sys
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-from round_frame_consumer import RoundFrameGate, inspect_app_frame
+from round_frame_consumer import RoundFrameGate, inspect_app_frame, tcp_round_reply
 
 
 EXPECTED = {
@@ -25,7 +25,7 @@ def verify(evidence_dir):
     gate = RoundFrameGate("ticket16-controlled-device", stable_complete_frames=2,
                           max_age=10.0, max_frame_gap=2.0)
     records = []
-    frames = []
+    fake_action_requests = []
     for sequence, (name, expected) in enumerate(EXPECTED.items(), 1):
         path = evidence_dir / (name + ".png")
         frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -38,6 +38,9 @@ def verify(evidence_dir):
                 name, expected, getattr(observation.state, "value", None), observation.reason))
         decision = gate.observe(frame, sequence, received_at, now=received_at,
                                 stream_id="quartz-controlled-capture")
+        reply = tcp_round_reply(decision)
+        if reply.startswith("action_done,"):
+            fake_action_requests.append(reply.strip())
         records.append({
             "file": path.name,
             "expected_state": expected,
@@ -49,8 +52,8 @@ def verify(evidence_dir):
             "detected_app_origin_pixels": [round(value, 2) for value in observation.app_origin],
             "gate_decision": decision.kind,
             "gate_reason": decision.reason,
+            "upper_reply": reply.strip(),
         })
-        frames.append(frame)
     if [record["gate_decision"] for record in records] != [
             "waiting", "waiting", "paused", "waiting", "taken"]:
         raise RuntimeError("輪次閘門決策順序不符：{}".format(
@@ -58,6 +61,8 @@ def verify(evidence_dir):
     taken = records[-1]
     if taken["capacity"] != 20 or len(taken["statuses"]) != 20:
         raise RuntimeError("受控完成畫面未辨識完整二十格結果。")
+    if len(fake_action_requests) != 1:
+        raise RuntimeError("受控同輪未產生唯一一次假動作出口請求。")
     return {
         "source": "B518 Log Solution real Tk window captured locally through Quartz",
         "is_jetkvm_frame": False,
@@ -65,11 +70,13 @@ def verify(evidence_dir):
         "contract_version": "1.0",
         "sequence": records,
         "taken_results": [[slot, status] for slot, status in enumerate(taken["statuses"], 1)],
+        "fake_action_requests": fake_action_requests,
         "assertions": {
             "review_pauses": True,
             "monitoring_arms": True,
             "complete_requires_two_fresh_captures": True,
             "result_taken_once": True,
+            "fake_action_outlet_recorded_once": True,
             "capacity_external_black_cells_excluded": True,
             "real_jetkvm_and_device_action_tested": False,
             "jetkvm_source_presentation_timestamp_tested": False,

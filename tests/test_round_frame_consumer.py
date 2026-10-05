@@ -232,13 +232,21 @@ class RoundFrameConsumerTests(unittest.TestCase):
         kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.2)
         self.assertEqual(decision.kind, "taken")
-        self.assertEqual(tcp_round_reply(decision), "action_done,1::PASS,2::FAIL\r\n")
+        reply = tcp_round_reply(decision)
+        self.assertEqual(reply, "action_done,1::PASS,2::FAIL\r\n")
+        fake_action_requests = []
+        if reply.startswith("action_done,"):
+            fake_action_requests.append(reply)
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
         kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.3)
         self.assertEqual(decision.kind, "already_taken")
-        self.assertNotEqual(tcp_round_reply(decision), "action_done,1::PASS,2::FAIL\r\n")
+        reply = tcp_round_reply(decision)
+        self.assertNotEqual(reply, "action_done,1::PASS,2::FAIL\r\n")
+        if reply.startswith("action_done,"):
+            fake_action_requests.append(reply)
+        self.assertEqual(fake_action_requests, ["action_done,1::PASS,2::FAIL\r\n"])
 
 
 if __name__ == "__main__":
