@@ -27,7 +27,7 @@ PATTERNS = {
 
 
 def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247)):
-    """Render contract 1.0 geometry into a larger, non-zero-origin KVM frame."""
+    """Render contract 1.1 with the real App's one- or two-row layout."""
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
     frame = np.full((height + oy, width + ox, 3), background, dtype=np.uint8)
@@ -45,7 +45,12 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10,
              (0, 0, 0) if black else (255, 255, 255))
-    for slot in range(1, 21):
+    rows = 2 if len(statuses) > 10 else 1
+    rect(130, 2, 26, 14, (255, 255, 255))
+    for index, black in enumerate((rows == 1, rows == 2)):
+        rect(132 + index * 12, 4, 10, 10,
+             (0, 0, 0) if black else (255, 255, 255))
+    for slot in range(1, rows * 10 + 1):
         row, col = divmod(slot - 1, 10)
         status = statuses[slot - 1] if slot <= len(statuses) else "OUTSIDE"
         color = (0, 0, 0) if status == "OUTSIDE" else COLORS[status]
@@ -54,6 +59,26 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
 
 
 class RoundFrameConsumerTests(unittest.TestCase):
+    def test_real_single_row_layout_completes_without_a_hidden_second_row(self):
+        gate = RoundFrameGate("single-row", stable_complete_frames=2)
+        for capacity in (1, 10):
+            with self.subTest(capacity=capacity):
+                gate = RoundFrameGate("single-row", stable_complete_frames=2)
+                frames = []
+                for state, statuses in ((MarkerState.MONITORING, ["WAITING"] * capacity),
+                                        (MarkerState.COMPLETE, ["PASS"] * capacity)):
+                    frame = render_frame(state, statuses)
+                    # The real Tk App hides the second row and its band ends at y=61.
+                    frame[31 + 61 * 2:, :] = (246, 244, 243)
+                    frames.append(frame)
+                gate.observe(frames[0], 1, 1, now=1)
+                self.assertEqual(gate.observe(frames[1], 2, 1.1, now=1.1).kind, "waiting")
+                decision = gate.observe(frames[1], 3, 1.2, now=1.2)
+                self.assertEqual(decision.kind, "taken", decision.reason)
+                self.assertEqual(decision.capacity, capacity)
+                self.assertEqual(decision.results, tuple((slot, "PASS")
+                                                        for slot in range(1, capacity + 1)))
+
     def test_frame_recognizes_two_row_capacity_and_each_terminal_result(self):
         statuses = ["PASS", "FAIL", "NOTEST", "TIMEOUT", "PASS", "FAIL",
                     "NOTEST", "PASS", "FAIL", "NOTEST", "PASS", "FAIL"]
@@ -101,6 +126,26 @@ class RoundFrameConsumerTests(unittest.TestCase):
                                         received_at=2, now=4, max_age=1)
         self.assertFalse(observation.reliable)
         self.assertEqual(observation.reason, "stale_frame")
+
+    def test_legacy_missing_row_marker_and_occluded_second_row_never_complete(self):
+        complete = render_frame(MarkerState.COMPLETE, ["PASS"] * 20)
+        legacy = complete.copy()
+        legacy[31 + 2 * 2:31 + 16 * 2, 23 + 130 * 2:23 + 156 * 2] = (246, 244, 243)
+        self.assertEqual(inspect_app_frame(legacy, 1, 1).reason,
+                         "layout_marker_missing_or_invalid")
+        covered = complete.copy()
+        covered[31 + 61 * 2:, :] = (246, 244, 243)
+        self.assertFalse(inspect_app_frame(covered, 1, 1).reliable)
+        cropped = complete[:31 + 61 * 2]
+        self.assertEqual(inspect_app_frame(cropped, 1, 1).reason, "app_band_cropped")
+        gate = RoundFrameGate("occluded", stable_complete_frames=2)
+        gate.observe(render_frame(MarkerState.MONITORING, ["WAITING"] * 20), 1, 1, now=1)
+        self.assertNotEqual(gate.observe(covered, 2, 1.1, now=1.1).kind, "taken")
+        self.assertNotEqual(gate.observe(covered, 3, 1.2, now=1.2).kind, "taken")
+
+    def test_two_row_marker_with_only_ten_results_is_invalid(self):
+        complete = render_frame(MarkerState.COMPLETE, ["PASS"] * 10 + ["OUTSIDE"] * 10)
+        self.assertEqual(inspect_app_frame(complete, 1, 1).reason, "layout_capacity_mismatch")
 
     def test_blurred_or_corrupted_complete_frame_does_not_become_a_result(self):
         frame = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL", "NOTEST", "TIMEOUT"])

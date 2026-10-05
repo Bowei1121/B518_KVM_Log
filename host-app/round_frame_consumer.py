@@ -1,4 +1,4 @@
-"""Fail-closed JetKVM consumer for B518 Log Solution display contract 1.0."""
+"""Fail-closed JetKVM consumer for B518 Log Solution display contract 1.1."""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 LOCATOR_SIZE = 22
 LEFT_LOCATOR = (82, 2, 3)
 RIGHT_LOCATOR = (320, 2, 11)
@@ -19,6 +19,7 @@ MARKER_ORIGIN = (278, 0)
 MARKER_CELL_SIZE = 10
 MARKER_GAP = 2
 MARKER_QUIET = 2
+LAYOUT_ORIGIN = (130, 2)
 RESULT_FIRST_Y = 34
 RESULT_ROW_STEP = 27
 RESULT_CELL_WIDTH = 34
@@ -44,7 +45,7 @@ PATTERNS = {
     MarkerState.COMPLETE: (0, 1, 1, 0),
 }
 
-# BGR values copied from App KVM_DISPLAY_CONTRACT 1.0 / STATUS_COLOURS.
+# BGR values copied from App KVM_DISPLAY_CONTRACT / STATUS_COLOURS.
 STATUS_COLORS = {
     "PASS": (0, 239, 0),
     "FAIL": (0, 0, 255),
@@ -182,7 +183,7 @@ def _sample_status(frame, x, y, scale):
 
 
 def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
-    """Decode one BGR JetKVM frame using contract 1.0 geometry and color samples."""
+    """Decode one BGR JetKVM frame using contract 1.1 geometry and color samples."""
     if now is None:
         now = time.monotonic()
     if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3:
@@ -194,7 +195,7 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
         return FrameObservation(False, reason="locators_missing_or_ambiguous")
     x0, y0, scale = located
     required_width = x0 + 10 * RESULT_CELL_WIDTH * scale
-    required_height = y0 + (RESULT_FIRST_Y + RESULT_ROW_STEP + RESULT_CELL_HEIGHT) * scale
+    required_height = y0 + (RESULT_FIRST_Y + RESULT_CELL_HEIGHT) * scale
     if x0 < 0 or y0 < 0 or required_width > frame.shape[1] or required_height > frame.shape[0]:
         return FrameObservation(False, reason="app_band_cropped", scale=scale, app_origin=(x0, y0))
 
@@ -228,9 +229,25 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
         return FrameObservation(False, reason="unknown_marker_pattern", scale=scale,
                                 app_origin=(x0, y0))
 
+    layout_bits = tuple(_marker_bit(_median_patch(
+        frame, x0 + (LAYOUT_ORIGIN[0] + MARKER_QUIET
+                      + column * (MARKER_CELL_SIZE + MARKER_GAP)
+                      + MARKER_CELL_SIZE / 2.0) * scale,
+        y0 + (LAYOUT_ORIGIN[1] + MARKER_QUIET + MARKER_CELL_SIZE / 2.0) * scale,
+        max(1, scale * 1.2))) for column in range(2))
+    rows = {(1, 0): 1, (0, 1): 2}.get(layout_bits)
+    if rows is None:
+        return FrameObservation(False, state, reason="layout_marker_missing_or_invalid",
+                                scale=scale, app_origin=(x0, y0))
+    required_height = y0 + (RESULT_FIRST_Y + (rows - 1) * RESULT_ROW_STEP
+                            + RESULT_CELL_HEIGHT) * scale
+    if required_height > frame.shape[0]:
+        return FrameObservation(False, state, reason="app_band_cropped", scale=scale,
+                                app_origin=(x0, y0))
+
     statuses = []
     outside_seen = False
-    for slot in range(1, 21):
+    for slot in range(1, rows * RESULT_COLUMNS + 1):
         row, column = divmod(slot - 1, RESULT_COLUMNS)
         sx = x0 + column * RESULT_CELL_WIDTH * scale
         sy = y0 + (RESULT_FIRST_Y + row * RESULT_ROW_STEP) * scale
@@ -249,6 +266,9 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
         return FrameObservation(False, state, reason="capacity_not_visible", scale=scale,
                                 app_origin=(x0, y0))
     capacity = len(statuses)
+    if rows == 2 and capacity <= RESULT_COLUMNS:
+        return FrameObservation(False, state, reason="layout_capacity_mismatch",
+                                scale=scale, app_origin=(x0, y0))
     return FrameObservation(True, state, capacity, tuple(statuses), scale=scale,
                             app_origin=(x0, y0))
 

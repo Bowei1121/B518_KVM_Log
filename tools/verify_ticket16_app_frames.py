@@ -8,7 +8,7 @@ import sys
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-from round_frame_consumer import RoundFrameGate, inspect_app_frame, tcp_round_reply
+from round_frame_consumer import CONTRACT_VERSION, RoundFrameGate, inspect_app_frame, tcp_round_reply
 
 
 EXPECTED = {
@@ -67,7 +67,7 @@ def verify(evidence_dir):
         "source": "B518 Log Solution real Tk window captured locally through Quartz",
         "is_jetkvm_frame": False,
         "presentation_timestamp_basis": "synthetic ordering for offline screenshots; not JetKVM source PTS",
-        "contract_version": "1.0",
+        "contract_version": CONTRACT_VERSION,
         "sequence": records,
         "taken_results": [[slot, status] for slot, status in enumerate(taken["statuses"], 1)],
         "fake_action_requests": fake_action_requests,

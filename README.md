@@ -50,6 +50,8 @@ git clone --recurse-submodules <repo-url>
 
 ## Ticket 16 維護與配對部署
 
-程式維護與提供更新由使用者負責，當地 TE 工程師協助部署到設備。App 與上位機須按顯示契約 1.0 配對更新；隔離候選、停止現場流程後同步更換、查核與保留既有資料的步驟見 [Ticket 16 配對部署說明](docs/TICKET16_DEPLOYMENT.md)。這些步驟尚未在現場執行，實際 JetKVM／設備／發布 App 與外部 TCP state-only 相容性仍待驗。
+程式維護與提供更新由使用者負責，當地 TE 工程師協助部署到設備。App 與上位機須按顯示契約 1.1 配對更新；隔離候選、停止現場流程後同步更換、查核與保留既有資料的步驟見 [Ticket 16 配對部署說明](docs/TICKET16_DEPLOYMENT.md)。這些步驟尚未在現場執行，實際 JetKVM／設備／發布 App 與外部 TCP state-only 相容性仍待驗。
 
 ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工廠內網可用性未定，目前同樣按人工配對更新準備。自動更新列為後續可能性。
+
+顯示契約 1.1 另以 header 的兩格排數標記明確區分一排／兩排。新版 `check` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。

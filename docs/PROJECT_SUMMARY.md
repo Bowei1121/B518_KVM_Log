@@ -41,3 +41,10 @@
 - 本次僅更新文件，程式未變，沿用 32 tests 與原固定基準雙軸審查。合併／合併後驗證／同步／清理由實際結果另行記錄。
 
 - 部署環境補充：ATE 設備只連接 SFC 網路，無其他對外網路，因此 Log App 更新由 TE 人工搬入；上位機實際執行 `B518_JetKVM_Log`，工廠內網是否可用尚未確認。自動更新只是未來可能性，未在 Ticket 16 新增。
+
+## 契約 1.1 單排修正
+
+- 後續 Spec 複審找到真實單排畫面拒判缺陷：原合成樣本錯畫第二排而掩蓋問題。先由 raw-frame／RoundFrameGate 公開 seam 紅燈重現，再同步 App／上位機升版 1.1，新增獨立排數 rail，按一／兩排取樣，舊 1.0 或遮擋／裁切第二排均拒判。
+- 實際 Tk／Quartz 21 張新畫面涵蓋容量 1／4／6／10／11／12／20 與非恆等映射，磁碟 audit 與公開快照一致。`verify_ticket16_layout_frames.py` 從未分類像素重建七輪，一輪一次假動作請求；另用五張新 1.1 四狀態畫面重跑 `verify_ticket16_app_frames.py`，review pause 與確認後一次取用通過。證據位於 `docs/evidence/ticket-16/contract-1.1/`，非實際 JetKVM 或真實設備動作；舊 1.0 證據保留歷史用途。
+
+- 1.1 修正後 `python3 -m unittest tests.test_round_frame_consumer -v`：18 tests；`python3 -m unittest discover -s tests -v`：35 tests，全數通過。App 完整 185 tests 通過。現行命令以 `contract-1.1` 的新畫面為輸入，舊 1.0 圖必須被新版拒判。型別檢查設定仍未配置。
