@@ -47,3 +47,9 @@ git clone --recurse-submodules <repo-url>
 既有 clone 請執行 `git submodule update --init --recursive`。
 
 `third_party/jetkvm` 的 `origin` 為公司 private mirror，`upstream` 為 JetKVM 官方 repo。修改第三方程式碼前請先確認 GPL-2.0 的散布與授權義務。
+
+## Ticket 16 維護與配對部署
+
+程式維護與提供更新由使用者負責，當地 TE 工程師協助部署到設備。App 與上位機須按顯示契約 1.0 配對更新；隔離候選、停止現場流程後同步更換、查核與保留既有資料的步驟見 [Ticket 16 配對部署說明](docs/TICKET16_DEPLOYMENT.md)。這些步驟尚未在現場執行，實際 JetKVM／設備／發布 App 與外部 TCP state-only 相容性仍待驗。
+
+ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工廠內網可用性未定，目前同樣按人工配對更新準備。自動更新列為後續可能性。
