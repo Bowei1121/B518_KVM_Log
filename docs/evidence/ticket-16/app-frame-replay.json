@@ -1,6 +1,7 @@
 {
   "source": "B518 Log Solution real Tk window captured locally through Quartz",
   "is_jetkvm_frame": false,
+  "presentation_timestamp_basis": "synthetic ordering for offline screenshots; not JetKVM source PTS",
   "contract_version": "1.0",
   "sequence": [
     {
@@ -40,7 +41,8 @@
         202.0
       ],
       "gate_decision": "waiting",
-      "gate_reason": "standby"
+      "gate_reason": "standby",
+      "upper_reply": "action_waiting,standby"
     },
     {
       "file": "monitoring.png",
@@ -79,7 +81,8 @@
         202.0
       ],
       "gate_decision": "waiting",
-      "gate_reason": "monitoring"
+      "gate_reason": "monitoring",
+      "upper_reply": "action_waiting,monitoring"
     },
     {
       "file": "review.png",
@@ -118,7 +121,8 @@
         202.0
       ],
       "gate_decision": "paused",
-      "gate_reason": "confirmation_required"
+      "gate_reason": "confirmation_required",
+      "upper_reply": "action_paused,review"
     },
     {
       "file": "complete.png",
@@ -157,7 +161,8 @@
         202.0
       ],
       "gate_decision": "waiting",
-      "gate_reason": "confirming_complete_frame"
+      "gate_reason": "confirming_complete_frame",
+      "upper_reply": "action_waiting,confirming_complete_frame"
     },
     {
       "file": "details-scrolled.png",
@@ -196,7 +201,8 @@
         202.0
       ],
       "gate_decision": "taken",
-      "gate_reason": "reliable_complete"
+      "gate_reason": "reliable_complete",
+      "upper_reply": "action_done,1::PASS,2::NOTEST,3::NOTEST,4::NOTEST,5::NOTEST,6::NOTEST,7::NOTEST,8::NOTEST,9::NOTEST,10::NOTEST,11::NOTEST,12::NOTEST,13::NOTEST,14::NOTEST,15::NOTEST,16::NOTEST,17::NOTEST,18::NOTEST,19::NOTEST,20::NOTEST"
     }
   ],
   "taken_results": [
@@ -281,12 +287,17 @@
       "NOTEST"
     ]
   ],
+  "fake_action_requests": [
+    "action_done,1::PASS,2::NOTEST,3::NOTEST,4::NOTEST,5::NOTEST,6::NOTEST,7::NOTEST,8::NOTEST,9::NOTEST,10::NOTEST,11::NOTEST,12::NOTEST,13::NOTEST,14::NOTEST,15::NOTEST,16::NOTEST,17::NOTEST,18::NOTEST,19::NOTEST,20::NOTEST"
+  ],
   "assertions": {
     "review_pauses": true,
     "monitoring_arms": true,
     "complete_requires_two_fresh_captures": true,
     "result_taken_once": true,
+    "fake_action_outlet_recorded_once": true,
     "capacity_external_black_cells_excluded": true,
-    "real_jetkvm_and_device_action_tested": false
+    "real_jetkvm_and_device_action_tested": false,
+    "jetkvm_source_presentation_timestamp_tested": false
   }
 }
