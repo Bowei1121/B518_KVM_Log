@@ -48,3 +48,10 @@
 - 實際 Tk／Quartz 21 張新畫面涵蓋容量 1／4／6／10／11／12／20 與非恆等映射，磁碟 audit 與公開快照一致。`verify_ticket16_layout_frames.py` 從未分類像素重建七輪，一輪一次假動作請求；另用五張新 1.1 四狀態畫面重跑 `verify_ticket16_app_frames.py`，review pause 與確認後一次取用通過。證據位於 `docs/evidence/ticket-16/contract-1.1/`，非實際 JetKVM 或真實設備動作；舊 1.0 證據保留歷史用途。
 
 - 1.1 修正後 `python3 -m unittest tests.test_round_frame_consumer -v`：18 tests；`python3 -m unittest discover -s tests -v`：35 tests，全數通過。App 完整 185 tests 通過。現行命令以 `contract-1.1` 的新畫面為輸入，舊 1.0 圖必須被新版拒判。型別檢查設定仍未配置。
+
+## 2026-10-05 最終合併與清理
+
+- 原固定基準 Standards／Spec 複審通過，0 項未解問題。顯示契約 1.1 的配對 App source／證據檢查點 fbe2ee2、上位機實作 5a65655 均已完整審查。
+- 上位機一般非快轉 merge SHA `316f72e80afcb8a0e941e565e0d8209d9783b3ed` 合入 main；App 一般非快轉 merge SHA `c4cbffa1d9b9223fc753138df8d3be96837e7044` 合入 B518-Log-Solution。合併後上位機完整 35 tests（3.328 秒）／App 完整 185 tests（25.422 秒）通過，七輪與五張 saved-pixel replay 再次通過。
+- 上位機 Gitea／GitHub main 均核對同步為 316f72e；GitHub 原無 main，已發布同一合併並將 default branch 由 codex/ticket-16 改為 main。兩端 feature refs 均刪除並查無，本地 feature 使用安全刪除、僅移除已失效本票 origin tracking ref。App 兩端亦完成同步與分支清理。
+- 本 repo 最後在 main、清理後工作樹乾淨。最終文件沿用既有提交／push 流程；具體最終提交 SHA 由 Git 查閱。實際 KVM／設備／發布與 TCP status-only 相容性仍待驗，使用者維護與當地 TE 人工部署分工不等於已完成現場部署。
