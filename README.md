@@ -25,7 +25,7 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。FCT 使用五種模板：`FCT_window.png`、`FCT_testing.png`、`FCT_pass.png`、`FCT_fail.png`、`FCT_dock_icon.png`；FCT TCP `input` 與 `button` 均不支援，主畫面 Switch 僅執行 Dock 前景化。
 
-DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動獨立 Log 監控程式。`check` 會切換到 Log 視窗，從畫面辨識 Testing/PASS/FAIL/Notest。設備編號必須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`；可從 [設定範例](config/device_profiles.example.json) 複製後建立正式檔案。DFU 不支援對外 `button`。
+DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正外部 DFU 視窗 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動 B518 Log Solution 監控。這個輸入 profile 仍可為 4／7 格；它不控制 Log 結果版型。`check` 直接讀最新 JetKVM BGR frame，依版本化 `KVM_DISPLAY_CONTRACT.md` 辨識 1–20 格與四種狀態，無舊四／七格 Log 結果模板或生產 fallback。它先觀察到監控中，且需 JetKVM 呈現時間戳持續遞增、兩張不同序號的新鮮完整畫面才會一次回覆本輪狀態；缺少時間戳、時間戳倒退或容量在輪次中改變均拒絕取用。待確認回覆暫停。回覆列格式為 `slot::STATUS`，因畫面契約的色帶只提供狀態，不提供 SN；尚未確認外部 TCP 呼叫端是否接受此狀態列格式。設備編號仍須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`，但此 profile 僅用於 DFU 輸入。DFU 不支援對外 `button`。
 
 ## 匹配診斷
 
@@ -47,3 +47,11 @@ git clone --recurse-submodules <repo-url>
 既有 clone 請執行 `git submodule update --init --recursive`。
 
 `third_party/jetkvm` 的 `origin` 為公司 private mirror，`upstream` 為 JetKVM 官方 repo。修改第三方程式碼前請先確認 GPL-2.0 的散布與授權義務。
+
+## Ticket 16 維護與配對部署
+
+程式維護與提供更新由使用者負責，當地 TE 工程師協助部署到設備。App 與上位機須按顯示契約 1.1 配對更新；隔離候選、停止現場流程後同步更換、查核與保留既有資料的步驟見 [Ticket 16 配對部署說明](docs/TICKET16_DEPLOYMENT.md)。這些步驟尚未在現場執行，實際 JetKVM／設備／發布 App 與外部 TCP state-only 相容性仍待驗。
+
+ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工廠內網可用性未定，目前同樣按人工配對更新準備。自動更新列為後續可能性。
+
+顯示契約 1.1 另以 header 的兩格排數標記明確區分一排／兩排。新版 `check` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。

@@ -1,0 +1,481 @@
+{
+  "contract_version": "1.1",
+  "rounds": [
+    {
+      "capacity": 1,
+      "frames": [
+        {
+          "file": "capacity-1/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 1,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-1/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 1,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-1/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 1,
+          "reply": "action_done,1::PASS"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS"
+      ]
+    },
+    {
+      "capacity": 4,
+      "frames": [
+        {
+          "file": "capacity-4/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 4,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-4/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 4,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-4/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 4,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS"
+      ]
+    },
+    {
+      "capacity": 6,
+      "frames": [
+        {
+          "file": "capacity-6/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 6,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-6/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 6,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-6/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 6,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ],
+        [
+          5,
+          "FAIL"
+        ],
+        [
+          6,
+          "NOTEST"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST"
+      ]
+    },
+    {
+      "capacity": 10,
+      "frames": [
+        {
+          "file": "capacity-10/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 10,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-10/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 10,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-10/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 10,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ],
+        [
+          5,
+          "FAIL"
+        ],
+        [
+          6,
+          "NOTEST"
+        ],
+        [
+          7,
+          "PASS"
+        ],
+        [
+          8,
+          "FAIL"
+        ],
+        [
+          9,
+          "NOTEST"
+        ],
+        [
+          10,
+          "PASS"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS"
+      ]
+    },
+    {
+      "capacity": 11,
+      "frames": [
+        {
+          "file": "capacity-11/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 11,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-11/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 11,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-11/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 11,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ],
+        [
+          5,
+          "FAIL"
+        ],
+        [
+          6,
+          "NOTEST"
+        ],
+        [
+          7,
+          "PASS"
+        ],
+        [
+          8,
+          "FAIL"
+        ],
+        [
+          9,
+          "NOTEST"
+        ],
+        [
+          10,
+          "PASS"
+        ],
+        [
+          11,
+          "FAIL"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL"
+      ]
+    },
+    {
+      "capacity": 12,
+      "frames": [
+        {
+          "file": "capacity-12/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 12,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-12/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 12,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-12/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 12,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL,12::NOTEST"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ],
+        [
+          5,
+          "FAIL"
+        ],
+        [
+          6,
+          "NOTEST"
+        ],
+        [
+          7,
+          "PASS"
+        ],
+        [
+          8,
+          "FAIL"
+        ],
+        [
+          9,
+          "NOTEST"
+        ],
+        [
+          10,
+          "PASS"
+        ],
+        [
+          11,
+          "FAIL"
+        ],
+        [
+          12,
+          "NOTEST"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL,12::NOTEST"
+      ]
+    },
+    {
+      "capacity": 20,
+      "frames": [
+        {
+          "file": "capacity-20/monitoring.png",
+          "decision": "waiting",
+          "reason": "monitoring",
+          "capacity": 20,
+          "reply": "action_waiting,monitoring"
+        },
+        {
+          "file": "capacity-20/complete.png",
+          "decision": "waiting",
+          "reason": "confirming_complete_frame",
+          "capacity": 20,
+          "reply": "action_waiting,confirming_complete_frame"
+        },
+        {
+          "file": "capacity-20/complete-scrolled.png",
+          "decision": "taken",
+          "reason": "reliable_complete",
+          "capacity": 20,
+          "reply": "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL,12::NOTEST,13::PASS,14::FAIL,15::NOTEST,16::PASS,17::FAIL,18::NOTEST,19::PASS,20::FAIL"
+        }
+      ],
+      "expected_results": [
+        [
+          1,
+          "PASS"
+        ],
+        [
+          2,
+          "FAIL"
+        ],
+        [
+          3,
+          "NOTEST"
+        ],
+        [
+          4,
+          "PASS"
+        ],
+        [
+          5,
+          "FAIL"
+        ],
+        [
+          6,
+          "NOTEST"
+        ],
+        [
+          7,
+          "PASS"
+        ],
+        [
+          8,
+          "FAIL"
+        ],
+        [
+          9,
+          "NOTEST"
+        ],
+        [
+          10,
+          "PASS"
+        ],
+        [
+          11,
+          "FAIL"
+        ],
+        [
+          12,
+          "NOTEST"
+        ],
+        [
+          13,
+          "PASS"
+        ],
+        [
+          14,
+          "FAIL"
+        ],
+        [
+          15,
+          "NOTEST"
+        ],
+        [
+          16,
+          "PASS"
+        ],
+        [
+          17,
+          "FAIL"
+        ],
+        [
+          18,
+          "NOTEST"
+        ],
+        [
+          19,
+          "PASS"
+        ],
+        [
+          20,
+          "FAIL"
+        ]
+      ],
+      "fake_action_requests": [
+        "action_done,1::PASS,2::FAIL,3::NOTEST,4::PASS,5::FAIL,6::NOTEST,7::PASS,8::FAIL,9::NOTEST,10::PASS,11::FAIL,12::NOTEST,13::PASS,14::FAIL,15::NOTEST,16::PASS,17::FAIL,18::NOTEST,19::PASS,20::FAIL"
+      ]
+    }
+  ],
+  "is_jetkvm_frame": false,
+  "timestamp_basis": "synthetic ordering of offline captures",
+  "device_actions_performed": false
+}

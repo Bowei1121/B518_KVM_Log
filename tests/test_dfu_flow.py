@@ -113,23 +113,5 @@ class DfuFlowTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertFalse(any(event[0] == "type" for event in kvm.events))
 
-    def test_check_returns_all_slots_and_notest_without_sn(self):
-        with tempfile.TemporaryDirectory() as temp:
-            catalog = self._prepare_catalog(Path(temp) / "template")
-            # Add Log templates required by the check state machine.
-            image = np.random.RandomState(7).randint(0, 255, (40, 40, 3), dtype=np.uint8)
-            for key in ("log_dock_icon", "log_window", "log_testing", "log_pass", "log_fail", "log_notest") + tuple("log_slot{}_4slot".format(i) for i in range(1, 5)):
-                catalog.save_crop(image, (2, 2, 30, 30), "DFU", key)
-            kvm = FakeKvm(np.zeros((80, 80, 3), dtype=np.uint8))
-            values = iter([("pass", "SN1"), ("notest", ""), ("fail", "SN3"), ("pass", "SN4")])
-            with patch.object(dfu_flow, "_focus_dock", lambda *_args, **_kwargs: asyncio.sleep(0)), \
-                 patch.object(dfu_flow, "_window_match", lambda *_args: (.99, (0, 0, 70, 70))), \
-                 patch.object(dfu_flow, "_slot_rows", lambda *_args: {i: (0, i * 10, 60, 8) for i in range(1, 5)}), \
-                 patch.object(dfu_flow, "_classify_log_row", lambda *_args: next(values)):
-                result = asyncio.run(dfu_flow.run_dfu_check(kvm, "1", catalog.root))
-            self.assertTrue(result["ok"])
-            self.assertEqual(result["rows"], [(1, "SN1", "pass"), (2, "", "notest"), (3, "SN3", "fail"), (4, "SN4", "pass")])
-
-
 if __name__ == "__main__":
     unittest.main()

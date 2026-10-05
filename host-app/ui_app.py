@@ -41,7 +41,8 @@ try:
     from jetkvm_core import JetKVMClient, AsyncLoop, grab_one_frame
     from pattern_tools import PatternCropper
     from auto_flow import run_flow, run_check, run_focus
-    from dfu_flow import run_dfu_check, run_dfu_input, validate_input_request
+    from dfu_flow import run_dfu_input, validate_input_request
+    from round_frame_consumer import RoundFrameGate, observe_latest_round_frame, tcp_round_reply
     from stream_view import StreamerWindow
     _KVM_OK = True
     _KVM_ERR = ""
@@ -165,6 +166,9 @@ class AtlasUI(tk.Tk):
         self._streamer = None                   # 串流視窗 (StreamerWindow)
         self._cmd_lock = threading.Lock()       # TCP 指令序列化處理
         self._templates = TemplateCatalog()
+        # A separate completion latch per logical device prevents another KVM's
+        # frame or a repeated TCP check from taking this round twice.
+        self._round_frame_gates = {}
 
         self._build_widgets()
 
@@ -719,9 +723,19 @@ class AtlasUI(tk.Tk):
                     log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
             elif func == "check":
                 if dev_type == "DFU":
-                    r = self._kvm_loop.submit(run_dfu_check(
-                        kvm, dev_no, template_root=self._templates.root,
-                        log=self._post_log)).result(timeout=90)
+                    # DFU's Log result check now consumes the versioned B518
+                    # two-row display through raw JetKVM frames; it no longer
+                    # reads the retired four/seven-row Log templates.
+                    device_key = "{}:{}:{}".format(dev_type, dev_no, kvm_ip)
+                    gate = self._round_frame_gates.get(device_key)
+                    if gate is None:
+                        gate = RoundFrameGate(device_key, require_presentation_time=True)
+                        self._round_frame_gates[device_key] = gate
+                    decision = observe_latest_round_frame(kvm, gate)
+                    reply = tcp_round_reply(decision)
+                    self._post_log("round frame {}: {} {}".format(
+                        device_key, decision.kind, decision.reason))
+                    return reply
                 else:
                     r = self._kvm_loop.submit(run_check(
                         kvm, dev_type, template_root=self._templates.root,
