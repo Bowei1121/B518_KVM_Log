@@ -15,11 +15,11 @@
 
 **Blocked by:** 02 — Per-Device Lock & Fail-Fast Busy Response, 04 — Frame Freeze Guard Across All Stations
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Client can send a `check` command with a specified `timeout_sec`.
-- [ ] TCP connection remains open while the server evaluates frames asynchronously in the background.
-- [ ] Returns immediately with the matching result once visual conditions are met.
-- [ ] Returns `timeout` status if no match occurs within `timeout_sec`.
-- [ ] Integrates device locking and frame freeze guards during the evaluation loop.
-- [ ] End-to-end integration test verifies long-polling lifecycle without socket starvation.
+- [x] Client can send a `check` command with a specified `timeout_sec`.
+- [x] TCP connection remains open while the server evaluates frames asynchronously in the background.
+- [x] Returns immediately with the matching result once visual conditions are met.
+- [x] Returns `timeout` status if no match occurs within `timeout_sec`.
+- [x] Integrates device locking and frame freeze guards during the evaluation loop.
+- [x] End-to-end integration test verifies long-polling lifecycle without socket starvation.

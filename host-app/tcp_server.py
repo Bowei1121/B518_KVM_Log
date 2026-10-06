@@ -109,35 +109,35 @@ class TcpJsonServer:
             "version": "1.0.0",
         }
 
-    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Station vision check handler with Frame Freeze Guard protection."""
-        kvm = req.get("_kvm_client")
-        station = str(req.get("station") or req.get("dev_type") or "BT").upper()
-        device_id = str(req.get("device") or "default")
-        threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
+    async def _evaluate_visual_condition(
+        self,
+        kvm: Any,
+        station: str,
+        device_id: str,
+        req: Dict[str, Any],
+        is_long_polling: bool = False,
+    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+        """Evaluate the live frame against station rules, patterns, or custom evaluators.
+        
+        Returns:
+            (matched: bool, result_name: Optional[str], extra_data: Optional[Dict[str, Any]])
+            If result_name == "ERROR_FROZEN", indicates a freeze error occurred during inspection.
+        """
+        # 1. Custom evaluator callback in request
+        evaluator = req.get("evaluator")
+        if callable(evaluator):
+            try:
+                res = evaluator(kvm)
+                if inspect.iscoroutine(res):
+                    res = await res
+                if res is not None and res is not False:
+                    match_res = "PASS" if res is True else str(res).upper()
+                    return True, match_res, {}
+                return False, None, {}
+            except Exception as exc:
+                logger.exception("Custom evaluator error: %s", exc)
 
-        if kvm is None:
-            return {
-                "status": "error",
-                "error": "missing_kvm",
-                "message": "KVM client not available. Specify 'kvm_ip' in request.",
-            }
-
-        # 1. Frame Freeze Guard verification across all stations (BT, FCT, DFU)
-        is_live, freeze_err = await self.freeze_guard.verify_liveness(
-            kvm,
-            device_id=f"{station}:{device_id}",
-            threshold_window=float(threshold_window) if threshold_window is not None else None,
-        )
-        if not is_live:
-            err_dict = dict(freeze_err or {})
-            err_dict["status"] = "error"
-            if "error" not in err_dict:
-                err_dict["error"] = "frame_frozen"
-            err_dict["device"] = device_id
-            return err_dict
-
-        # 2. Station Vision Inspection for live frames
+        # 2. DFU Station
         if station == "DFU":
             try:
                 from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
@@ -150,21 +150,35 @@ class TcpJsonServer:
                     self._dfu_gates[gate_key] = gate
                 decision = observe_latest_round_frame(kvm, gate)
                 if decision.kind == "frozen" or decision.reason == "frame_frozen":
-                    return {
+                    return False, "ERROR_FROZEN", {
                         "status": "error",
                         "error": "frame_frozen",
                         "message": "DFU round frame stream is frozen",
+                        "device": device_id,
                     }
-                return {
-                    "status": "ok",
-                    "station": station,
-                    "kind": decision.kind,
-                    "reason": decision.reason,
-                    "results": decision.results,
-                }
+                if decision.kind in ("complete", "taken") or getattr(decision, "results_complete", False):
+                    results = decision.results
+                    if results and any(r[1] == "FAIL" for r in results):
+                        final_res = "FAIL"
+                    else:
+                        final_res = "PASS"
+                    return True, final_res, {
+                        "kind": decision.kind,
+                        "reason": decision.reason,
+                        "results": results,
+                    }
+                # If not long polling and we observed something, return whatever state
+                if not is_long_polling:
+                    return True, "PASS", {
+                        "kind": decision.kind,
+                        "reason": decision.reason,
+                        "results": decision.results,
+                    }
+                return False, None, {"kind": decision.kind, "reason": decision.reason}
             except Exception as exc:
                 logger.debug("DFU inspection fallback: %s", exc)
 
+        # 3. OpenCV Template Catalog Inspection (BT / FCT)
         template_root = req.get("template_root")
         if template_root:
             try:
@@ -176,25 +190,191 @@ class TcpJsonServer:
                     freeze_guard=self.freeze_guard,
                 )
                 if r.get("error") == "frame_frozen":
-                    return {
+                    return False, "ERROR_FROZEN", {
                         "status": "error",
                         "error": "frame_frozen",
                         "message": r.get("message", "Frame presentation timestamp is static / frozen"),
+                        "device": device_id,
                     }
-                return {
-                    "status": "ok",
-                    "station": station,
-                    "check_result": r,
-                }
+                if r.get("ok"):
+                    if r.get("testing"):
+                        if not is_long_polling:
+                            return True, "TESTING", {"check_result": r}
+                        return False, None, {"check_result": r}
+                    rows = r.get("rows", [])
+                    if rows and any(row[1] == "fail" for row in rows):
+                        final_res = "FAIL"
+                    else:
+                        final_res = "PASS"
+                    return True, final_res, {"check_result": r}
+                if not is_long_polling:
+                    return False, None, {"check_result": r}
+                return False, None, {"check_result": r}
             except Exception as exc:
                 logger.debug("Auto flow check exception: %s", exc)
 
-        return {
-            "status": "ok",
-            "station": station,
-            "verified": True,
-            "message": "Live frame PTS verified",
-        }
+        # 4. Target Pattern matching
+        target_pattern = req.get("target_pattern") or req.get("pattern")
+        if target_pattern is not None:
+            target_str = str(target_pattern).upper()
+            for attr in ("result", "visual_state", "pattern", "status", "visual_result"):
+                val = getattr(kvm, attr, None)
+                if val is not None and str(val).upper() == target_str:
+                    return True, target_str, {}
+            frame_val = getattr(kvm, "frame", None)
+            if isinstance(frame_val, str) and frame_val.upper() == target_str:
+                return True, target_str, {}
+            return False, None, {}
+
+        # 5. Direct KVM visual state attributes
+        if hasattr(kvm, "result") and kvm.result is not None:
+            res_str = str(kvm.result).upper()
+            if res_str in ("PASS", "FAIL"):
+                return True, res_str, {}
+        if hasattr(kvm, "visual_state") and kvm.visual_state is not None:
+            vstate = str(kvm.visual_state).upper()
+            if vstate in ("PASS", "FAIL", "COMPLETE", "DONE"):
+                res_str = "PASS" if vstate in ("PASS", "COMPLETE", "DONE") else "FAIL"
+                return True, res_str, {}
+            if vstate in ("TESTING", "BUSY", "WAITING", "RUNNING", "MONITORING"):
+                return False, None, {}
+
+        # 6. Default fallback: if not long polling, stream PTS liveness verification is sufficient
+        if not is_long_polling:
+            return True, "PASS", {"verified": True, "message": "Live frame PTS verified"}
+
+        return False, None, {}
+
+    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Station vision check handler with long-polling and Frame Freeze Guard protection."""
+        kvm = req.get("_kvm_client")
+        station = str(req.get("station") or req.get("dev_type") or "BT").upper()
+        device_id = str(req.get("device") or "default")
+        threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
+        guard_threshold = float(threshold_window) if threshold_window is not None else None
+        dev_key = f"{station}:{device_id}"
+
+        if kvm is None:
+            return {
+                "status": "error",
+                "error": "missing_kvm",
+                "message": "KVM client not available. Specify 'kvm_ip' in request.",
+                "device": device_id,
+            }
+
+        raw_timeout = req.get("timeout_sec") if req.get("timeout_sec") is not None else req.get("timeout")
+        has_timeout_arg = raw_timeout is not None
+        timeout_val: float = 0.0
+        if has_timeout_arg:
+            try:
+                timeout_val = float(raw_timeout)
+            except (ValueError, TypeError):
+                return {
+                    "status": "error",
+                    "error": "invalid_timeout",
+                    "message": f"Invalid timeout_sec: {raw_timeout}",
+                    "device": device_id,
+                }
+            if timeout_val < 0:
+                return {
+                    "status": "error",
+                    "error": "invalid_timeout",
+                    "message": f"Negative timeout_sec: {timeout_val}",
+                    "device": device_id,
+                }
+
+        is_long_polling = has_timeout_arg and timeout_val > 0.0
+        poll_interval = float(req.get("poll_interval") or 0.1)
+
+        start_time = time.monotonic()
+        reader = req.get("_reader")
+        writer = req.get("_writer")
+
+        while True:
+            # 0. Check client connection liveness & server status
+            is_client_gone = (reader is not None and reader.at_eof()) or (
+                writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
+            )
+            if is_client_gone:
+                logger.info("Client disconnected during check for device %s", device_id)
+                return {
+                    "status": "cancelled",
+                    "error": "client_disconnected",
+                    "device": device_id,
+                }
+            if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
+                return {
+                    "status": "error",
+                    "error": "server_shutting_down",
+                    "device": device_id,
+                }
+
+            # 1. Frame Freeze Guard verification across all stations (BT, FCT, DFU)
+            is_live, freeze_err = await self.freeze_guard.verify_liveness(
+                kvm,
+                device_id=dev_key,
+                threshold_window=guard_threshold,
+                poll_interval=min(poll_interval, 0.05),
+            )
+            if not is_live:
+                elapsed = time.monotonic() - start_time
+                err_dict = dict(freeze_err or {})
+                err_dict["status"] = "error"
+                if "error" not in err_dict:
+                    err_dict["error"] = "frame_frozen"
+                err_dict["device"] = device_id
+                err_dict["elapsed_sec"] = round(elapsed, 2)
+                return err_dict
+
+            # 2. Visual condition evaluation
+            matched, res_name, extra_data = await self._evaluate_visual_condition(
+                kvm, station, device_id, req, is_long_polling=is_long_polling
+            )
+
+            if res_name == "ERROR_FROZEN":
+                elapsed = time.monotonic() - start_time
+                err_resp = dict(extra_data or {})
+                err_resp["elapsed_sec"] = round(elapsed, 2)
+                return err_resp
+
+            if matched:
+                elapsed = time.monotonic() - start_time
+                resp = {
+                    "status": "ok",
+                    "result": res_name or "PASS",
+                    "elapsed_sec": round(elapsed, 2),
+                    "station": station,
+                    "device": device_id,
+                }
+                if extra_data:
+                    resp.update(extra_data)
+                return resp
+
+            # 3. Timeout check
+            now = time.monotonic()
+            elapsed = now - start_time
+            if has_timeout_arg and elapsed >= timeout_val:
+                return {
+                    "status": "timeout",
+                    "result": "NONE",
+                    "elapsed_sec": round(max(elapsed, timeout_val), 1),
+                    "station": station,
+                    "device": device_id,
+                }
+            elif not has_timeout_arg:
+                return {
+                    "status": "ok",
+                    "result": "PASS",
+                    "verified": True,
+                    "elapsed_sec": round(elapsed, 2),
+                    "station": station,
+                    "device": device_id,
+                    "message": "Live frame PTS verified",
+                }
+
+            # Wait before next poll iteration
+            sleep_time = min(poll_interval, max(0.01, timeout_val - elapsed))
+            await asyncio.sleep(sleep_time)
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> str:
         # Schedule the server loop to stop after replying
@@ -206,8 +386,18 @@ class TcpJsonServer:
         return f"req-{uuid.uuid4().hex[:8]}"
 
     async def _dispatch_command(
-        self, req_id: str, cmd: str, req: Dict[str, Any]
+        self,
+        req_id: str,
+        cmd: str,
+        req: Dict[str, Any],
+        reader: Optional[asyncio.StreamReader] = None,
+        writer: Optional[asyncio.StreamWriter] = None,
     ) -> Dict[str, Any]:
+        if reader is not None:
+            req["_reader"] = reader
+        if writer is not None:
+            req["_writer"] = writer
+
         handler = self._handlers.get(cmd)
         if not handler:
             return {
@@ -267,8 +457,8 @@ class TcpJsonServer:
             else:
                 result = await asyncio.to_thread(handler, req)
 
-            # If handler explicitly returns an envelope with custom status like busy/error/timeout/ok
-            if isinstance(result, dict) and result.get("status") in ("error", "busy", "timeout"):
+            # If handler explicitly returns an envelope with custom status like busy/error/timeout/cancelled/ok
+            if isinstance(result, dict) and result.get("status") in ("error", "busy", "timeout", "cancelled"):
                 resp = dict(result)
                 if "req_id" not in resp:
                     resp["req_id"] = req_id
@@ -307,7 +497,12 @@ class TcpJsonServer:
             if device_id is not None:
                 self.lock_manager.release(device_id)
 
-    async def _process_line(self, raw_line: bytes) -> bytes:
+    async def _process_line(
+        self,
+        raw_line: bytes,
+        reader: Optional[asyncio.StreamReader] = None,
+        writer: Optional[asyncio.StreamWriter] = None,
+    ) -> bytes:
         """Parse one line, dispatch command, and return newline-terminated JSON response."""
         line_str = raw_line.decode("utf-8", errors="replace").strip()
         if not line_str:
@@ -352,7 +547,7 @@ class TcpJsonServer:
             return (json.dumps(err_resp) + "\n").encode("utf-8")
 
         # 5. Dispatch command
-        resp = await self._dispatch_command(req_id, cmd.strip(), req)
+        resp = await self._dispatch_command(req_id, cmd.strip(), req, reader=reader, writer=writer)
         return (json.dumps(resp) + "\n").encode("utf-8")
 
     async def _client_connected_cb(
@@ -372,7 +567,7 @@ class TcpJsonServer:
                 if not line:
                     break
 
-                response_bytes = await self._process_line(line)
+                response_bytes = await self._process_line(line, reader=reader, writer=writer)
                 if response_bytes:
                     writer.write(response_bytes)
                     await writer.drain()
