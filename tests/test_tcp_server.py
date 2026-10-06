@@ -19,16 +19,22 @@ def send_json(sock: socket.socket, obj: dict) -> None:
     sock.sendall(line.encode("utf-8"))
 
 
+_SOCK_BUFFERS: dict[int, bytearray] = {}
+
+
 def recv_json(sock: socket.socket, timeout: float = 2.0) -> dict:
     """Receive a newline-delimited JSON line and parse it."""
     sock.settimeout(timeout)
-    buffer = b""
-    while b"\n" not in buffer:
+    buf = _SOCK_BUFFERS.setdefault(id(sock), bytearray())
+    while b"\n" not in buf:
         chunk = sock.recv(1024)
         if not chunk:
+            _SOCK_BUFFERS.pop(id(sock), None)
             raise ConnectionError("Socket closed while waiting for newline")
-        buffer += chunk
-    line, _ = buffer.split(b"\n", 1)
+        buf.extend(chunk)
+    nl_idx = buf.index(b"\n")
+    line = bytes(buf[:nl_idx])
+    del buf[:nl_idx + 1]
     return json.loads(line.decode("utf-8"))
 
 
