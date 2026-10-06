@@ -12,6 +12,8 @@ import asyncio
 import inspect
 import json
 import logging
+from pathlib import Path
+import signal
 import socket
 import threading
 import time
@@ -377,9 +379,9 @@ class TcpJsonServer:
             await asyncio.sleep(sleep_time)
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> str:
-        # Schedule the server loop to stop after replying
+        # Schedule the server loop to stop after replying cleanly to the client
         if self._loop and self._shutdown_event:
-            self._loop.call_soon(self._shutdown_event.set)
+            self._loop.call_later(0.05, self._shutdown_event.set)
         return "shutting_down"
 
     def _generate_req_id(self) -> str:
@@ -589,6 +591,13 @@ class TcpJsonServer:
         self._loop = asyncio.get_running_loop()
         self._shutdown_event = asyncio.Event()
 
+        # Handle termination signals gracefully
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                self._loop.add_signal_handler(sig, self._shutdown_event.set)
+            except (NotImplementedError, RuntimeError):
+                pass
+
         self._server = await asyncio.start_server(
             self._client_connected_cb,
             host=self.host,
@@ -673,12 +682,30 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("--log-file", default=None, help="Path to rotating log file")
+    parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log file size before rotation")
+    parser.add_argument("--backup-count", type=int, default=5, help="Number of rotating backup log files to retain")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    if args.log_file:
+        try:
+            from core_daemon import setup_rotating_logging
+            setup_rotating_logging(
+                log_file=args.log_file,
+                log_level=args.log_level,
+                max_bytes=args.max_bytes,
+                backup_count=args.backup_count,
+            )
+        except ImportError:
+            logging.basicConfig(
+                level=getattr(logging, args.log_level.upper(), logging.INFO),
+                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            )
+    else:
+        logging.basicConfig(
+            level=getattr(logging, args.log_level.upper(), logging.INFO),
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
 
     server = TcpJsonServer(host=args.host, port=args.port)
     print(f"Starting Headless TCP JSON Server on {args.host}:{args.port}...")

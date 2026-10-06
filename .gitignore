@@ -9,3 +9,7 @@ host-app/build/
 host-app/dist/
 host-app/__pycache__/
 host-app/.venv/
+logs/
+*.log
+*.pid
+run/
