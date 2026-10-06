@@ -18,16 +18,27 @@ import time
 import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
+try:
+    from device_lock import DeviceLockManager
+except ImportError:
+    from .device_lock import DeviceLockManager
+
 logger = logging.getLogger("TcpJsonServer")
 
 
 class TcpJsonServer:
     """Headless TCP Server using newline-delimited JSON protocol."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5000,
+        lock_manager: Optional[DeviceLockManager] = None,
+    ) -> None:
         self.host = host
         self.port = port
         self.server_address: tuple[str, int] = (host, port)
+        self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
 
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -74,6 +85,7 @@ class TcpJsonServer:
             "status": "running",
             "uptime_seconds": round(uptime, 2),
             "active_connections": len(self._active_writers),
+            "busy_devices": self.lock_manager.get_active_devices(),
             "version": "1.0.0",
         }
 
@@ -98,32 +110,66 @@ class TcpJsonServer:
                 "message": f"Unknown command: '{cmd}'",
             }
 
+        # Check per-device locking
+        raw_device = req.get("device")
+        device_id: Optional[str] = (
+            str(raw_device).strip()
+            if raw_device is not None and str(raw_device).strip() != ""
+            else None
+        )
+
+        if device_id is not None:
+            if not self.lock_manager.try_acquire(device_id, req_id=req_id):
+                logger.warning(
+                    "Device %s busy; rejecting command '%s' (req_id=%s)",
+                    device_id,
+                    cmd,
+                    req_id,
+                )
+                return {
+                    "req_id": req_id,
+                    "status": "busy",
+                    "error": "device_busy",
+                    "device": device_id,
+                }
+
         try:
             if inspect.iscoroutinefunction(handler):
                 result = await handler(req)
             else:
-                result = handler(req)
+                result = await asyncio.to_thread(handler, req)
 
             # If handler explicitly returns an envelope with custom status like busy/error
             if isinstance(result, dict) and result.get("status") in ("error", "busy"):
                 resp = dict(result)
                 if "req_id" not in resp:
                     resp["req_id"] = req_id
+                if "device" not in resp and device_id is not None:
+                    resp["device"] = device_id
                 return resp
 
-            return {
+            resp = {
                 "req_id": req_id,
                 "status": "ok",
                 "data": result,
             }
+            if device_id is not None:
+                resp["device"] = device_id
+            return resp
         except Exception as exc:
             logger.exception("Error executing command '%s'", cmd)
-            return {
+            err_resp = {
                 "req_id": req_id,
                 "status": "error",
                 "error": "internal_error",
                 "message": str(exc),
             }
+            if device_id is not None:
+                err_resp["device"] = device_id
+            return err_resp
+        finally:
+            if device_id is not None:
+                self.lock_manager.release(device_id)
 
     async def _process_line(self, raw_line: bytes) -> bytes:
         """Parse one line, dispatch command, and return newline-terminated JSON response."""

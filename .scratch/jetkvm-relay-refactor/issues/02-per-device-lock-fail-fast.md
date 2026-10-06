@@ -9,10 +9,10 @@
 
 **Blocked by:** 01 — Headless TCP JSON Protocol & Multiplexing Server
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Commands target specific devices via a `device` field.
-- [ ] Concurrent requests to different devices execute simultaneously without contention.
-- [ ] If a command is actively running on device A, any incoming command targeting device A immediately returns `{"status": "busy", "error": "device_busy"}` without blocking.
-- [ ] When the active command on device A completes, subsequent commands targeting device A can be processed normally.
-- [ ] Integration tests verify parallel multi-device execution and immediate fail-fast behavior on single-device conflict.
+- [x] Commands target specific devices via a `device` field.
+- [x] Concurrent requests to different devices execute simultaneously without contention.
+- [x] If a command is actively running on device A, any incoming command targeting device A immediately returns `{"status": "busy", "error": "device_busy"}` without blocking.
+- [x] When the active command on device A completes, subsequent commands targeting device A can be processed normally.
+- [x] Integration tests verify parallel multi-device execution and immediate fail-fast behavior on single-device conflict.
