@@ -4,9 +4,9 @@
 
 **Blocked by:** 01 — Headless TCP JSON Protocol & Multiplexing Server
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Core service can be launched headlessly from command-line without DISPLAY or Tkinter dependencies.
-- [ ] Management script can cleanly trigger graceful shutdown via TCP command and confirm process termination.
-- [ ] Force-kill script cleanly cleans up orphaned processes and releases ports.
-- [ ] Logs are written to rotating log files with timestamp and log levels.
+- [x] Core service can be launched headlessly from command-line without DISPLAY or Tkinter dependencies.
+- [x] Management script can cleanly trigger graceful shutdown via TCP command and confirm process termination.
+- [x] Force-kill script cleanly cleans up orphaned processes and releases ports.
+- [x] Logs are written to rotating log files with timestamp and log levels.
