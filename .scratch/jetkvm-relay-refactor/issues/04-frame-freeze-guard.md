@@ -4,9 +4,9 @@
 
 **Blocked by:** 03 — KVM Connection Pool with Heartbeat & Idle Eviction
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] All station vision checks verify that the incoming frame's Presentation Timestamp is incrementing.
-- [ ] If the timestamp does not change within the designated threshold window, the system returns `{"status": "error", "error": "frame_frozen"}`.
-- [ ] Live frames with normal timestamp progression pass verification normally.
-- [ ] Automated tests using mock KVM sources with static and dynamic timestamps confirm freeze detection behavior.
+- [x] All station vision checks verify that the incoming frame's Presentation Timestamp is incrementing.
+- [x] If the timestamp does not change within the designated threshold window, the system returns `{"status": "error", "error": "frame_frozen"}`.
+- [x] Live frames with normal timestamp progression pass verification normally.
+- [x] Automated tests using mock KVM sources with static and dynamic timestamps confirm freeze detection behavior.

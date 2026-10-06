@@ -20,6 +20,16 @@ except Exception:
     def read_lines(_img):      # OCR 模組缺失時的退路
         return []
 
+try:
+    from freeze_guard import FrameFreezeGuard, extract_pts
+except ImportError:
+    try:
+        from .freeze_guard import FrameFreezeGuard, extract_pts  # type: ignore[import-not-found,no-redef]
+    except ImportError:
+        FrameFreezeGuard = None  # type: ignore[assignment,misc]
+        def extract_pts(_k):  # type: ignore[misc]
+            return None
+
 # SN 欄在「視窗寬度」中的比例範圍 (左, 右)。OCR 前用此範圍裁出 SN 那一格,
 # 才不會把 group/slot 等其他欄一起讀進來。不同版面可調整。
 SN_COL_FRAC = (0.22, 0.51)
@@ -103,7 +113,8 @@ def _load_template(catalog, device, template_key, log, diagnostics=None, thresho
     return image
 
 
-async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, annotate_path=None):
+async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, annotate_path=None,
+                    freeze_guard=None, inspection_window=None):
     """check 指令: 找視窗 -> 若有 testing 模板則回 testing;
     否則由上而下找所有 pass / fail 模板，回每列結果。
     回傳 dict: {ok, window, testing(bool), rows:[(index, 'pass'/'fail'), ...]}"""
@@ -118,6 +129,29 @@ async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, a
     def finish(payload):
         diagnostics.finalize(payload.get("ok", False), "check")
         return payload
+
+    # Frame Freeze Guard: 驗證 WebRTC Presentation Timestamp 是否正常遞增
+    pts = extract_pts(kvm)
+    if freeze_guard is not None or pts is not None:
+        guard = freeze_guard if freeze_guard is not None else (
+            FrameFreezeGuard(freeze_threshold=inspection_window or 1.0)
+            if FrameFreezeGuard is not None else None
+        )
+        if guard is not None:
+            is_live, freeze_err = await guard.verify_liveness(
+                kvm, device_id=device, threshold_window=inspection_window
+            )
+            if not is_live:
+                err_msg = (freeze_err or {}).get("message", "Frame presentation timestamp is static / frozen")
+                note = f"畫面凍結防呆觸發: {err_msg}"
+                log(note)
+                diagnostics.record("freeze_guard", 0.0, threshold, note=note)
+                return finish({
+                    "ok": False,
+                    "status": "error",
+                    "error": "frame_frozen",
+                    "message": err_msg,
+                })
 
     win_g = _load_template(catalog, device, "window", log, diagnostics, threshold)
     if win_g is None:

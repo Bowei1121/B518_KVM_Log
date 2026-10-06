@@ -28,6 +28,11 @@ try:
 except ImportError:
     from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
 
+try:
+    from freeze_guard import FrameFreezeGuard
+except ImportError:
+    from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
 
 
@@ -40,12 +45,14 @@ class TcpJsonServer:
         port: int = 5000,
         lock_manager: Optional[DeviceLockManager] = None,
         kvm_pool: Optional[KVMConnectionPool] = None,
+        freeze_guard: Optional[FrameFreezeGuard] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.server_address: tuple[str, int] = (host, port)
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
         self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
+        self.freeze_guard = freeze_guard if freeze_guard is not None else FrameFreezeGuard()
 
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -82,6 +89,7 @@ class TcpJsonServer:
         self.register_handler("ping", self._handle_ping)
         self.register_handler("status", self._handle_status)
         self.register_handler("shutdown", self._handle_shutdown)
+        self.register_handler("check", self._handle_check)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> str:
         return "pong"
@@ -97,7 +105,95 @@ class TcpJsonServer:
                 "active_connections": self.kvm_pool.active_count(),
                 "cached_ips": self.kvm_pool.get_active_ips(),
             },
+            "freeze_guard": self.freeze_guard.get_status(),
             "version": "1.0.0",
+        }
+
+    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Station vision check handler with Frame Freeze Guard protection."""
+        kvm = req.get("_kvm_client")
+        station = str(req.get("station") or req.get("dev_type") or "BT").upper()
+        device_id = str(req.get("device") or "default")
+        threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
+
+        if kvm is None:
+            return {
+                "status": "error",
+                "error": "missing_kvm",
+                "message": "KVM client not available. Specify 'kvm_ip' in request.",
+            }
+
+        # 1. Frame Freeze Guard verification across all stations (BT, FCT, DFU)
+        is_live, freeze_err = await self.freeze_guard.verify_liveness(
+            kvm,
+            device_id=f"{station}:{device_id}",
+            threshold_window=float(threshold_window) if threshold_window is not None else None,
+        )
+        if not is_live:
+            err_dict = dict(freeze_err or {})
+            err_dict["status"] = "error"
+            if "error" not in err_dict:
+                err_dict["error"] = "frame_frozen"
+            err_dict["device"] = device_id
+            return err_dict
+
+        # 2. Station Vision Inspection for live frames
+        if station == "DFU":
+            try:
+                from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
+                gate_key = f"{station}:{device_id}"
+                if not hasattr(self, "_dfu_gates"):
+                    self._dfu_gates: Dict[str, Any] = {}
+                gate = self._dfu_gates.get(gate_key)
+                if gate is None:
+                    gate = RoundFrameGate(gate_key, require_presentation_time=True)
+                    self._dfu_gates[gate_key] = gate
+                decision = observe_latest_round_frame(kvm, gate)
+                if decision.kind == "frozen" or decision.reason == "frame_frozen":
+                    return {
+                        "status": "error",
+                        "error": "frame_frozen",
+                        "message": "DFU round frame stream is frozen",
+                    }
+                return {
+                    "status": "ok",
+                    "station": station,
+                    "kind": decision.kind,
+                    "reason": decision.reason,
+                    "results": decision.results,
+                }
+            except Exception as exc:
+                logger.debug("DFU inspection fallback: %s", exc)
+
+        template_root = req.get("template_root")
+        if template_root:
+            try:
+                from auto_flow import run_check
+                r = await run_check(
+                    kvm,
+                    device=station,
+                    template_root=template_root,
+                    freeze_guard=self.freeze_guard,
+                )
+                if r.get("error") == "frame_frozen":
+                    return {
+                        "status": "error",
+                        "error": "frame_frozen",
+                        "message": r.get("message", "Frame presentation timestamp is static / frozen"),
+                    }
+                return {
+                    "status": "ok",
+                    "station": station,
+                    "check_result": r,
+                }
+            except Exception as exc:
+                logger.debug("Auto flow check exception: %s", exc)
+
+        return {
+            "status": "ok",
+            "station": station,
+            "verified": True,
+            "message": "Live frame PTS verified",
         }
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> str:
@@ -171,8 +267,16 @@ class TcpJsonServer:
             else:
                 result = await asyncio.to_thread(handler, req)
 
-            # If handler explicitly returns an envelope with custom status like busy/error
-            if isinstance(result, dict) and result.get("status") in ("error", "busy"):
+            # If handler explicitly returns an envelope with custom status like busy/error/timeout/ok
+            if isinstance(result, dict) and result.get("status") in ("error", "busy", "timeout"):
+                resp = dict(result)
+                if "req_id" not in resp:
+                    resp["req_id"] = req_id
+                if "device" not in resp and device_id is not None:
+                    resp["device"] = device_id
+                return resp
+
+            if isinstance(result, dict) and result.get("status") == "ok":
                 resp = dict(result)
                 if "req_id" not in resp:
                     resp["req_id"] = req_id

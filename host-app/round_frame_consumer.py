@@ -66,7 +66,7 @@ class FrameObservation:
     statuses: Tuple[str, ...] = ()
     reason: str = ""
     scale: float = 0.0
-    app_origin: Tuple[float, float] = ()
+    app_origin: Tuple[float, ...] = ()
 
     @property
     def results_complete(self):
@@ -278,26 +278,30 @@ class RoundFrameGate:
 
     def __init__(self, device_id, stable_complete_frames=2, max_age=1.0,
                  max_frame_gap=1.0, clock=time.monotonic,
-                 require_presentation_time=False):
+                 require_presentation_time=False,
+                 freeze_threshold=1.0):
         self.device_id = str(device_id)
         self.stable_complete_frames = max(1, int(stable_complete_frames))
         self.max_age = float(max_age)
         self.max_frame_gap = float(max_frame_gap)
         self.clock = clock
         self.require_presentation_time = bool(require_presentation_time)
+        self.freeze_threshold = float(freeze_threshold)
         self.armed = False
         self.taken = False
+        self.is_frozen = False
         self.last_sequence = None
         self.last_stream_id = None
         self.last_received_at = None
         self.last_presentation_time = None
+        self.first_static_presentation_time = None
         self.armed_capacity = None
         self._candidate_signature = None
         self._candidate_count = 0
 
     def observe(self, frame, sequence, received_at, now=None, stream_id=None,
                 presentation_time=None):
-        """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown."""
+        """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown/frozen."""
         now = self.clock() if now is None else now
         if stream_id != self.last_stream_id:
             self.last_sequence = None
@@ -306,7 +310,9 @@ class RoundFrameGate:
             # process/session. Require a fresh Monitoring frame on this stream.
             self.armed = False
             self.taken = False
+            self.is_frozen = False
             self.last_presentation_time = None
+            self.first_static_presentation_time = None
             self.armed_capacity = None
             self._candidate_signature = None
             self._candidate_count = 0
@@ -318,12 +324,25 @@ class RoundFrameGate:
             self._candidate_count = 0
             return TakeDecision("unknown", self.device_id, reason="missing_source_frame_time")
         if presentation_time is not None:
-            if (self.last_presentation_time is not None
-                    and presentation_time <= self.last_presentation_time):
-                self._candidate_signature = None
-                self._candidate_count = 0
-                return TakeDecision("unknown", self.device_id,
-                                    reason="out_of_order_source_frame")
+            if self.last_presentation_time is not None:
+                if presentation_time <= self.last_presentation_time:
+                    if self.first_static_presentation_time is None:
+                        self.first_static_presentation_time = now
+                    static_duration = max(0.0, now - self.first_static_presentation_time)
+                    if static_duration >= self.freeze_threshold:
+                        self.is_frozen = True
+                        self._candidate_signature = None
+                        self._candidate_count = 0
+                        return TakeDecision("frozen", self.device_id, reason="frame_frozen")
+                    self._candidate_signature = None
+                    self._candidate_count = 0
+                    return TakeDecision("unknown", self.device_id,
+                                        reason="out_of_order_source_frame")
+                else:
+                    self.first_static_presentation_time = None
+                    self.is_frozen = False
+            else:
+                self.first_static_presentation_time = now
             self.last_presentation_time = presentation_time
         previous_received_at = self.last_received_at
         self.last_received_at = received_at
@@ -412,6 +431,8 @@ def observe_latest_round_frame(kvm, gate, now=None):
 
 def tcp_round_reply(decision):
     """Stable line protocol for the one-round check endpoint."""
+    if decision.kind == "frozen" or decision.reason == "frame_frozen":
+        return "error:frame_frozen\r\n"
     if decision.kind == "taken":
         body = ",".join("{}::{}".format(slot, status)
                         for slot, status in decision.results)
