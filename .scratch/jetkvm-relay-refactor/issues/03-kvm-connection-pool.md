@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 — Headless TCP JSON Protocol & Multiplexing Server
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] The core service reuses active WebRTC connections when consecutive requests target the same KVM IP.
-- [ ] A background worker periodically pulls heartbeat frames from open connections to prevent channel timeout.
-- [ ] Any connection idle for more than 10 minutes is cleanly evicted and disconnected.
-- [ ] A subsequent command to an evicted KVM transparently re-establishes a fresh WebRTC connection.
-- [ ] Comprehensive tests with a mock KVM client verify connection reuse, heartbeat triggers, and idle eviction timing.
+- [x] The core service reuses active WebRTC connections when consecutive requests target the same KVM IP.
+- [x] A background worker periodically pulls heartbeat frames from open connections to prevent channel timeout.
+- [x] Any connection idle for more than 10 minutes is cleanly evicted and disconnected.
+- [x] A subsequent command to an evicted KVM transparently re-establishes a fresh WebRTC connection.
+- [x] Comprehensive tests with a mock KVM client verify connection reuse, heartbeat triggers, and idle eviction timing.
