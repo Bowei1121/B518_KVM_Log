@@ -21,7 +21,12 @@ from typing import Any, Callable, Coroutine, Dict, Optional, Set
 try:
     from device_lock import DeviceLockManager
 except ImportError:
-    from .device_lock import DeviceLockManager
+    from .device_lock import DeviceLockManager  # type: ignore[import-not-found,no-redef]
+
+try:
+    from kvm_pool import KVMConnectionPool
+except ImportError:
+    from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
 
 logger = logging.getLogger("TcpJsonServer")
 
@@ -34,11 +39,13 @@ class TcpJsonServer:
         host: str = "127.0.0.1",
         port: int = 5000,
         lock_manager: Optional[DeviceLockManager] = None,
+        kvm_pool: Optional[KVMConnectionPool] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.server_address: tuple[str, int] = (host, port)
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
+        self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
 
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -86,6 +93,10 @@ class TcpJsonServer:
             "uptime_seconds": round(uptime, 2),
             "active_connections": len(self._active_writers),
             "busy_devices": self.lock_manager.get_active_devices(),
+            "kvm_pool": {
+                "active_connections": self.kvm_pool.active_count(),
+                "cached_ips": self.kvm_pool.get_active_ips(),
+            },
             "version": "1.0.0",
         }
 
@@ -132,6 +143,27 @@ class TcpJsonServer:
                     "error": "device_busy",
                     "device": device_id,
                 }
+
+        # Check KVM connection pooling if kvm_ip is provided
+        raw_kvm_ip = req.get("kvm_ip")
+        if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
+            kvm_ip = str(raw_kvm_ip).strip()
+            try:
+                kvm_client = await self.kvm_pool.get_connection(kvm_ip)
+                req["_kvm_client"] = kvm_client
+            except Exception as exc:
+                logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id)
+                if device_id is not None:
+                    self.lock_manager.release(device_id)
+                err_resp = {
+                    "req_id": req_id,
+                    "status": "error",
+                    "error": "kvm_connection_failed",
+                    "message": f"Failed to connect to KVM '{kvm_ip}': {exc}",
+                }
+                if device_id is not None:
+                    err_resp["device"] = device_id
+                return err_resp
 
         try:
             if inspect.iscoroutinefunction(handler):
@@ -272,6 +304,7 @@ class TcpJsonServer:
 
         self._is_running = True
         self._start_time = time.time()
+        await self.kvm_pool.start()
         self._start_event.set()
 
         logger.info("TcpJsonServer listening on %s:%s", *self.server_address)
@@ -281,6 +314,9 @@ class TcpJsonServer:
 
         logger.info("TcpJsonServer shutting down...")
         self._is_running = False
+
+        # Close all active KVM connections in pool
+        await self.kvm_pool.close_all()
 
         # Close listening socket
         self._server.close()
