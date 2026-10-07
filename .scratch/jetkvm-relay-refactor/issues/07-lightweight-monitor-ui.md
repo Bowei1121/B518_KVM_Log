@@ -4,9 +4,9 @@
 
 **Blocked by:** 05 — Long-Polling Visual Verification Command, 06 — Core Daemon Script & TE Process Management Utilities
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Tkinter UI runs as a separate process and connects to Core Service via TCP.
-- [ ] UI visualizes real-time status of all configured test stations.
-- [ ] UI can request and display snapshots/streams without interfering with LabVIEW automated testing.
-- [ ] Terminating or restarting the UI does not affect ongoing Core Service operations or active LabVIEW TCP sockets.
+- [x] Tkinter UI runs as a separate process and connects to Core Service via TCP.
+- [x] UI visualizes real-time status of all configured test stations.
+- [x] UI can request and display snapshots/streams without interfering with LabVIEW automated testing.
+- [x] Terminating or restarting the UI does not affect ongoing Core Service operations or active LabVIEW TCP sockets.

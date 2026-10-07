@@ -1,78 +1,293 @@
 # -*- coding: utf-8 -*-
-"""
-- 按鍵精靈介面程式
+"""Lightweight Monitor UI Client for B518 JetKVM Relay.
+
+Decoupled Tkinter application that connects to the running Core Service
+over TCP. Allows operators to inspect live KVM streams, observe station
+statuses in real time, and manually trigger diagnostic checks without
+interfering with ongoing LabVIEW automated test runs.
 """
 
+from __future__ import annotations
+
+import argparse
+import base64
+import io
+import json
+import logging
 import os
-import sys
-import time
-import socket
-import threading
+from pathlib import Path
 import queue
+import socket
+import sys
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
+import uuid
 
-# DPI 策略: 行程用「系統級 (System Aware)」DPI 感知 -> 視窗跨不同縮放的延伸
-# 螢幕時不會被重新調整大小 (穩定), 主螢幕也維持正常大小。
+# DPI policy for Windows
 try:
     import ctypes
     try:
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2))  # SYSTEM_AWARE
     except Exception:
-        ctypes.windll.user32.SetProcessDPIAware()       # 系統級 (最舊 API)
+        ctypes.windll.user32.SetProcessDPIAware()
 except Exception:
     pass
 
-import tkinter as tk
-from tkinter import messagebox, ttk
-from PIL import Image, ImageTk
+try:
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+    _TK_OK = True
+except Exception:
+    tk = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
+    ttk = None  # type: ignore[assignment]
+    _TK_OK = False
+
+try:
+    from PIL import Image, ImageTk
+    _PIL_OK = True
+except Exception:
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+    _PIL_OK = False
+
+try:
+    import cv2
+    _CV2_OK = True
+except Exception:
+    _CV2_OK = False
+
+# Ensure host-app directory on sys.path
+_HOST_APP_DIR = Path(__file__).resolve().parent
+if str(_HOST_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOST_APP_DIR))
+
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
-# cv2 用於「擷取影像」存檔 (延遲匯入，缺少時於 Log 提示)
 try:
-    import cv2
-    _VISION_OK = True
-    _VISION_ERR = ""
-except Exception as e:  # pragma: no cover - 環境缺套件時
-    _VISION_OK = False
-    _VISION_ERR = str(e)
-
-# JetKVM 直接連線 (WebRTC); 缺套件時停用 KVM 連接功能
-try:
-    from jetkvm_core import JetKVMClient, AsyncLoop, grab_one_frame
     from pattern_tools import PatternCropper
-    from auto_flow import run_flow, run_check, run_focus
-    from dfu_flow import run_dfu_input, validate_input_request
-    from round_frame_consumer import RoundFrameGate, observe_latest_round_frame, tcp_round_reply
+except Exception:
+    PatternCropper = None  # type: ignore[assignment,misc]
+
+try:
     from stream_view import StreamerWindow
-    _KVM_OK = True
-    _KVM_ERR = ""
-except Exception as e:
-    _KVM_OK = False
-    _KVM_ERR = str(e)
+except Exception:
+    StreamerWindow = None  # type: ignore[assignment,misc]
+
+logger = logging.getLogger("MonitorUI")
 
 
-# ---- 邏輯視窗尺寸 = 圖片尺寸 / 2 ----
-WIN_W, WIN_H = 800, 1180
+# ==============================================================================
+# CoreServiceClient: Thread-Safe TCP Client to Core Service
+# ==============================================================================
+
+class CoreServiceClient:
+    """Thread-safe TCP JSON client that interacts with the headless Core Service."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+        self.host = host
+        self.port = int(port)
+        self._lock = threading.Lock()
+        self._sock: Optional[socket.socket] = None
+
+    def set_target(self, host: str, port: int) -> None:
+        """Update target host and port."""
+        with self._lock:
+            p = int(port)
+            if self.host != host or self.port != p:
+                self._disconnect_locked()
+                self.host = host
+                self.port = p
+
+    def is_connected(self) -> bool:
+        """Check if socket appears connected."""
+        with self._lock:
+            return self._sock is not None
+
+    def connect(self, timeout: float = 2.0) -> bool:
+        """Explicitly attempt to establish a TCP connection."""
+        with self._lock:
+            if self._sock is not None:
+                return True
+            try:
+                s = socket.create_connection((self.host, self.port), timeout=timeout)
+                s.settimeout(timeout)
+                self._sock = s
+                return True
+            except Exception:
+                self._sock = None
+                return False
+
+    def _disconnect_locked(self) -> None:
+        if self._sock:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
+    def disconnect(self) -> None:
+        """Gracefully disconnect from the Core Service."""
+        with self._lock:
+            self._disconnect_locked()
+
+    def send_request(
+        self,
+        cmd: str,
+        payload: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Send a newline-delimited JSON command and read the parsed JSON reply."""
+        req_id = f"ui-{uuid.uuid4().hex[:8]}"
+        req: Dict[str, Any] = {"req_id": req_id, "cmd": cmd}
+        if payload:
+            req.update(payload)
+
+        data = (json.dumps(req) + "\n").encode("utf-8")
+
+        with self._lock:
+            # Reconnect if not currently connected
+            if self._sock is None:
+                try:
+                    s = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
+                    self._sock = s
+                except Exception as exc:
+                    return {
+                        "req_id": req_id,
+                        "status": "error",
+                        "error": "connection_failed",
+                        "message": f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
+                    }
+
+            try:
+                self._sock.settimeout(timeout)
+                self._sock.sendall(data)
+
+                buf = bytearray()
+                while b"\n" not in buf:
+                    chunk = self._sock.recv(65536)
+                    if not chunk:
+                        raise ConnectionError("Core Service closed connection")
+                    buf.extend(chunk)
+
+                line = buf.split(b"\n")[0]
+                return json.loads(line.decode("utf-8"))
+            except Exception as exc:
+                self._disconnect_locked()
+                return {
+                    "req_id": req_id,
+                    "status": "error",
+                    "error": "communication_error",
+                    "message": f"Communication error with Core Service: {exc}",
+                }
+
+    def ping(self, timeout: float = 2.0) -> bool:
+        """Send a ping check."""
+        resp = self.send_request("ping", timeout=timeout)
+        return resp.get("status") == "ok"
+
+    def get_status(self, timeout: float = 2.0) -> Dict[str, Any]:
+        """Query real-time Core Service status."""
+        res = self.send_request("status", timeout=timeout)
+        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
+            merged = dict(res["data"])
+            merged["req_id"] = res.get("req_id")
+            if "status" not in merged:
+                merged["status"] = "running"
+            return merged
+        return res
+
+    def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
+        """Query configured stations status."""
+        res = self.send_request("stations", timeout=timeout)
+        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
+            merged = dict(res["data"])
+            merged["req_id"] = res.get("req_id")
+            if "status" not in merged:
+                merged["status"] = "ok"
+            return merged
+        return res
+
+    def get_snapshot(
+        self,
+        kvm_ip: Optional[str] = None,
+        station: Optional[str] = None,
+        device: Optional[str] = None,
+        save_path: Optional[Union[str, Path]] = None,
+        format: str = "jpeg",
+        quality: int = 80,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Request a snapshot image without acquiring device locks."""
+        payload: Dict[str, Any] = {
+            "format": format,
+            "quality": quality,
+            "read_only": True,
+            "no_lock": True,
+        }
+        if kvm_ip:
+            payload["kvm_ip"] = kvm_ip
+        if station:
+            payload["station"] = station
+        if device:
+            payload["device"] = device
+        if save_path:
+            payload["save_path"] = str(save_path)
+        return self.send_request("snapshot", payload, timeout=timeout)
+
+    def manual_check(
+        self,
+        station: str,
+        device: str,
+        kvm_ip: Optional[str] = None,
+        timeout_sec: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Trigger a manual visual check command through Core Service."""
+        payload: Dict[str, Any] = {
+            "station": station,
+            "device": device,
+            "timeout_sec": timeout_sec,
+        }
+        if kvm_ip:
+            payload["kvm_ip"] = kvm_ip
+        return self.send_request("check", payload, timeout=timeout_sec + 4.0)
 
 
-class MatchResultsWindow(tk.Toplevel):
+_BaseToplevel: Any = tk.Toplevel if _TK_OK else object
+_BaseTk: Any = tk.Tk if _TK_OK else object
+
+
+# ==============================================================================
+# MatchResultsWindow: Readonly viewer for persisted diagnostics
+# ==============================================================================
+
+class MatchResultsWindow(_BaseToplevel):
     """Readonly viewer for each device's most recent persisted match diagnostics."""
 
-    def __init__(self, parent, catalog, device):
+    def __init__(self, parent: Any, catalog: TemplateCatalog, device: str) -> None:
+        if not _TK_OK:
+            raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__(parent)
         self.catalog = catalog
         self.title("最近一次匹配結果")
         self.geometry("980x700")
-        self.photo = None
-        self.summary = None
-        self.records = []
+        self.photo: Optional[ImageTk.PhotoImage] = None
+        self.summary: Optional[Dict[str, Any]] = None
+        self.records: List[Dict[str, Any]] = []
 
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
         ttk.Label(top, text="設備：").pack(side="left")
         self.device_var = tk.StringVar(value=device)
-        self.device_box = ttk.Combobox(top, textvariable=self.device_var, values=catalog.devices(),
-                                       state="readonly", width=7)
+        self.device_box = ttk.Combobox(
+            top,
+            textvariable=self.device_var,
+            values=catalog.devices(),
+            state="readonly",
+            width=7,
+        )
         self.device_box.pack(side="left")
         self.device_box.bind("<<ComboboxSelected>>", lambda _event: self.load())
         self.status_var = tk.StringVar()
@@ -84,38 +299,34 @@ class MatchResultsWindow(tk.Toplevel):
         right = ttk.Frame(body)
         body.add(left, weight=1)
         body.add(right, weight=3)
-        self.listbox = tk.Listbox(left, font=self.fallback_font(), exportselection=False)
+        self.listbox = tk.Listbox(left, font=("Arial", 11), exportselection=False)
         self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._select)
         self.image_label = ttk.Label(right, text="選擇左側項目以查看疊圖", anchor="center")
         self.image_label.pack(fill="both", expand=True)
         self.load()
 
-    @staticmethod
-    def fallback_font():
-        return ("Arial", 11)
-
-    def load(self):
+    def load(self) -> None:
         self.summary = MatchDiagnostics.load(self.catalog.root, self.device_var.get())
         self.records = [] if self.summary is None else self.summary.get("records", [])
         self.listbox.delete(0, "end")
         if not self.summary:
             self.status_var.set("尚無最近一次診斷結果")
-            self.image_label.configure(text="請先執行 Switch 或 TCP 操作後再查看。", image="")
+            self.image_label.configure(text="請先執行 Check 或測試操作後再查看。", image="")
             return
         operation = self.summary.get("operation", "")
         state = "完成" if self.summary.get("ok") else "失敗"
-        self.status_var.set("{}：{}，{} 個匹配步驟".format(operation, state, len(self.records)))
+        self.status_var.set(f"{operation}：{state}，{len(self.records)} 個匹配步驟")
         for record in self.records:
             score = record.get("score")
-            score_text = "n/a" if score is None else "{:.3f}".format(score)
+            score_text = "n/a" if score is None else f"{score:.3f}"
             status = "命中" if record.get("matched") else "未命中"
-            self.listbox.insert("end", "{} | {} | {}".format(record.get("key"), score_text, status))
+            self.listbox.insert("end", f"{record.get('key')} | {score_text} | {status}")
         if self.records:
             self.listbox.selection_set(0)
             self._select()
 
-    def _select(self, _event=None):
+    def _select(self, _event: Any = None) -> None:
         selection = self.listbox.curselection()
         if not selection:
             return
@@ -124,89 +335,249 @@ class MatchResultsWindow(tk.Toplevel):
         if not image_name:
             self.image_label.configure(text=record.get("note") or "此步沒有可顯示的影格", image="")
             return
-        image_path = MatchDiagnostics.latest_directory(self.catalog.root, self.device_var.get()) / image_name
+        image_path = (
+            MatchDiagnostics.latest_directory(self.catalog.root, self.device_var.get())
+            / image_name
+        )
         try:
             image = Image.open(image_path)
             image.thumbnail((620, 580))
             self.photo = ImageTk.PhotoImage(image)
             self.image_label.configure(image=self.photo, text="")
         except Exception as exc:
-            self.image_label.configure(text="無法讀取疊圖：{}".format(exc), image="")
+            self.image_label.configure(text=f"無法讀取疊圖：{exc}", image="")
 
 
-class AtlasUI(tk.Tk):
-    def __init__(self):
+# ==============================================================================
+# AtlasUI: Decoupled Lightweight Monitor Client
+# ==============================================================================
+
+class AtlasUI(_BaseTk):
+    """Lightweight Monitor Client GUI."""
+
+    def __init__(self, core_host: str = "127.0.0.1", core_port: int = 5000) -> None:
+        if not _TK_OK:
+            raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__()
-        self.title("Atlas2-518-260624-V1.0")
+        self.title("Atlas2-518 Lightweight Monitor Client")
 
-        # 統一字型 (依作業系統挑選中文字體; 放大以符合較大的視窗)
-        if sys.platform == "darwin":          # macOS
+        # Fonts
+        if sys.platform == "darwin":
             fam, mono = "PingFang TC", "Menlo"
-        elif sys.platform.startswith("win"):  # Windows
+        elif sys.platform.startswith("win"):
             fam, mono = "Microsoft JhengHei", "Consolas"
-        else:                                  # Linux 等
+        else:
             fam, mono = "Noto Sans CJK TC", "DejaVu Sans Mono"
         self.f_label = (fam, 11)
+        self.f_bold = (fam, 11, "bold")
         self.f_entry = (fam, 11)
         self.f_btn = (fam, 11)
-        self.f_mono = (mono, 11)
+        self.f_mono = (mono, 10)
+        self.f_large_bold = (fam, 12, "bold")
 
-        # TCP 伺服器相關狀態
-        self._srv_sock = None
-        self._srv_thread = None
-        self._srv_running = threading.Event()   # 設定=執行中, 清除=要停止
-        self._log_queue = queue.Queue()         # 工作執行緒 -> GUI 的訊息佇列
-        self._ui_queue = queue.Queue()          # 背景執行緒要在主執行緒跑的動作
-
-        # JetKVM 連線相關狀態
-        self._kvm = None                        # JetKVMClient 實例
-        self._kvm_loop = None                   # 背景 asyncio loop (延遲建立)
-        self._kvm_busy = False                  # 連線/斷線進行中
-        self._switch_busy = False               # Switch 流程進行中
-        self._streamer = None                   # 串流視窗 (StreamerWindow)
-        self._cmd_lock = threading.Lock()       # TCP 指令序列化處理
+        # State & Client
+        self.client = CoreServiceClient(host=core_host, port=core_port)
+        self._log_queue: queue.Queue[str] = queue.Queue()
+        self._ui_queue: queue.Queue[Any] = queue.Queue()
         self._templates = TemplateCatalog()
-        # A separate completion latch per logical device prevents another KVM's
-        # frame or a repeated TCP check from taking this round twice.
-        self._round_frame_gates = {}
+
+        # Stream & Snapshot state
+        self._streaming_active = False
+        self._stream_thread: Optional[threading.Thread] = None
+        self._latest_pil_image: Optional[Image.Image] = None
+        self._latest_tk_photo: Optional[ImageTk.PhotoImage] = None
+        self._latest_raw_frame: Any = None
+        self._streamer_window: Optional[StreamerWindow] = None
+
+        # Stations cache
+        self._stations: List[Dict[str, Any]] = [
+            {"station": "DFU", "device": "1", "kvm_ip": "192.168.132.70", "status": "DISCONNECTED"},
+            {"station": "FCT", "device": "1", "kvm_ip": "192.168.132.71", "status": "DISCONNECTED"},
+            {"station": "BT", "device": "1", "kvm_ip": "192.168.132.72", "status": "DISCONNECTED"},
+        ]
+        self._station_widgets: Dict[str, Dict[str, Any]] = {}
+
+        # Polling
+        self._is_closing = False
 
         self._build_widgets()
 
-        # 視窗高度依內容自動調整 (避免字體放大後底部按鈕被裁切),
-        # 寬度維持 WIN_W。
+        # Geometry
         self.update_idletasks()
-        req_h = self.winfo_reqheight()
-        self.geometry(f"{WIN_W}x{req_h}")
-        self.resizable(False, False)
+        self.geometry("860x920")
+        self.minsize(800, 750)
 
-        # 背景預熱 OCR 模型 (避免第一次 check 指令時卡 1~2 秒載入)
-        threading.Thread(target=self._warm_ocr, daemon=True).start()
+        # Scheduled jobs
+        self.after(100, self._drain_queues)
+        self.after(500, self._poll_status)
 
-        # 定期把背景執行緒的訊息搬到 Log (Tk 只能在主執行緒更新)
-        self.after(100, self._drain_log_queue)
-        # 關閉視窗時確實停掉伺服器
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ------------------------------------------------------------------
-    # 介面建立 (改用 pack 自動排版, 元件不會互相覆蓋)
-    # ------------------------------------------------------------------
-    def _build_widgets(self):
-        PADX = 12          # 左右邊距
-        GAP = 8            # 區塊之間的垂直間距
+    def _build_widgets(self) -> None:
+        PADX = 10
+        GAP = 6
 
-        # ===== Log 區 =====
-        log_frame = tk.LabelFrame(self, text="Log", font=self.f_label)
-        log_frame.pack(fill="x", padx=PADX, pady=(GAP, GAP))
+        # ----------------------------------------------------------------------
+        # Top Bar: Core Service Connection
+        # ----------------------------------------------------------------------
+        top_frame = tk.LabelFrame(self, text="Core Service 連線設定", font=self.f_bold, padx=8, pady=6)
+        top_frame.pack(fill="x", padx=PADX, pady=(GAP, GAP))
 
-        # log 文字框 + 縱向/橫向捲軸 (用 grid 排版)
+        tk.Label(top_frame, text="服務位址:", font=self.f_label).pack(side="left")
+        self.e_core_addr = tk.Entry(top_frame, font=self.f_entry, width=18, justify="center")
+        self.e_core_addr.insert(0, f"{self.client.host}:{self.client.port}")
+        self.e_core_addr.pack(side="left", padx=6)
+
+        self.btn_connect = tk.Button(
+            top_frame, text="重新連線", font=self.f_btn, command=self.on_toggle_connect
+        )
+        self.btn_connect.pack(side="left", padx=6)
+
+        self.lbl_core_status = tk.Label(
+            top_frame, text="● 未連線", font=self.f_bold, fg="gray"
+        )
+        self.lbl_core_status.pack(side="left", padx=12)
+
+        self.lbl_core_info = tk.Label(top_frame, text="", font=self.f_mono, fg="#555")
+        self.lbl_core_info.pack(side="right", padx=6)
+
+        # ----------------------------------------------------------------------
+        # Station Real-Time Status Dashboard
+        # ----------------------------------------------------------------------
+        dash_frame = tk.LabelFrame(
+            self, text="測試機台即時狀態 (Configured Test Stations)", font=self.f_bold, padx=8, pady=6
+        )
+        dash_frame.pack(fill="x", padx=PADX, pady=GAP)
+
+        self.stations_container = tk.Frame(dash_frame)
+        self.stations_container.pack(fill="x", expand=True)
+
+        self._render_station_cards()
+
+        # ----------------------------------------------------------------------
+        # Middle: Split into Live Stream View & Controls
+        # ----------------------------------------------------------------------
+        mid_paned = ttk.Panedwindow(self, orient="horizontal")
+        mid_paned.pack(fill="both", expand=True, padx=PADX, pady=GAP)
+
+        # Left pane: Live Monitor Display
+        view_frame = tk.LabelFrame(mid_paned, text="即時畫面監控 (Live Stream / Snapshot)", font=self.f_bold, padx=6, pady=6)
+        mid_paned.add(view_frame, weight=3)
+
+        self.canvas_preview = tk.Canvas(view_frame, bg="#1e1e1e", width=480, height=270, highlightthickness=0)
+        self.canvas_preview.pack(fill="both", expand=True, padx=4, pady=4)
+
+        view_bottom = tk.Frame(view_frame)
+        view_bottom.pack(fill="x", pady=(4, 0))
+
+        self.lbl_preview_info = tk.Label(
+            view_bottom, text="尚未擷取影格", font=self.f_mono, fg="#444", anchor="w"
+        )
+        self.lbl_preview_info.pack(side="left", fill="x", expand=True)
+
+        self.btn_snapshot = tk.Button(
+            view_bottom, text="📷 擷取快照", font=self.f_btn, command=self.on_capture_snapshot
+        )
+        self.btn_snapshot.pack(side="right", padx=4)
+
+        self.btn_live_stream = tk.Button(
+            view_bottom, text="▶ 開始串流", font=self.f_btn, command=self.on_toggle_live_stream
+        )
+        self.btn_live_stream.pack(side="right", padx=4)
+
+        self.btn_streamer_window = tk.Button(
+            view_bottom, text="⇱ 獨立視窗", font=self.f_btn, command=self.on_open_streamer_window
+        )
+        self.btn_streamer_window.pack(side="right", padx=4)
+
+        # Right pane: Diagnostics & Pattern tools
+        ctrl_frame = tk.LabelFrame(mid_paned, text="手動診斷與操作 (Diagnostics)", font=self.f_bold, padx=8, pady=6)
+        mid_paned.add(ctrl_frame, weight=2)
+
+        # Target selection
+        row_target = tk.Frame(ctrl_frame)
+        row_target.pack(fill="x", pady=4)
+        tk.Label(row_target, text="目標機台:", font=self.f_label).pack(side="left")
+        self.var_sel_station = tk.StringVar(value="DFU")
+        self.combo_station = ttk.Combobox(
+            row_target,
+            textvariable=self.var_sel_station,
+            values=["DFU", "FCT", "BT"],
+            state="readonly",
+            width=6,
+        )
+        self.combo_station.pack(side="left", padx=4)
+        self.combo_station.bind("<<ComboboxSelected>>", self._on_station_selected)
+
+        tk.Label(row_target, text="編號:", font=self.f_label).pack(side="left", padx=(8, 0))
+        self.var_sel_device = tk.StringVar(value="1")
+        self.e_sel_device = tk.Entry(row_target, textvariable=self.var_sel_device, width=4, justify="center", font=self.f_entry)
+        self.e_sel_device.pack(side="left", padx=4)
+
+        # Target KVM IP
+        row_ip = tk.Frame(ctrl_frame)
+        row_ip.pack(fill="x", pady=4)
+        tk.Label(row_ip, text="KVM IP:", font=self.f_label).pack(side="left")
+        self.var_sel_kvm_ip = tk.StringVar(value="192.168.132.70")
+        self.e_sel_kvm_ip = tk.Entry(row_ip, textvariable=self.var_sel_kvm_ip, width=16, font=self.f_entry)
+        self.e_sel_kvm_ip.pack(side="left", padx=4)
+
+        # Manual Check button
+        check_box = tk.LabelFrame(ctrl_frame, text="手動檢查 (Check)", font=self.f_label, padx=6, pady=4)
+        check_box.pack(fill="x", pady=6)
+
+        row_check_opt = tk.Frame(check_box)
+        row_check_opt.pack(fill="x", pady=2)
+        tk.Label(row_check_opt, text="Timeout(s):", font=self.f_label).pack(side="left")
+        self.var_timeout = tk.StringVar(value="5.0")
+        tk.Entry(row_check_opt, textvariable=self.var_timeout, width=5, font=self.f_entry).pack(side="left", padx=4)
+
+        self.btn_run_check = tk.Button(
+            check_box, text="⚡ 執行手動診斷檢查", font=self.f_bold, fg="blue", command=self.on_run_manual_check
+        )
+        self.btn_run_check.pack(fill="x", pady=4)
+
+        self.lbl_check_result = tk.Label(check_box, text="診斷結果: 尚未執行", font=self.f_bold, fg="#555")
+        self.lbl_check_result.pack(anchor="w", pady=2)
+
+        # Pattern creation
+        pat_box = tk.LabelFrame(ctrl_frame, text="模板工具 (Pattern)", font=self.f_label, padx=6, pady=4)
+        pat_box.pack(fill="x", pady=6)
+
+        self.btn_save_capture = tk.Button(
+            pat_box, text="儲存目前影格為 Capture", font=self.f_btn, command=self.on_save_capture
+        )
+        self.btn_save_capture.pack(fill="x", pady=2)
+
+        self.btn_create_pattern = tk.Button(
+            pat_box, text="製作 JetKVM Pattern", font=self.f_btn, command=self.on_create_pattern
+        )
+        self.btn_create_pattern.pack(fill="x", pady=2)
+
+        self.btn_match_results = tk.Button(
+            pat_box, text="查看最近匹配診斷", font=self.f_btn, command=self.on_show_match_results
+        )
+        self.btn_match_results.pack(fill="x", pady=2)
+
+        # ----------------------------------------------------------------------
+        # Bottom: Log Viewer
+        # ----------------------------------------------------------------------
+        log_frame = tk.LabelFrame(self, text="系統與操作日誌 (Log)", font=self.f_bold, padx=6, pady=4)
+        log_frame.pack(fill="both", expand=True, padx=PADX, pady=(GAP, GAP))
+
         txt_wrap = tk.Frame(log_frame)
-        txt_wrap.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        txt_wrap.pack(fill="both", expand=True)
         vscroll = tk.Scrollbar(txt_wrap, orient="vertical")
         hscroll = tk.Scrollbar(txt_wrap, orient="horizontal")
-        self.log_text = tk.Text(txt_wrap, height=8, font=self.f_mono,
-                                fg="red", wrap="none",
-                                yscrollcommand=vscroll.set,
-                                xscrollcommand=hscroll.set)
+        self.log_text = tk.Text(
+            txt_wrap,
+            height=6,
+            font=self.f_mono,
+            fg="#222",
+            wrap="none",
+            yscrollcommand=vscroll.set,
+            xscrollcommand=hscroll.set,
+        )
         vscroll.config(command=self.log_text.yview)
         hscroll.config(command=self.log_text.xview)
         self.log_text.grid(row=0, column=0, sticky="nsew")
@@ -215,100 +586,146 @@ class AtlasUI(tk.Tk):
         txt_wrap.rowconfigure(0, weight=1)
         txt_wrap.columnconfigure(0, weight=1)
 
-        # 預設文字 (仿截圖)
-        self._append_log("電腦IP:IP:127.0.0.1")
-        self._append_log("**********")
+        self._append_log("Lightweight Monitor UI Client 啟動完成。")
+        self._append_log(f"連線目標 Core Service: {self.client.host}:{self.client.port}")
 
-        # ===== 服務端 =====
-        srv = tk.LabelFrame(self, text="服務端", font=self.f_label)
-        srv.pack(fill="x", padx=PADX, pady=GAP)
+    # --------------------------------------------------------------------------
+    # Station Cards Dashboard Rendering
+    # --------------------------------------------------------------------------
+    def _render_station_cards(self) -> None:
+        """Render card badges for all configured test stations."""
+        for w in self.stations_container.winfo_children():
+            w.destroy()
+        self._station_widgets.clear()
 
-        # 第 0 列: 測試畫面 IP + KVM 連接
-        tk.Label(srv, text="測試畫面IP:", font=self.f_label).grid(row=0, column=0, sticky="w", padx=8, pady=8)
-        self.e_kvm_ip = tk.Entry(srv, font=self.f_entry, width=20, justify="center")
-        self.e_kvm_ip.insert(0, "192.168.132.70")
-        self.e_kvm_ip.grid(row=0, column=1, padx=8)
-        self.btn_kvm = tk.Button(srv, text="KVM連接", font=self.f_btn,
-                                 command=self.toggle_kvm)
-        self.btn_kvm.grid(row=0, column=2, padx=8)
+        for idx, st in enumerate(self._stations):
+            st_name = st.get("station", "UNKNOWN")
+            dev_id = str(st.get("device", "1"))
+            ip = str(st.get("kvm_ip", ""))
+            status = st.get("status", "DISCONNECTED").upper()
 
-        # 第 1 列: 監聽指令訊息 (IP:PORT) + 監聽連接
-        tk.Label(srv, text="監聽指令IP:", font=self.f_label).grid(row=1, column=0, sticky="w", padx=8, pady=8)
-        self.e_listen_addr = tk.Entry(srv, font=self.f_entry, width=20, justify="center")
-        self.e_listen_addr.insert(0, "127.0.0.1:8888")
-        self.e_listen_addr.grid(row=1, column=1, padx=8)
-        self.btn_listen = tk.Button(srv, text="監聽連接", font=self.f_btn,
-                                    command=self.toggle_listen)
-        self.btn_listen.grid(row=1, column=2, padx=8)
+            card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4)
+            card.pack(side="left", fill="both", expand=True, padx=4)
 
-        # 第 2 列: 顯示最近收到的指令 (設備種類 / 設備編號 / 收到指令)
-        self.var_dev_type = tk.StringVar()
-        self.var_dev_no = tk.StringVar()
-        self.var_func = tk.StringVar()
-        disp = tk.Frame(srv)
-        disp.grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 8))
-        for lbl, var, w in (("設備種類", self.var_dev_type, 6),
-                            ("設備編號", self.var_dev_no, 4),
-                            ("收到指令", self.var_func, 8)):
-            tk.Label(disp, text=lbl + ":", font=self.f_label).pack(side="left")
-            tk.Entry(disp, textvariable=var, state="readonly", width=w,
-                     justify="center", font=self.f_entry).pack(side="left", padx=(2, 12))
+            # Header
+            header = tk.Frame(card)
+            header.pack(fill="x")
+            lbl_title = tk.Label(header, text=f"{st_name} (機台 {dev_id})", font=self.f_bold)
+            lbl_title.pack(side="left")
 
-        # ===== Pattern 區 =====
-        pat = tk.LabelFrame(self, text="Pattern", font=self.f_label)
-        pat.pack(fill="x", padx=PADX, pady=GAP)
+            lbl_badge = tk.Label(
+                header,
+                text=status,
+                font=self.f_bold,
+                padx=6,
+                pady=1,
+                relief="flat",
+            )
+            lbl_badge.pack(side="right")
+            self._apply_badge_style(lbl_badge, status)
 
-        tk.Label(pat, text="模板根目錄（由設備與模板種類自動命名）：", font=self.f_label).pack(
-            anchor="w", padx=8, pady=(6, 0))
-        template_root = tk.Entry(pat, font=self.f_entry)
-        template_root.insert(0, str(self._templates.root))
-        template_root.config(state="readonly")
-        template_root.pack(fill="x", padx=8, ipady=3)
+            # Body info
+            lbl_ip = tk.Label(card, text=f"IP: {ip}", font=self.f_mono, fg="#555")
+            lbl_ip.pack(anchor="w", pady=(2, 4))
 
-        pat_btns = tk.Frame(pat)
-        pat_btns.pack(fill="x", padx=8, pady=6)
-        tk.Button(pat_btns, text="擷取影像", font=self.f_btn,
-                  command=self.on_capture_image).pack(side="left", padx=(0, 6))
-        tk.Button(pat_btns, text="創建Pattern", font=self.f_btn,
-                  command=self.on_create_pattern).pack(side="left")
+            # Select button
+            btn_sel = tk.Button(
+                card,
+                text="選定觀測",
+                font=("Arial", 9),
+                command=lambda s=st_name, d=dev_id, k=ip: self._select_station(s, d, k),
+            )
+            btn_sel.pack(fill="x")
 
-        # ===== 底部按鈕 =====
-        btm = tk.Frame(self)
-        btm.pack(fill="x", side="bottom", padx=PADX, pady=GAP * 2)
-        for i in range(3):
-            btm.columnconfigure(i, weight=1)
-        tk.Button(btm, text="Streamer", font=self.f_btn, width=10,
-                  command=self.on_streamer).grid(row=0, column=0)
-        self.btn_switch = tk.Button(btm, text="Switch", font=self.f_btn, width=10,
-                                    command=self.on_switch)
-        self.btn_switch.grid(row=0, column=1)
-        tk.Button(btm, text="匹配結果", font=self.f_btn, width=10,
-                  command=self.on_show_match_results).grid(row=0, column=2)
+            self._station_widgets[st_name] = {
+                "card": card,
+                "badge": lbl_badge,
+                "ip": lbl_ip,
+            }
 
     @staticmethod
-    def _warm_ocr():
-        """背景載入 OCR 模型 (縮短第一次 check 的等待)。"""
-        try:
-            import ocr_sn
-            ocr_sn.warmup()
-        except Exception:
-            pass
+    def _apply_badge_style(label: tk.Label, status: str) -> None:
+        status_up = status.upper()
+        if "BUSY" in status_up or "TESTING" in status_up:
+            label.config(text="BUSY (Testing)", bg="#ff9800", fg="white")
+        elif "FROZEN" in status_up:
+            label.config(text="FROZEN 警示", bg="#f44336", fg="white")
+        elif "IDLE" in status_up or "OK" in status_up:
+            label.config(text="IDLE 閒置", bg="#4caf50", fg="white")
+        else:
+            label.config(text="DISCONNECTED", bg="#9e9e9e", fg="white")
 
-    def _append_log(self, msg):
+    def _select_station(self, station: str, device: str, kvm_ip: str) -> None:
+        self.var_sel_station.set(station)
+        self.var_sel_device.set(device)
+        self.var_sel_kvm_ip.set(kvm_ip)
+        self._append_log(f"已選定觀測機台: {station} (機台 {device}, IP: {kvm_ip})")
+        # Trigger immediate snapshot for newly selected station
+        self.on_capture_snapshot()
+
+    def _on_station_selected(self, _event: Any = None) -> None:
+        st_name = self.var_sel_station.get()
+        for st in self._stations:
+            if st.get("station") == st_name:
+                self.var_sel_device.set(str(st.get("device", "1")))
+                self.var_sel_kvm_ip.set(str(st.get("kvm_ip", "")))
+                break
+
+    # --------------------------------------------------------------------------
+    # Status Polling & Health Heartbeat
+    # --------------------------------------------------------------------------
+    def _poll_status(self) -> None:
+        """Background thread query for status to keep UI completely responsive."""
+        if self._is_closing:
+            return
+
+        def worker() -> None:
+            try:
+                res = self.client.get_status(timeout=2.0)
+                self._ui_queue.put(lambda: self._update_status_ui(res))
+            except Exception as exc:
+                self._ui_queue.put(lambda: self._update_status_ui({"status": "error", "message": str(exc)}))
+
+        threading.Thread(target=worker, daemon=True).start()
+        if not self._is_closing:
+            self.after(1500, self._poll_status)
+
+    def _update_status_ui(self, status_res: Dict[str, Any]) -> None:
+        if status_res.get("status") in ("running", "ok"):
+            uptime = status_res.get("uptime_seconds", 0)
+            active_conns = status_res.get("active_connections", 0)
+            busy_devs = status_res.get("busy_devices", [])
+            self.lbl_core_status.config(text="● 服務連線正常", fg="#2e7d32")
+            self.lbl_core_info.config(
+                text=f"Uptime: {uptime}s | 連線數: {active_conns} | 忙碌機台: {busy_devs or '無'}"
+            )
+
+            # Update stations list if returned
+            stations = status_res.get("stations")
+            if stations and isinstance(stations, list):
+                self._stations = stations
+                for st in stations:
+                    st_name = st.get("station")
+                    status = st.get("status", "DISCONNECTED")
+                    w = self._station_widgets.get(st_name)
+                    if w:
+                        self._apply_badge_style(w["badge"], status)
+        else:
+            err = status_res.get("message") or status_res.get("error") or "連線中斷"
+            self.lbl_core_status.config(text="○ 服務未連線", fg="#c62828")
+            self.lbl_core_info.config(text=f"{err}")
+            for w in self._station_widgets.values():
+                self._apply_badge_style(w["badge"], "DISCONNECTED")
+
+    # --------------------------------------------------------------------------
+    # Logging & Threading Queue Plumbing
+    # --------------------------------------------------------------------------
+    def _append_log(self, msg: str) -> None:
         ts = time.strftime("%Y-%m-%d(%H:%M:%S)")
         self.log_text.insert("end", f"{ts}: {msg}\n")
         self.log_text.see("end")
-        self.update_idletasks()
 
-    # ------------------------------------------------------------------
-    # TCP/IP 伺服器 (背景執行緒 + 佇列回報 Log)
-    # ------------------------------------------------------------------
-    def _post_log(self, msg):
-        """供背景執行緒使用: 把訊息丟進佇列, 由主執行緒寫到 Log。"""
-        self._log_queue.put(msg)
-
-    def _drain_log_queue(self):
-        """主執行緒定期執行: 把佇列裡的訊息寫進 Log, 並執行排入的 UI 動作。"""
+    def _drain_queues(self) -> None:
         try:
             while True:
                 self._append_log(self._log_queue.get_nowait())
@@ -319,474 +736,312 @@ class AtlasUI(tk.Tk):
                 fn = self._ui_queue.get_nowait()
                 try:
                     fn()
-                except Exception as e:
-                    self._append_log(f"UI 動作錯誤: {e}")
+                except Exception as exc:
+                    self._append_log(f"UI 回呼錯誤: {exc}")
         except queue.Empty:
             pass
-        self.after(100, self._drain_log_queue)
+        if not self._is_closing:
+            self.after(100, self._drain_queues)
 
-    def _run_on_ui(self, fn):
-        """背景執行緒呼叫: 排一個動作到主執行緒執行 (更新 Tk 元件用)。"""
-        self._ui_queue.put(fn)
+    # --------------------------------------------------------------------------
+    # Snapshot & Live Stream Handling
+    # --------------------------------------------------------------------------
+    def on_toggle_connect(self) -> None:
+        """Parse core service address and reconnect."""
+        addr_text = self.e_core_addr.get().strip()
+        host = "127.0.0.1"
+        port = 5000
+        if ":" in addr_text:
+            parts = addr_text.split(":", 1)
+            host = parts[0].strip() or "127.0.0.1"
+            if parts[1].strip().isdigit():
+                port = int(parts[1].strip())
+        self.client.set_target(host, port)
+        self._append_log(f"更新目標連線位址至 {host}:{port}，嘗試連線...")
+        self.client.disconnect()
+        threading.Thread(
+            target=lambda: self.client.connect(timeout=2.0), daemon=True
+        ).start()
 
-    def _get_local_ip(self):
-        """取得本機對外的 IP (失敗則回 127.0.0.1)。不會真的送出封包。"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "127.0.0.1"
+    def on_capture_snapshot(self) -> None:
+        """Request a single snapshot frame from Core Service."""
+        kvm_ip = self.var_sel_kvm_ip.get().strip()
+        station = self.var_sel_station.get().strip()
+        device = self.var_sel_device.get().strip()
+        self._append_log(f"向 Core Service 請求快照 ({station}:{device}, IP: {kvm_ip})...")
 
-    def _local_ips(self):
-        """列出本機所有 IPv4 位址 (供綁定監聽參考)。"""
-        ips = set()
-        try:
-            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-                ips.add(info[4][0])
-        except Exception:
-            pass
-        ips.add("127.0.0.1")
-        return sorted(ips)
+        def worker() -> None:
+            res = self.client.get_snapshot(kvm_ip=kvm_ip, station=station, device=device)
+            self._ui_queue.put(lambda: self._display_snapshot_result(res))
 
-    def _parse_addr(self, text, default_host="0.0.0.0", default_port=8888):
-        """解析 'ip:port' / ':port' / 'port' -> (host, port)。"""
-        text = (text or "").strip()
-        host, port = default_host, default_port
-        if ":" in text:
-            h, _, p = text.rpartition(":")
-            host = h.strip() or default_host
-            digits = "".join(ch for ch in p if ch.isdigit())
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _display_snapshot_result(self, res: Dict[str, Any]) -> None:
+        if res.get("status") == "ok":
+            b64_data = res.get("image_base64", "")
+            w = res.get("width", 0)
+            h = res.get("height", 0)
+            pts = res.get("pts")
+            pts_str = f"PTS: {pts:.4f}" if pts is not None else "PTS: n/a"
+
+            if b64_data:
+                try:
+                    img_bytes = base64.b64decode(b64_data)
+                    pil_img = Image.open(io.BytesIO(img_bytes))
+                    self._latest_pil_image = pil_img
+                    self._render_image_on_canvas(pil_img)
+                    self.lbl_preview_info.config(
+                        text=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"
+                    )
+                    self._append_log(f"快照接收成功 ({w}x{h}, {pts_str})")
+                except Exception as exc:
+                    self._append_log(f"解碼快照影像失敗: {exc}")
+            else:
+                self._append_log("快照資料為空")
         else:
-            digits = "".join(ch for ch in text if ch.isdigit())
-        try:
-            v = int(digits)
-            if 1 <= v <= 65535:
-                port = v
-        except ValueError:
-            pass
-        return host, port
+            err = res.get("message") or res.get("error") or "未知錯誤"
+            self._append_log(f"擷取快照失敗: {err}")
+            self.lbl_preview_info.config(text=f"快照錯誤: {err}")
 
-    # ------------------------------------------------------------------
-    # 監聽連接 (TCP 伺服器)
-    # ------------------------------------------------------------------
-    def toggle_listen(self):
-        """「監聽連接」<-> 「關閉監聽」。"""
-        if self._srv_running.is_set():
-            self._stop_listen()
+    def _render_image_on_canvas(self, pil_img: Image.Image) -> None:
+        """Fit and render PIL image onto canvas with letterbox scaling."""
+        canv_w = self.canvas_preview.winfo_width()
+        canv_h = self.canvas_preview.winfo_height()
+        if canv_w <= 1 or canv_h <= 1:
+            canv_w, canv_h = 480, 270
+
+        orig_w, orig_h = pil_img.size
+        scale = min(canv_w / orig_w, canv_h / orig_h)
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+
+        resized = pil_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+        self._latest_tk_photo = ImageTk.PhotoImage(resized)
+
+        self.canvas_preview.delete("all")
+        x_center = canv_w // 2
+        y_center = canv_h // 2
+        self.canvas_preview.create_image(x_center, y_center, image=self._latest_tk_photo)
+
+    def on_toggle_live_stream(self) -> None:
+        """Start or stop the background live polling stream."""
+        if self._streaming_active:
+            self._streaming_active = False
+            self.btn_live_stream.config(text="▶ 開始串流")
+            self._append_log("已停止即時串流監控。")
         else:
-            self._start_listen()
+            self._streaming_active = True
+            self.btn_live_stream.config(text="⏹ 停止串流")
+            self._append_log("開始即時串流監控 (頻率: ~3 fps)...")
+            self._stream_thread = threading.Thread(target=self._stream_worker, daemon=True)
+            self._stream_thread.start()
 
-    def _start_listen(self):
-        host, port = self._parse_addr(self.e_listen_addr.get())
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((host, port))
-            sock.listen(5)
-            sock.settimeout(0.5)  # 每 500ms 醒來一次, 以便檢查停止旗標
-        except OSError as e:
-            self._append_log(f"監聽啟動失敗 ({host}:{port}): {e}")
-            # 10049 = 該 IP 不是本機網卡位址。提示正確用法與可用 IP。
-            if getattr(e, "winerror", None) == 10049 or "10049" in str(e):
-                ips = self._local_ips()
-                self._append_log("  監聽 IP 必須是『本機』網卡位址或 0.0.0.0(代表所有網卡)")
-                self._append_log(f"  本機可用 IP: 0.0.0.0(全部), {', '.join(ips)}")
+    def _stream_worker(self) -> None:
+        """Periodic snapshot requester loop."""
+        while self._streaming_active and not self._is_closing:
+            kvm_ip = self.var_sel_kvm_ip.get().strip()
+            station = self.var_sel_station.get().strip()
+            device = self.var_sel_device.get().strip()
+
+            res = self.client.get_snapshot(
+                kvm_ip=kvm_ip,
+                station=station,
+                device=device,
+                quality=65,
+                timeout=3.0,
+            )
+            if res.get("status") == "ok":
+                b64_data = res.get("image_base64")
+                if b64_data:
+                    try:
+                        img_bytes = base64.b64decode(b64_data)
+                        pil_img = Image.open(io.BytesIO(img_bytes))
+                        self._latest_pil_image = pil_img
+                        w = res.get("width", pil_img.width)
+                        h = res.get("height", pil_img.height)
+                        pts = res.get("pts")
+                        pts_str = f"PTS: {pts:.4f}" if pts is not None else "PTS: n/a"
+
+                        def update_ui(img=pil_img, info=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"):
+                            self._render_image_on_canvas(img)
+                            self.lbl_preview_info.config(text=info)
+
+                        self._ui_queue.put(update_ui)
+                    except Exception:
+                        pass
+            time.sleep(0.3)
+
+    def on_open_streamer_window(self) -> None:
+        """Open a standalone StreamerWindow using current snapshot stream getter."""
+        if StreamerWindow is None:
+            self._append_log("StreamerWindow 模組不可用。")
             return
-        self._srv_sock = sock
-        self._srv_running.set()
-        self._srv_thread = threading.Thread(target=self._server_loop, daemon=True)
-        self._srv_thread.start()
-        self.btn_listen.config(text="關閉監聽")
-        self._append_log(f"開始監聽 {host}:{port} (本機可用 127.0.0.1:{port})")
-
-    def _stop_listen(self):
-        self._srv_running.clear()
-        try:
-            if self._srv_sock:
-                self._srv_sock.close()
-        except Exception:
-            pass
-        self._srv_sock = None
-        self.btn_listen.config(text="監聽連接")
-        self._append_log("已停止監聽")
-
-    # ------------------------------------------------------------------
-    # KVM 連接 (JetKVM WebRTC, 保持連線)
-    # ------------------------------------------------------------------
-    def toggle_kvm(self):
-        """「KVM連接」<-> 「關閉連接」。"""
-        if self._kvm_busy:
-            return
-        if self._kvm and self._kvm.connected:
-            self._disconnect_kvm()
-        else:
-            self._connect_kvm()
-
-    def _connect_kvm(self):
-        if not _KVM_OK:
-            self._append_log(f"無法使用 KVM 連線 (缺套件): {_KVM_ERR}")
-            return
-        ip = self.e_kvm_ip.get().strip()
-        if not ip:
-            self._append_log("請先在『測試畫面IP』填入 KVM IP")
-            return
-        if self._kvm_loop is None:
-            self._kvm_loop = AsyncLoop()      # 背景 asyncio loop
-        self._kvm = JetKVMClient(ip)
-        self._kvm_busy = True
-        self.btn_kvm.config(text="連線中...", state="disabled")
-        self._append_log(f"正在連線 KVM {ip} ...")
-
-        fut = self._kvm_loop.submit(self._kvm.connect())
-
-        def done(f):
-            self._kvm_busy = False
+        if self._streamer_window is not None:
             try:
-                f.result()
-                w, h = self._kvm.size
-                self._run_on_ui(lambda: self.btn_kvm.config(text="關閉連接", state="normal"))
-                self._post_log(f"KVM 已連線, 遠端畫面 {w}x{h}")
-            except Exception as e:
-                err = str(e) or type(e).__name__
-                self._run_on_ui(lambda: self.btn_kvm.config(text="KVM連接", state="normal"))
-                self._post_log(f"KVM 連線失敗: {err}")
+                self._streamer_window.lift()
+                return
+            except Exception:
+                self._streamer_window = None
 
-        fut.add_done_callback(done)
+        def frame_getter() -> Any:
+            if self._latest_pil_image is not None and _CV2_OK:
+                import numpy as np
+                return cv2.cvtColor(np.array(self._latest_pil_image), cv2.COLOR_RGB2BGR)
+            return None
 
-    def _disconnect_kvm(self):
-        self._kvm_busy = True
-        self.btn_kvm.config(text="斷線中...", state="disabled")
-        fut = self._kvm_loop.submit(self._kvm.close())
+        def on_close() -> None:
+            self._streamer_window = None
+            self._append_log("已關閉獨立串流視窗。")
 
-        def done(f):
-            self._kvm_busy = False
-            self._run_on_ui(lambda: self.btn_kvm.config(text="KVM連接", state="normal"))
-            self._post_log("KVM 已斷線")
+        self._streamer_window = StreamerWindow(
+            self,
+            frame_getter=frame_getter,
+            input_sender=None,  # Readonly monitoring
+            fps=15,
+            title=f"KVM Streamer - {self.var_sel_station.get()}:{self.var_sel_device.get()}",
+            on_close=on_close,
+        )
+        self._append_log("已開啟獨立串流視窗。")
 
-        fut.add_done_callback(done)
+    # --------------------------------------------------------------------------
+    # Manual Diagnostics & Pattern Creation
+    # --------------------------------------------------------------------------
+    def on_run_manual_check(self) -> None:
+        """Trigger a manual check command over TCP."""
+        station = self.var_sel_station.get().strip().upper()
+        device = self.var_sel_device.get().strip()
+        kvm_ip = self.var_sel_kvm_ip.get().strip()
+        try:
+            timeout_sec = float(self.var_timeout.get().strip())
+        except ValueError:
+            timeout_sec = 5.0
 
-    # ------------------------------------------------------------------
-    # Pattern: 擷取影像 / 創建 Pattern
-    # ------------------------------------------------------------------
-    def on_capture_image(self):
-        """擷取『測試畫面IP』的影像，存為模板根目錄下的原始擷取圖。
-        已建立 KVM 連線就直接用最新影格; 否則一次性連線擷取。"""
+        self._append_log(f"手動送出 check 指令: Station={station}, Device={device}, KVM={kvm_ip}, Timeout={timeout_sec}s...")
+        self.btn_run_check.config(state="disabled", text="⏳ 檢查執行中...")
+        self.lbl_check_result.config(text="診斷結果: 執行中...", fg="blue")
+
+        def worker() -> None:
+            res = self.client.manual_check(
+                station=station,
+                device=device,
+                kvm_ip=kvm_ip,
+                timeout_sec=timeout_sec,
+            )
+            self._ui_queue.put(lambda: self._display_check_result(res))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _display_check_result(self, res: Dict[str, Any]) -> None:
+        self.btn_run_check.config(state="normal", text="⚡ 執行手動診斷檢查")
+        status = res.get("status", "error")
+        result_val = res.get("result", "NONE")
+        elapsed = res.get("elapsed_sec", 0.0)
+
+        if status == "ok":
+            color = "#2e7d32" if result_val == "PASS" else "#c62828"
+            self.lbl_check_result.config(
+                text=f"診斷結果: {result_val} (耗時: {elapsed}s)", fg=color
+            )
+            self._append_log(f"診斷檢查成功: {result_val} (耗時 {elapsed}s)")
+        elif status == "busy":
+            self.lbl_check_result.config(text="診斷結果: BUSY (設備忙碌中/LabVIEW測試中)", fg="#e65100")
+            self._append_log("診斷檢查拒絕: 設備當前處於 BUSY 狀態 (LabVIEW 正在測試)。")
+        elif status == "timeout":
+            self.lbl_check_result.config(text=f"診斷結果: TIMEOUT (耗時 {elapsed}s)", fg="#d84315")
+            self._append_log(f"診斷檢查逾時: {elapsed}s 未命中條件。")
+        else:
+            err = res.get("message") or res.get("error") or "未知錯誤"
+            self.lbl_check_result.config(text=f"診斷錯誤: {err}", fg="#b71c1c")
+            self._append_log(f"診斷檢查失敗: {err}")
+
+    def on_save_capture(self) -> None:
+        """Save latest snapshot frame to template capture path."""
+        if self._latest_pil_image is None:
+            self._append_log("尚未擷取影格，請先點擊『📷 擷取快照』。")
+            return
         save_path = self._templates.capture_path()
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._latest_pil_image.save(save_path)
+            self._append_log(f"已儲存影格至模板目錄: {save_path}")
+        except Exception as exc:
+            self._append_log(f"儲存影格失敗: {exc}")
 
-        # 已連線: 直接用保持中的最新影格
-        if self._kvm and self._kvm.connected and self._kvm.frame is not None:
-            try:
-                cv2.imwrite(str(save_path), self._kvm.frame)
-                self._append_log(f"已擷取影像 (使用現有連線) -> {save_path}")
-            except Exception as e:
-                self._append_log(f"擷取影像存檔失敗: {e}")
-            return
-
-        # 未連線: 一次性連線擷取
-        if not _KVM_OK:
-            self._append_log(f"無法擷取影像 (缺套件): {_KVM_ERR}")
-            return
-        ip = self.e_kvm_ip.get().strip()
-        if not ip:
-            self._append_log("請先在『測試畫面IP』填入 KVM IP")
-            return
-        if self._kvm_loop is None:
-            self._kvm_loop = AsyncLoop()
-        self._append_log(f"正在擷取 {ip} 的影像 (一次性連線) ...")
-        fut = self._kvm_loop.submit(grab_one_frame(ip))
-
-        def done(f):
-            try:
-                frame = f.result()
-                if frame is None:
-                    self._post_log("擷取失敗: 沒有影格 (確認遠端有畫面)")
-                    return
-                cv2.imwrite(str(save_path), frame)
-                self._post_log(f"已擷取影像 -> {save_path}")
-            except Exception as e:
-                self._post_log(f"擷取影像失敗: {e or type(e).__name__}")
-
-        fut.add_done_callback(done)
-
-    def on_create_pattern(self):
-        """開啟設備／模板種類選單，從最新擷取圖製作標準化模板。"""
-        if not _KVM_OK:
-            self._append_log(f"無法創建 Pattern (缺套件): {_KVM_ERR}")
+    def on_create_pattern(self) -> None:
+        """Open pattern cropper with latest captured frame."""
+        if PatternCropper is None:
+            self._append_log("PatternCropper 模組不可用。")
             return
         src = self._templates.capture_path()
         if not src.exists():
-            self._append_log(f"找不到影格 {src}，請先按『擷取影像』")
-            return
-        self._append_log("請在彈出視窗選擇設備／模板種類並框選 Pattern (Esc 取消)")
-        PatternCropper(self, self._templates, str(src), device="FCT", template_key="window",
-                       on_saved=self._append_log)
+            if self._latest_pil_image:
+                self.on_save_capture()
+            else:
+                self._append_log("請先按『擷取快照』並儲存影格。")
+                return
+        PatternCropper(
+            self,
+            self._templates,
+            str(src),
+            device=self.var_sel_station.get().strip().upper(),
+            template_key="window",
+            on_saved=self._append_log,
+        )
 
-    # ------------------------------------------------------------------
-    # Switch: FCT Dock 前景化，用已連線的 KVM
-    # ------------------------------------------------------------------
-    def on_switch(self):
-        if not _KVM_OK:
-            self._append_log(f"無法執行 Switch (缺套件): {_KVM_ERR}")
-            return
-        if self._switch_busy:
-            return
-        if not (self._kvm and self._kvm.connected):
-            self._append_log("請先按『KVM連接』建立連線, 再按 Switch")
-            return
-
-        self._switch_busy = True
-        self.btn_switch.config(state="disabled")
-        self._append_log("Switch: 開始 FCT Dock 前景化 ...")
-
-        fut = self._kvm_loop.submit(
-            run_focus(self._kvm, "FCT", template_root=self._templates.root, threshold=0.8,
-                      log=self._post_log))
-
-        def done(f):
-            self._switch_busy = False
-            self._run_on_ui(lambda: self.btn_switch.config(state="normal"))
-            try:
-                f.result()
-            except Exception as e:
-                self._post_log(f"Switch 流程錯誤: {e or type(e).__name__}")
-
-        fut.add_done_callback(done)
-
-    def on_show_match_results(self):
-        """Display the persisted matching diagnostics for the most recent device run."""
-        device = self.var_dev_type.get().strip().upper()
+    def on_show_match_results(self) -> None:
+        """Display MatchResultsWindow."""
+        device = self.var_sel_station.get().strip().upper()
         if device not in self._templates.devices():
             device = "FCT"
         MatchResultsWindow(self, self._templates, device)
 
-    # ------------------------------------------------------------------
-    # Streamer: 把 KVM 連線的遠端畫面即時投到視窗
-    # ------------------------------------------------------------------
-    def _kvm_send(self, method, params):
-        """供串流視窗的互動操作呼叫: 把 JSON-RPC 指令排到 KVM 的事件迴圈執行緒送出。
-        (aiortc 物件只能在自己的 loop 執行緒操作, 故用 call_soon_threadsafe。)"""
-        if self._kvm and self._kvm.connected and self._kvm_loop:
+    # --------------------------------------------------------------------------
+    # Lifecycle & Process Isolation
+    # --------------------------------------------------------------------------
+    def _on_close(self) -> None:
+        """Gracefully close UI process without affecting Core Service or LabVIEW."""
+        self._is_closing = True
+        self._streaming_active = False
+
+        if self._streamer_window:
             try:
-                self._kvm_loop.loop.call_soon_threadsafe(self._kvm.call, method, params)
+                self._streamer_window.destroy()
             except Exception:
                 pass
 
-    def on_streamer(self):
-        if not _KVM_OK:
-            self._append_log(f"無法開啟串流 (缺套件): {_KVM_ERR}")
-            return
-        # 已開著就帶到前景
-        if self._streamer is not None:
-            try:
-                self._streamer.lift()
-                return
-            except Exception:
-                self._streamer = None
-        if not (self._kvm and self._kvm.connected):
-            self._append_log("請先按『KVM連接』建立連線, 再按 Streamer")
-            return
-
-        def _on_close():
-            self._streamer = None
-            self._append_log("已關閉串流視窗")
-
-        self._streamer = StreamerWindow(
-            self, frame_getter=lambda: self._kvm.frame if self._kvm else None,
-            input_sender=self._kvm_send, fps=30,
-            title=f"Streamer - {self.e_kvm_ip.get().strip()}",
-            on_close=_on_close)
-        self._append_log("已開啟串流視窗 (可點畫面操作遠端滑鼠/鍵盤)")
-
-    def _server_loop(self):
-        """背景執行緒: 接受連線, 每 500ms 檢查一次停止旗標。"""
-        sock = self._srv_sock
-        while self._srv_running.is_set():
-            try:
-                conn, addr = sock.accept()
-            except socket.timeout:
-                continue  # 500ms 沒連線, 回頭檢查是否該停止
-            except OSError:
-                break     # socket 已被關閉
-            # 每個連線開一個執行緒處理, 不擋住其他連線
-            threading.Thread(target=self._handle_conn, args=(conn, addr),
-                             daemon=True).start()
-
-    def _handle_conn(self, conn, addr):
-        """處理單一連線: 收到指令 -> 執行 -> 回傳結果 (action_done / error...)。"""
-        peer = f"{addr[0]}:{addr[1]}"
-        self._post_log(f"連線建立: {peer}")
-        with conn:
-            conn.settimeout(0.5)
-            while self._srv_running.is_set():
-                try:
-                    data = conn.recv(4096)
-                except socket.timeout:
-                    continue  # 沒資料, 每 500ms 檢查停止旗標
-                except OSError:
-                    break
-                if not data:
-                    break     # 對方關閉連線
-                # 可能一次收到多行指令
-                for line in data.decode("utf-8", errors="replace").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # 執行 (序列化, 避免同時操作 KVM)
-                    with self._cmd_lock:
-                        reply = self._process_command(line)
-                    # 動作完成才回覆 (action_done 或 error:...); reply 已含 \r\n
-                    try:
-                        conn.sendall(reply.encode("utf-8"))
-                    except OSError:
-                        break
-        self._post_log(f"連線結束: {peer}")
-
-    # ------------------------------------------------------------------
-    # TCP 指令處理: 設備種類,第幾台,KVM IP,功能指令[,SN]
-    # ------------------------------------------------------------------
-    def _ensure_kvm(self, ip, timeout=30):
-        """確保已連到指定 IP 的 KVM (在 TCP worker 執行緒呼叫, 透過 loop 連線)。
-        已連同一 IP 就重用; 否則關舊的、連新的。回傳 JetKVMClient。"""
-        if not _KVM_OK:
-            raise RuntimeError(f"缺套件: {_KVM_ERR}")
-        if self._kvm_loop is None:
-            self._kvm_loop = AsyncLoop()
-        cur = self._kvm
-        if cur and cur.connected and ip in cur.host:
-            return cur                              # 重用現有連線
-        if cur:
-            try:
-                self._kvm_loop.submit(cur.close()).result(timeout=10)
-            except Exception:
-                pass
-        client = JetKVMClient(ip)
-        self._kvm_loop.submit(client.connect()).result(timeout=timeout)
-        self._kvm = client
-        self._run_on_ui(lambda: self.btn_kvm.config(text="關閉連接", state="normal"))
-        return client
-
-    def _process_command(self, line):
-        """解析並執行一條指令, 回傳要回覆的字串。"""
-        self._post_log(f"收到指令: {line}")
-        # The fifth field is a DFU multi-SN payload and may itself contain commas.
-        parts = [p.strip() for p in line.split(",", 4)]
-        if len(parts) < 4:
-            return "error:invalid format (need device,no,KVM_IP,command[,SN])\r\n"
-        dev_type, dev_no, kvm_ip, func = parts[0], parts[1], parts[2], parts[3].lower()
-        sn = parts[4] if len(parts) > 4 else ""
+        # Disconnect TCP client cleanly
         try:
-            dev_type = self._templates.normalize_device(dev_type)
-        except ValueError:
-            return f"error:unknown device ({parts[0]})\r\n"
-
-        # 更新「服務端」區的顯示欄位 (設備種類 / 編號 / 指令)
-        self._run_on_ui(lambda: (self.var_dev_type.set(dev_type),
-                                 self.var_dev_no.set(dev_no),
-                                 self.var_func.set(func)))
-
-        if func in ("input", "button") and not self._templates.supports_action(dev_type, func):
-            return "error:{} 不支援 {} 操作\r\n".format(dev_type, func)
-        if dev_type == "DFU" and func == "input":
-            try:
-                # Do not connect or send HID when the job/profile itself is invalid.
-                validate_input_request(self._templates.root, dev_no, sn)
-            except ValueError as exc:
-                return "error:{}\r\n".format(exc)
-
-        # KVM IP 填入欄位並連線
-        self._run_on_ui(lambda: (self.e_kvm_ip.delete(0, "end"),
-                                 self.e_kvm_ip.insert(0, kvm_ip)))
-        try:
-            kvm = self._ensure_kvm(kvm_ip)
-        except Exception as e:
-            return f"error:KVM connect failed ({e or type(e).__name__})\r\n"
-
-        annotate = self._templates.diagnostic_path(dev_type, "cmd_detected.png")
-        annotate.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if func == "input":
-                if dev_type == "DFU":
-                    r = self._kvm_loop.submit(run_dfu_input(
-                        kvm, dev_no, sn, template_root=self._templates.root,
-                        log=self._post_log)).result(timeout=90)
-                else:
-                    r = self._kvm_loop.submit(run_flow(
-                        kvm, dev_type, template_root=self._templates.root, sn_text=sn, mode="input",
-                        log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
-            elif func == "button":
-                r = self._kvm_loop.submit(run_flow(
-                    kvm, dev_type, template_root=self._templates.root, mode="button",
-                    log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
-            elif func == "check":
-                if dev_type == "DFU":
-                    # DFU's Log result check now consumes the versioned B518
-                    # two-row display through raw JetKVM frames; it no longer
-                    # reads the retired four/seven-row Log templates.
-                    device_key = "{}:{}:{}".format(dev_type, dev_no, kvm_ip)
-                    gate = self._round_frame_gates.get(device_key)
-                    if gate is None:
-                        gate = RoundFrameGate(device_key, require_presentation_time=True)
-                        self._round_frame_gates[device_key] = gate
-                    decision = observe_latest_round_frame(kvm, gate)
-                    reply = tcp_round_reply(decision)
-                    self._post_log("round frame {}: {} {}".format(
-                        device_key, decision.kind, decision.reason))
-                    return reply
-                else:
-                    r = self._kvm_loop.submit(run_check(
-                        kvm, dev_type, template_root=self._templates.root,
-                        log=self._post_log, annotate_path=str(annotate))).result(timeout=60)
-                if not r or not r.get("ok"):
-                    return "error:{}\r\n".format((r or {}).get("error", "window not found"))
-                if r.get("testing"):
-                    return "action_done,testing\r\n"
-                # 每列: index:SN:result (SN 由 OCR 讀取)
-                body = ",".join(f"{i}:{sn}:{res}" for i, res, sn in r.get("rows", []))
-                return f"action_done,{body}\r\n" if body else "action_done\r\n"
-            elif func == "stream":
-                self._run_on_ui(self.on_streamer)
-                return "action_done\r\n"
-            else:
-                return f"error:unknown command ({func})\r\n"
-        except Exception as e:
-            return f"error:execution failed ({e or type(e).__name__})\r\n"
-
-        if not r or not r.get("ok"):
-            if r and r.get("hid_error"):
-                return f"error:input send failed ({r['hid_error']})\r\n"
-            return "error:target not found (low similarity)\r\n"
-        return "action_done\r\n"
-
-    def _on_close(self):
-        """關閉視窗: 先停掉串流、監聽與 KVM 連線再離開。"""
-        try:
-            if self._streamer is not None:
-                self._streamer.close()
+            self.client.disconnect()
         except Exception:
             pass
-        try:
-            self._stop_listen()
-        except Exception:
-            pass
-        try:
-            if self._kvm and self._kvm.connected and self._kvm_loop:
-                self._kvm_loop.submit(self._kvm.close())
-                time.sleep(0.3)
-        except Exception:
-            pass
-        try:
-            if self._kvm_loop:
-                self._kvm_loop.stop()
-        except Exception:
-            pass
+
         self.destroy()
 
 
+# ==============================================================================
+# Main Entry Point
+# ==============================================================================
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Atlas2 Lightweight Monitor Client")
+    parser.add_argument("--host", default="127.0.0.1", help="Core Service TCP host")
+    parser.add_argument("--port", type=int, default=5000, help="Core Service TCP port")
+    parser.add_argument(
+        "--headless-check",
+        action="store_true",
+        help="Perform a quick TCP ping/status check and exit without GUI",
+    )
+    args = parser.parse_args()
+
+    if args.headless_check:
+        client = CoreServiceClient(host=args.host, port=args.port)
+        status = client.get_status(timeout=3.0)
+        print(json.dumps(status, indent=2))
+        sys.exit(0 if status.get("status") in ("running", "ok") else 1)
+
+    app = AtlasUI(core_host=args.host, core_port=args.port)
+    app.mainloop()
+
 
 if __name__ == "__main__":
-    app = AtlasUI()
-    app.mainloop()
+    main()

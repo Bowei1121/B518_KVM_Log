@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import inspect
 import json
 import logging
@@ -38,6 +39,13 @@ except ImportError:
 logger = logging.getLogger("TcpJsonServer")
 
 
+DEFAULT_STATIONS = [
+    {"station": "DFU", "device": "1", "kvm_ip": "192.168.132.70"},
+    {"station": "FCT", "device": "1", "kvm_ip": "192.168.132.71"},
+    {"station": "BT", "device": "1", "kvm_ip": "192.168.132.72"},
+]
+
+
 class TcpJsonServer:
     """Headless TCP Server using newline-delimited JSON protocol."""
 
@@ -48,6 +56,7 @@ class TcpJsonServer:
         lock_manager: Optional[DeviceLockManager] = None,
         kvm_pool: Optional[KVMConnectionPool] = None,
         freeze_guard: Optional[FrameFreezeGuard] = None,
+        stations_config: Optional[list[Dict[str, Any]]] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -55,6 +64,11 @@ class TcpJsonServer:
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
         self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
         self.freeze_guard = freeze_guard if freeze_guard is not None else FrameFreezeGuard()
+        self.stations_config: list[Dict[str, Any]] = (
+            [dict(s) for s in stations_config]
+            if stations_config is not None
+            else [dict(s) for s in DEFAULT_STATIONS]
+        )
 
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -92,23 +106,154 @@ class TcpJsonServer:
         self.register_handler("status", self._handle_status)
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
+        self.register_handler("stations", self._handle_stations)
+        self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> str:
         return "pong"
 
+    async def _handle_stations(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Return real-time status of all configured test stations."""
+        active_devices = set(self.lock_manager.get_active_devices())
+        fg_status = self.freeze_guard.get_status()
+        frozen_devices = set(fg_status.get("frozen_devices", []))
+        active_ips = set(self.kvm_pool.get_active_ips())
+
+        stations_list: list[Dict[str, Any]] = []
+        for cfg in self.stations_config:
+            st_name = str(cfg.get("station", "UNKNOWN")).upper()
+            dev_id = str(cfg.get("device", "1"))
+            kvm_ip = str(cfg.get("kvm_ip", ""))
+
+            is_busy = dev_id in active_devices
+            is_frozen = dev_id in frozen_devices or f"{st_name}:{dev_id}" in frozen_devices
+            is_connected = kvm_ip in active_ips
+
+            if is_busy:
+                status_str = "BUSY"
+            elif is_frozen:
+                status_str = "FROZEN"
+            elif is_connected:
+                status_str = "IDLE"
+            else:
+                status_str = "DISCONNECTED"
+
+            stations_list.append({
+                "station": st_name,
+                "device": dev_id,
+                "kvm_ip": kvm_ip,
+                "status": status_str,
+                "is_busy": is_busy,
+                "is_frozen": is_frozen,
+                "is_connected": is_connected,
+            })
+
+        return {
+            "status": "ok",
+            "stations": stations_list,
+        }
+
     async def _handle_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
         uptime = time.time() - self._start_time if self._start_time else 0.0
+        active_devices = self.lock_manager.get_active_devices()
+        stations_res = await self._handle_stations(req)
         return {
             "status": "running",
             "uptime_seconds": round(uptime, 2),
             "active_connections": len(self._active_writers),
-            "busy_devices": self.lock_manager.get_active_devices(),
+            "busy_devices": active_devices,
             "kvm_pool": {
                 "active_connections": self.kvm_pool.active_count(),
                 "cached_ips": self.kvm_pool.get_active_ips(),
             },
             "freeze_guard": self.freeze_guard.get_status(),
+            "stations": stations_res.get("stations", []),
             "version": "1.0.0",
+        }
+
+    async def _handle_snapshot(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Request and return a single frame snapshot as base64 without acquiring device locks."""
+        kvm = req.get("_kvm_client")
+        device_id = str(req.get("device") or "default")
+        raw_kvm_ip = req.get("kvm_ip")
+        kvm_ip = str(raw_kvm_ip).strip() if raw_kvm_ip else None
+
+        if kvm is None:
+            return {
+                "status": "error",
+                "error": "missing_kvm",
+                "message": "KVM client not available. Specify 'kvm_ip' in request.",
+                "device": device_id,
+            }
+
+        # Extract frame and PTS
+        frame = None
+        pts = None
+        if hasattr(kvm, "latest_frame"):
+            latest = kvm.latest_frame()
+            if latest is not None and isinstance(latest, (tuple, list)) and len(latest) >= 5:
+                frame = latest[0]
+                pts = latest[4]
+        if frame is None and hasattr(kvm, "frame"):
+            frame = kvm.frame
+        if pts is None and hasattr(kvm, "frame_presentation_time"):
+            pts = kvm.frame_presentation_time
+
+        if frame is None:
+            return {
+                "status": "error",
+                "error": "no_frame",
+                "message": "No frame received from KVM yet",
+                "device": device_id,
+            }
+
+        # Support optional save_path
+        save_path = req.get("save_path")
+        saved_path_str: Optional[str] = None
+        if save_path:
+            p = Path(save_path).resolve()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                import cv2
+                if hasattr(frame, "shape"):
+                    cv2.imwrite(str(p), frame)
+                    saved_path_str = str(p)
+            except Exception as exc:
+                logger.warning("Failed to save snapshot to %s: %s", p, exc)
+
+        # Encode to JPEG/PNG base64
+        fmt = str(req.get("format") or "jpeg").lower()
+        quality = int(req.get("quality") or 80)
+        img_b64 = ""
+        width = 0
+        height = 0
+
+        try:
+            import cv2
+            if hasattr(frame, "shape"):
+                height, width = frame.shape[:2]
+                ext = ".png" if fmt == "png" else ".jpg"
+                params = [int(cv2.IMWRITE_JPEG_QUALITY), quality] if fmt == "jpeg" else []
+                success, buf = cv2.imencode(ext, frame, params)
+                if success:
+                    img_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+            elif isinstance(frame, (bytes, bytearray)):
+                img_b64 = base64.b64encode(frame).decode("ascii")
+            elif isinstance(frame, str):
+                img_b64 = base64.b64encode(frame.encode("utf-8")).decode("ascii")
+        except Exception as exc:
+            logger.warning("Failed to encode frame to base64: %s", exc)
+
+        return {
+            "status": "ok",
+            "kvm_ip": kvm_ip,
+            "device": device_id,
+            "width": width,
+            "height": height,
+            "pts": pts,
+            "format": fmt,
+            "image_base64": img_b64,
+            "saved_path": saved_path_str,
         }
 
     async def _evaluate_visual_condition(
@@ -417,7 +562,13 @@ class TcpJsonServer:
             else None
         )
 
-        if device_id is not None:
+        is_read_only = (
+            cmd in ("snapshot", "frame")
+            or req.get("no_lock") is True
+            or req.get("read_only") is True
+        )
+
+        if device_id is not None and not is_read_only:
             if not self.lock_manager.try_acquire(device_id, req_id=req_id):
                 logger.warning(
                     "Device %s busy; rejecting command '%s' (req_id=%s)",
@@ -432,8 +583,17 @@ class TcpJsonServer:
                     "device": device_id,
                 }
 
-        # Check KVM connection pooling if kvm_ip is provided
+        # Check KVM connection pooling if kvm_ip is provided or inferred for snapshot
         raw_kvm_ip = req.get("kvm_ip")
+        if cmd in ("snapshot", "frame") and (raw_kvm_ip is None or not str(raw_kvm_ip).strip()) and (req.get("station") or req.get("device")):
+            st = str(req.get("station") or "").upper()
+            dev = str(req.get("device") or "")
+            for cfg in getattr(self, "stations_config", []):
+                if (st and cfg.get("station") == st) or (dev and str(cfg.get("device")) == dev):
+                    raw_kvm_ip = cfg.get("kvm_ip")
+                    req["kvm_ip"] = raw_kvm_ip
+                    break
+
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
             try:
@@ -441,7 +601,7 @@ class TcpJsonServer:
                 req["_kvm_client"] = kvm_client
             except Exception as exc:
                 logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id)
-                if device_id is not None:
+                if device_id is not None and not is_read_only:
                     self.lock_manager.release(device_id)
                 err_resp = {
                     "req_id": req_id,
@@ -496,7 +656,7 @@ class TcpJsonServer:
                 err_resp["device"] = device_id
             return err_resp
         finally:
-            if device_id is not None:
+            if device_id is not None and not is_read_only:
                 self.lock_manager.release(device_id)
 
     async def _process_line(
