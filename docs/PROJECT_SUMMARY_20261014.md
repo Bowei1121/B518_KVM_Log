@@ -57,3 +57,10 @@ HTML 架構報告依技能規則保存在 OS temp，未加入 repo：
 - 領域定義已記入 CONTEXT.md。啟動輪次、參與位置、結果釋出、人工確認、逾時及重連規則仍待訪談；完整共同理解尚未確認，沒有開始實作。
 - 前一回合配對查證：契約 1.1 幾何及四種狀態 pattern 對齊；NOTEST 顏色一個色階差異落在既有容差內。既有 App 真實 Tk／Quartz 圖片的五狀態與七種容量回放通過；橋接 raw-frame 18 tests／30 subtests、App 契約 7 tests 通過。
 - 保存的 App 圖片經 current JSON dispatcher 與合成 sequence/PTS，可得到 `kind=taken` 及 20 格結果；同時重現無 timeout 的 Monitoring 請求回 `result=PASS, kind=waiting, results=[]`。本次是離線／記憶體驗證，未連實機。
+
+## grill-with-docs：已確認輪次開始與待確認處理
+
+- Q3：使用者同意「輸入 SN → 啟動 Log Solution 監控 → 確認監控中 → 啟動 ATE 測試 → 等待結果」。這是目標順序；舊 DFU input 的現有順序是 ATE OK 後送 Command+Shift+M，尚未修改。
+- Q4：LabVIEW 知道本輪哪些位置有產品，以及各產品 SN；本輪參與清單可由此提供，不以 NOTEST 推斷合法空格。
+- Q5：先採 A 方案，遇到待確認即通知 LabVIEW 暫停；人員在 Log Solution 處理後再繼續取結果。現行 JSON 長輪詢尚未提供立即待確認通知。
+- 新確認詞彙已即時記入 CONTEXT.md。結果位置對應、已投入產品的 NOTEST／TIMEOUT 政策、斷線／重試與結果交付確認仍待釐清；沒有開始程式實作。
