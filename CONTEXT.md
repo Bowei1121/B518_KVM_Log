@@ -13,3 +13,14 @@
 - **JSON Protocol**: 換行符分隔（Newline-Delimited）的 JSON 格式協定。包含 Request ID，取代原先易碎的逗號分隔純字串協定，無向後相容包袱。
 - **Long Polling**: 用於耗時測試的 TCP 等待機制。LabVIEW 對 `check` 送出長 Timeout 請求，Core Service 卡住該 TCP 連線在背景監聽，直到結果出現才回傳，降低頻寬浪費。
 - **Frame Freeze Guard**: 畫面凍結防呆機制。強制檢查 JetKVM 底層回傳影格的時間戳 (Presentation Timestamp)，確保測試機 HDMI 畫面活躍，避免因當機誤判前次結果。
+
+## 協作角色
+
+**LabVIEW 測試流程控制者**：
+整個自動化測試流程的控制者，決定何時輸入 SN、啟動測試、等待結果及執行後續設備動作。
+
+**橋接程式**：
+LabVIEW 與 ATE 測試機之間的指令及視覺結果中繼，依 LabVIEW 指令操作測試機並回報畫面辨識結果；後續流程決定屬於 LabVIEW。
+
+**Log Solution 正式結果來源**：
+DFU、FCT、BT 所有工站共同的測試結果來源，讀取 ATE Log、管理測試輪次與人工確認，透過人機畫面的狀態標記及結果色帶提供結果。
