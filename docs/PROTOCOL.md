@@ -30,7 +30,7 @@ JSON 內不使用 `null`。字串欄位沒有值時為 `""`，數字為 `0`，�
 | --- | --- | --- | --- |
 | `protocol_version` | string | 是 | 固定 `"1.0"` |
 | `req_id` | string | 是 | LabVIEW 產生，1–64 字元，每筆請求不重複（建議用 GUID）。Core 原樣回傳。**不是輪次 UUID** |
-| `device` | string | 是 | 設備 ID，必須與 Core 設備清單**完全相同**（區分大小寫），例如 `DFU-01`。`ping`、`devices` 填 `""` |
+| `device` | string | 是 | 設備 ID，必須與 Core 設備清單**完全相同**（區分大小寫），例如 `DFU-01`。`ping`、`status` 填 `""` |
 | `cmd` | string | 是 | 指令名稱，見第 4 節 |
 
 嚴格規則：
@@ -62,7 +62,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `cmd` | 用途 | 上鎖 | DFU | FCT | BT |
 | --- | --- | --- | --- | --- | --- |
 | `ping` | 確認 Core 存活 | 否 | — | — | — |
-| `devices` | 取得設備清單與即時狀態 | 否 | — | — | — |
+| `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `check` | 讀取 Log Solution 本輪狀態／結果，可長輪詢 | 是 | ✔ | ✔ | ✔ |
 | `input` | 輸入本輪 SN | 是 | ✔ | ✘ | ✘ |
@@ -87,7 +87,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `pong` | boolean | 固定 `true` |
 | `core_version` | string | Core Service 版本 |
 
-### 5.2 `devices`
+### 5.2 `status`
 
 請求只有共同欄位，`device` 填 `""`。
 
@@ -95,12 +95,14 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 
 | 欄位 | 型別 | 說明 |
 | --- | --- | --- |
+| `core_uptime_sec` | number | Core 已運行秒數 |
 | `devices` | array of object | 依設備清單順序 |
 | `devices[].device` | string | 設備 ID |
 | `devices[].station` | string | `DFU`／`FCT`／`BT` |
 | `devices[].connected` | boolean | KVM 連線池中是否已連線 |
 | `devices[].busy` | boolean | 是否有上鎖指令執行中 |
 | `devices[].frozen` | boolean | 畫面凍結檢查是否判定凍結 |
+| `devices[].channels` | number | 設定的測試通道數 |
 
 KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
@@ -138,7 +140,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 長輪詢在下列任一情況**立即回覆**，否則等到逾時：
 
-1. `data.kind = "taken"`：本輪結果已可靠取得。
+1. `data.kind = "taken"`：本輪結果已可靠取得，且格數等於該設備測試通道數。
 2. `data.kind = "paused"`：Log Solution 待確認，LabVIEW 應暫停後續設備動作。
 3. `data.kind = "already_taken"`：本輪結果先前已取用過。
 4. 任何錯誤（例如 `frame_frozen`）。
@@ -188,7 +190,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `items` | array of object | 是 | 1 筆以上 |
-| `items[].slot` | number | 是 | DFU 輸入位置，必須在該設備輸入 profile（4／7 格）範圍內，不可重複 |
+| `items[].slot` | number | 是 | 測試通道編號 1～N（N = 該設備設定的測試通道數），不可重複；與 Log Solution 通道／Slot 編號一致 |
 | `items[].sn` | string | 是 | SN，1–64 字元；可含逗號、冒號 |
 
 `data`：
@@ -197,7 +199,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | --- | --- | --- |
 | `entered` | array of number | 實際完成輸入的位置 |
 
-DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果格數無關。
+Core 在 DFU 輸入視窗找出所有 checkbox，數量必須等於 N，依由上而下、由左至右排序為通道 1～N；數量不符回 `hid_failed`，不輸入任何 SN。
 
 只有 Log Solution 在 `standby`，或 `complete` 且本輪結果已取用時才允許輸入；`monitoring`／`review` 時回 `log_solution_busy`，不輸入任何 SN。
 
@@ -232,6 +234,7 @@ DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果�
 | `invalid_argument` | error | 指令欄位值不合法（slot 超出範圍、timeout 超出範圍等） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
 | `log_solution_busy` | error | `input` 時 Log Solution 為 `monitoring` 或 `review`（上一輪未結束或待確認） | 先完成本輪 `check`／人工確認 |
+| `capacity_mismatch` | error | `check` 畫面結果格數與設定的測試通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM | 設備／網路異常，暫停 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
@@ -252,7 +255,7 @@ DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果�
 | --- | --- |
 | `Envelope` | 第 3 節除 `data` 外欄位 |
 | `PingResp` | Envelope + `data{pong, core_version}` |
-| `DevicesResp` | Envelope + `data{devices[]}` |
+| `StatusResp` | Envelope + `data{core_uptime_sec, devices[]}` |
 | `SnapshotResp` | Envelope + `data{width, height, format, image_base64}` |
 | `CheckResp` | Envelope + `data{kind, state, reason, capacity, results[]{slot, status}}` |
 | `InputResp` | Envelope + `data{entered[]}` |
@@ -273,18 +276,18 @@ DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果�
  "data":{"pong":true,"core_version":"2.0.0"}}
 ```
 
-### 9.2 `devices`
+### 9.2 `status`
 
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"devices"}
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"status"}
 ```
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"devices",
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"status",
  "status":"ok","error":"","message":"","elapsed_sec":0.0,
- "data":{"devices":[
-   {"device":"DFU-01","station":"DFU","connected":true,"busy":false,"frozen":false},
-   {"device":"FCT-01","station":"FCT","connected":false,"busy":false,"frozen":false},
-   {"device":"BT-01","station":"BT","connected":true,"busy":true,"frozen":false}]}}
+ "data":{"core_uptime_sec":3600,"devices":[
+   {"device":"DFU-01","station":"DFU","connected":true,"busy":false,"frozen":false,"channels":4},
+   {"device":"FCT-01","station":"FCT","connected":false,"busy":false,"frozen":false,"channels":4},
+   {"device":"BT-01","station":"BT","connected":true,"busy":true,"frozen":false,"channels":4}]}}
 ```
 
 ### 9.3 `snapshot`
@@ -388,4 +391,7 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 | `input`／`button` | Core JSON 未註冊，只有舊 GUI 流程 | 註冊為正式指令 |
 | `check` 長輪詢 | 待確認（paused）不立即回，等到逾時；非長輪詢在等待中回 `result=PASS` | paused 立即回；移除總結果欄位 |
 | FCT／BT `check` | 模板判讀 | Log Solution 顯示契約判讀 |
-| `stations`／`status` | 回傳 `kvm_ip`、內部狀態 | LabVIEW 改用 `devices`；`status`、`shutdown` 只供 Monitor UI／管理工具 |
+| `stations`／`status` | 回傳 `kvm_ip`、內部狀態 | LabVIEW 用新 `status`；完整內部狀態改名 `core_status`，與 `shutdown` 只供 Monitor UI／管理工具 |
+| `check` 格數核對 | 無 | 畫面格數 ≠ 設定通道數回 `capacity_mismatch` |
+| 長輪詢間隔 | 0.1 秒，判讀在事件迴圈同步執行 | 0.5 秒，判讀移至背景執行緒並設單張時間上限 |
+| DFU 輸入定位 | 每通道一張錨點模板（`slotN_4slot`） | 只用 checkbox 模板，自動排序 |

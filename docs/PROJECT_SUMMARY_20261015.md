@@ -68,3 +68,12 @@
 - Q29：LabVIEW 用 `status`（原 `devices` 改名，含 `core_uptime_sec`）；完整內部狀態改名 `core_status` 僅供 Monitor UI。
 - Q30：模板跟通道數走（B）；使用者原本做法為只用 checkbox 模板、自動依由左至右、由上而下排序決定 slot 1～N。
 - Q31：測試通道數套用三站，`check` 格數不符回 `capacity_mismatch`；B518 全部為 4 通道。
+
+### 第 7 輪（Q32–Q36）與收斂
+
+- Q32：DFU 輸入只用 checkbox 模板，自動排序為通道 1～N；ATE 測試程式 Slot 與 Log Solution 通道一致。
+- Q33：3 台真機＋6 路錄影重播模擬做壓力測試；使用者認為不易驗收，9 台到位後補測。
+- Q34：缺 `devices.json` 時 Core 拒絕啟動，設定頁首次開啟帶入 B518 預設 9 台。Q35：ID 格式 `<站別>-<兩位數>`。Q36：Monitor UI 手動檢查不上鎖、不消耗本輪結果。
+- 新增 `docs/adr/0007-device-registry-and-unified-identity.md`（Proposed）；CONTEXT.md 新增設備 ID、設備清單、測試通道數；PROTOCOL.md 改 `status`、加 `capacity_mismatch`、通道數與 checkbox 自動排序。
+- 子 session 已完成 FCT／BT／DFU `check` fail-closed 修正：commit `b6b01b6`，分支 `claude/elated-chaplygin-31da83`，134 tests passed，未合併 main。
+- 待使用者確認共同理解後，再拆 GitHub issues 並實作。
