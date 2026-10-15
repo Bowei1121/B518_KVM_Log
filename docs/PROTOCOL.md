@@ -65,6 +65,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `check` | 讀取 Log Solution 本輪狀態／結果，可長輪詢 | 是 | ✔ | ✔ | ✔ |
+| `inspect` | Monitor UI 唯讀檢視（僅供 Monitor UI，LabVIEW 不得使用） | 否 | ✔ | ✔ | ✔ |
 | `input` | 輸入本輪 SN | 是 | ✔ | ✘ | ✘ |
 | `button` | 按 Start All | 是 | ✘ | ✘ | ✔ |
 
@@ -216,6 +217,15 @@ Core 在 DFU 輸入視窗找出所有 checkbox，數量必須等於 N，依由�
 | 欄位 | 型別 | 說明 |
 | --- | --- | --- |
 | `action` | string | 實際執行的動作 |
+
+### 5.7 `inspect`（僅供 Monitor UI）
+
+Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必填，0～3600），回覆格式相同（`data` 為同一結構）。
+
+- 不上鎖：同一設備有 LabVIEW 上鎖指令執行中時仍可執行，不回 `device_busy`。
+- 唯讀：不改變本輪狀態，不消耗 LabVIEW 的結果，LabVIEW 之後的 `check` 仍可取得 `taken`。
+- 因為不經過本輪狀態，`inspect` 不會回 `already_taken`。完整畫面須連續兩次讀到相同結果才回 `taken`（`reason=reliable_complete`），僅代表「此刻畫面上的結果可靠」，不代表已交付給 LabVIEW。
+- LabVIEW 不得使用本指令；Core 不保證它與 `check` 的長輪詢結果一致。
 
 ## 6. 錯誤碼
 

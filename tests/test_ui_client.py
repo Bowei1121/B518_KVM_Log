@@ -231,7 +231,7 @@ class TestLightweightMonitorUIClient:
             ui_client = CoreServiceClient(host=host, port=port)
             snap_res = ui_client.get_snapshot(device="DFU-01", timeout=2.0)
             assert snap_res.get("status") == "ok", f"Expected ok, got: {snap_res}"
-            assert len(snap_res["data"]["image_base64"]) > 0
+            assert len(snap_res["image_base64"]) > 0
 
             time.sleep(0.2)
             kvm.show("complete", ["PASS", "FAIL", "NOTEST", "PASS"])
@@ -291,12 +291,14 @@ class TestLightweightMonitorUIClient:
         th.join(timeout=12.0)
 
         assert out["res"].get("status") == "ok"
-        assert out["res"]["data"]["kind"] == "taken"
+        assert out["res"]["kind"] == "taken"
 
+        # Manual checks are read-only: a LabVIEW lock on the device does not block them.
         assert server.lock_manager.try_acquire("DFU-01", req_id="other-tester") is True
-        res_busy = client.manual_check(device="DFU-01", timeout_sec=1.0)
-        assert res_busy.get("status") == "error"
-        assert res_busy.get("error") == "device_busy"
+        res_locked = client.manual_check(device="DFU-01", timeout_sec=1.0)
+        assert res_locked.get("status") == "ok"
+        assert res_locked.get("error") != "device_busy"
+        assert server.lock_manager.is_locked("DFU-01") is True
 
         server.lock_manager.release("DFU-01")
         client.disconnect()

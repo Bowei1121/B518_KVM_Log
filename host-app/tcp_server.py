@@ -79,6 +79,7 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "check": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
     "input": {"entered": []},
     "button": {"action": ""},
+    "inspect": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
 }
 
 
@@ -113,6 +114,46 @@ def _template_observation(r: Dict[str, Any]) -> Dict[str, Any]:
         results = [{"slot": index, "status": "PASS" if status == "pass" else "FAIL"} for index, status in rows]
         return {"kind": "taken", "state": "", "reason": "template_rows", "capacity": len(rows), "results": results}
     return {**base, "kind": "unknown", "reason": "template_not_matched"}
+
+
+def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read-only reading of the Log Solution screen. Runs on a worker thread.
+
+    Reports what the screen shows now. A complete round is reported as taken only after two
+    equal complete readings, and nothing here arms or consumes the device's round gate.
+    """
+    from round_frame_consumer import MarkerState, inspect_app_frame
+
+    if hasattr(kvm, "latest_frame"):
+        snapshot = kvm.latest_frame()
+        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+    else:
+        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    if frame is None:
+        return {"error": "no_frame", "message": "No frame received from KVM yet"}
+    obs = inspect_app_frame(frame, received_at, now=time.monotonic())
+    if not obs.reliable:
+        return _unknown(obs.reason)
+    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
+    if obs.state == MarkerState.REVIEW:
+        return {**base, "kind": "paused", "reason": "confirmation_required", "results": []}
+    if obs.state != MarkerState.COMPLETE:
+        return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
+    if not obs.results_complete:
+        if stability is not None:
+            stability.update(sig=None, count=0)
+        return {**base, "kind": "waiting", "reason": "incomplete_or_nonterminal_results", "results": []}
+    signature = (obs.capacity, obs.statuses)
+    if stability is None:
+        return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
+    if stability["sig"] == signature:
+        stability["count"] += 1
+    else:
+        stability.update(sig=signature, count=1)
+    results = [{"slot": slot, "status": status} for slot, status in enumerate(obs.statuses, 1)]
+    if stability["count"] >= 2:
+        return {**base, "kind": "taken", "reason": "reliable_complete", "results": results}
+    return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
 
 
 class TcpJsonServer:
@@ -199,6 +240,7 @@ class TcpJsonServer:
         self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
+        self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("button", self._handle_button, fields=("action",), device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
@@ -349,26 +391,33 @@ class TcpJsonServer:
             "image_base64": img_b64,
         }
 
-    async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any], read_only: bool = False,
+                             stability: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """One reading of the Log Solution screen for a device, as a 1.0 check payload.
 
         The reading runs on a worker thread with a per-frame time limit. A reading that
         exceeds the limit is reported as unknown and the poll continues; a device whose
         previous reading is still running is reported as unknown without starting another.
         """
-        previous = self._inspections.get(entry.device_id)
+        flight_key = f"inspect:{entry.device_id}" if read_only else entry.device_id
+        previous = self._inspections.get(flight_key)
         if previous is not None and not previous.done():
             return _unknown("inspection_busy")
 
         if entry.station == "DFU":
             from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-            gate = self._dfu_gates.get(entry.device_id)
-            if gate is None:
-                gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
-                self._dfu_gates[entry.device_id] = gate
+            if read_only:
+                # Gate-less reading: never arms, takes or otherwise touches the round.
+                def job():
+                    return _inspect_round(kvm, stability)
+            else:
+                gate = self._dfu_gates.get(entry.device_id)
+                if gate is None:
+                    gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
+                    self._dfu_gates[entry.device_id] = gate
 
-            def job():
-                return observe_latest_round_frame(kvm, gate)
+                def job():
+                    return observe_latest_round_frame(kvm, gate)
         else:
             # BT / FCT: template catalog until their Log Solution contract lands.
             frame_val = getattr(kvm, "frame", None)
@@ -390,7 +439,7 @@ class TcpJsonServer:
                 ))
 
         future = self._inspector.submit(job)
-        self._inspections[entry.device_id] = future
+        self._inspections[flight_key] = future
         try:
             raw = await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
         except asyncio.TimeoutError:
@@ -402,7 +451,7 @@ class TcpJsonServer:
             return {"error": "internal_error", "message": f"inspection error: {exc}"}
 
         if entry.station == "DFU":
-            return _round_observation(raw)
+            return raw if read_only else _round_observation(raw)
         return _template_observation(raw)
 
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
@@ -467,6 +516,13 @@ class TcpJsonServer:
         return {"status": "ok", "data": result}
 
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._long_poll(req, read_only=False)
+
+    async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor UI's read-only check: no device lock, and it never consumes the round result."""
+        return await self._long_poll(req, read_only=True)
+
+    async def _long_poll(self, req: Dict[str, Any], read_only: bool) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
@@ -479,6 +535,7 @@ class TcpJsonServer:
         writer = req.get("_writer")
         start_time = time.monotonic()
         last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
+        stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -504,7 +561,7 @@ class TcpJsonServer:
                     "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
                 }
 
-            obs = await self._observe_check(kvm, entry, req)
+            obs = await self._observe_check(kvm, entry, req, read_only=read_only, stability=stability)
             if "error" in obs:
                 return {"status": "error", "error": obs["error"], "message": obs.get("message", ""),
                         "data": {**last, "kind": "unknown", "results": []}}
@@ -585,7 +642,7 @@ class TcpJsonServer:
                 return "unsupported_command", f"'button' is only supported for BT devices"
             if req.get("action") != "start_all":
                 return "invalid_argument", "action must be 'start_all'"
-        if cmd == "check":
+        if cmd in ("check", "inspect"):
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 return "invalid_argument", "timeout_sec is required and must be a number"
@@ -623,7 +680,7 @@ class TcpJsonServer:
                 req["_device_entry"] = entry
                 req["kvm_ip"] = entry.kvm_ip
 
-        is_read_only = cmd == "snapshot"
+        is_read_only = cmd in ("snapshot", "inspect")
 
         if device_id is not None and not is_read_only:
             if not self.lock_manager.try_acquire(device_id, req_id=req_id):
