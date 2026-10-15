@@ -77,6 +77,7 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
     "check": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
+    "input": {"entered": []},
 }
 
 
@@ -197,6 +198,7 @@ class TcpJsonServer:
         self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
+        self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -401,6 +403,53 @@ class TcpJsonServer:
             return _round_observation(raw)
         return _template_observation(raw)
 
+    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
+        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
+        from round_frame_consumer import MarkerState, inspect_app_frame
+
+        if hasattr(kvm, "latest_frame"):
+            snapshot = kvm.latest_frame()
+            frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+        else:
+            frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+        if frame is None:
+            return "hid_failed: no frame to read the Log Solution state"
+        observation = inspect_app_frame(frame, received_at, now=time.monotonic())
+        if not observation.reliable:
+            return "hid_failed: Log Solution state unreadable"
+        if observation.state == MarkerState.STANDBY:
+            return None
+        if observation.state == MarkerState.COMPLETE:
+            gate = self._dfu_gates.get(entry.device_id)
+            if gate is not None and gate.taken:
+                return None
+            return "log_solution_busy: round result not yet taken"
+        return f"log_solution_busy: Log Solution state is {observation.state.value}"
+
+    async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
+        from dfu_flow import DfuInputError, parse_items, run_dfu_input
+        from template_catalog import TemplateCatalog
+
+        kvm = req.get("_kvm_client")
+        entry = req["_device_entry"]
+        try:
+            parse_items(req.get("items"), entry.channels)
+        except DfuInputError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": []}}
+        refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
+        if refusal is not None:
+            code, _, message = refusal.partition(": ")
+            return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
+
+        template_root = self.template_root or TemplateCatalog.default_root()
+        try:
+            result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
+                                         log=logger.info, diagnostics_key=entry.device_id)
+        except DfuInputError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
+        return {"status": "ok", "data": result}
+
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
@@ -513,6 +562,8 @@ class TcpJsonServer:
             return "missing_device", f"'{cmd}' requires a 'device' ID"
         if self.device_registry.get(device) is None:
             return "unknown_device", f"device '{device}' is not configured"
+        if cmd == "input" and self.device_registry.get(device).station != "DFU":
+            return "unsupported_command", f"'input' is only supported for DFU devices"
         if cmd == "check":
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
