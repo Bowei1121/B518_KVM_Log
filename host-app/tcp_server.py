@@ -19,6 +19,7 @@ import socket
 import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
 
 try:
@@ -52,6 +53,7 @@ PROTOCOL_VERSION = "1.0"
 CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
+INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution or template reading
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
@@ -78,6 +80,39 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _unknown(reason: str) -> Dict[str, Any]:
+    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
+
+
+def _round_observation(decision: Any) -> Dict[str, Any]:
+    """Map a round-gate decision onto the check 1.0 data shape."""
+    if decision.kind == "frozen" or decision.reason == "frame_frozen":
+        return {"error": "frame_frozen", "message": "DFU round frame stream is frozen"}
+    if decision.reason == "no_frame":
+        return {"error": "no_frame", "message": "No frame received from KVM yet"}
+    return {
+        "kind": decision.kind,
+        "state": decision.state.value if decision.state is not None else "",
+        "reason": decision.reason,
+        "capacity": int(decision.capacity),
+        "results": [{"slot": slot, "status": status} for slot, status in decision.results],
+    }
+
+
+def _template_observation(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a template-catalog reading onto the check 1.0 data shape."""
+    if r.get("error") == "frame_frozen":
+        return {"error": "frame_frozen", "message": r.get("message", "Frame presentation timestamp is static / frozen")}
+    base = {"state": "", "capacity": 0, "results": []}
+    if r.get("ok") and r.get("testing"):
+        return {**base, "kind": "waiting", "reason": "testing"}
+    rows = r.get("rows") or []
+    if r.get("ok") and rows:
+        results = [{"slot": index, "status": "PASS" if status == "pass" else "FAIL"} for index, status in rows]
+        return {"kind": "taken", "state": "", "reason": "template_rows", "capacity": len(rows), "results": results}
+    return {**base, "kind": "unknown", "reason": "template_not_matched"}
+
+
 class TcpJsonServer:
     """Headless TCP Server using newline-delimited JSON protocol."""
 
@@ -90,6 +125,7 @@ class TcpJsonServer:
         freeze_guard: Optional[FrameFreezeGuard] = None,
         device_registry: Optional[DeviceRegistry] = None,
         template_root: Optional[str | Path] = None,
+        inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
     ) -> None:
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
@@ -112,6 +148,10 @@ class TcpJsonServer:
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._dfu_gates: Dict[str, Any] = {}
+        self.inspection_timeout_sec = float(inspection_timeout_sec)
+        # Frame readings run on worker threads so the event loop keeps serving requests.
+        self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
+        self._inspections: Dict[str, Future] = {}
         self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
         self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
 
@@ -308,63 +348,58 @@ class TcpJsonServer:
     async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any]) -> Dict[str, Any]:
         """One reading of the Log Solution screen for a device, as a 1.0 check payload.
 
-        Returns the data dict, or {"error": code, "message": text} when the reading itself failed.
+        The reading runs on a worker thread with a per-frame time limit. A reading that
+        exceeds the limit is reported as unknown and the poll continues; a device whose
+        previous reading is still running is reported as unknown without starting another.
         """
-        if entry.station == "DFU":
-            try:
-                from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-                gate = self._dfu_gates.get(entry.device_id)
-                if gate is None:
-                    gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
-                    self._dfu_gates[entry.device_id] = gate
-                decision = observe_latest_round_frame(kvm, gate)
-            except Exception as exc:
-                logger.exception("DFU inspection error for %s", entry.device_id)
-                return {"error": "internal_error", "message": f"DFU inspection error: {exc}"}
-            if decision.kind == "frozen" or decision.reason == "frame_frozen":
-                return {"error": "frame_frozen", "message": "DFU round frame stream is frozen"}
-            if decision.reason == "no_frame":
-                return {"error": "no_frame", "message": "No frame received from KVM yet"}
-            return {
-                "kind": decision.kind,
-                "state": decision.state.value if decision.state is not None else "",
-                "reason": decision.reason,
-                "capacity": int(decision.capacity),
-                "results": [{"slot": slot, "status": status} for slot, status in decision.results],
-            }
+        previous = self._inspections.get(entry.device_id)
+        if previous is not None and not previous.done():
+            return _unknown("inspection_busy")
 
-        # BT / FCT: template catalog until their Log Solution contract lands (ticket #5 note).
-        frame_val = getattr(kvm, "frame", None)
-        if not hasattr(frame_val, "shape"):
-            return {"error": "no_frame", "message": "No frame received from KVM yet"}
-        template_root = req.get("template_root") or self.template_root
-        if not template_root:
-            from template_catalog import TemplateCatalog
-            template_root = TemplateCatalog.default_root()
+        if entry.station == "DFU":
+            from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
+            gate = self._dfu_gates.get(entry.device_id)
+            if gate is None:
+                gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
+                self._dfu_gates[entry.device_id] = gate
+
+            def job():
+                return observe_latest_round_frame(kvm, gate)
+        else:
+            # BT / FCT: template catalog until their Log Solution contract lands.
+            frame_val = getattr(kvm, "frame", None)
+            if not hasattr(frame_val, "shape"):
+                return {"error": "no_frame", "message": "No frame received from KVM yet"}
+            template_root = req.get("template_root") or self.template_root
+            if not template_root:
+                from template_catalog import TemplateCatalog
+                template_root = TemplateCatalog.default_root()
+
+            def job():
+                from auto_flow import run_check
+                return asyncio.run(run_check(
+                    kvm,
+                    device=entry.station,
+                    template_root=template_root,
+                    device_id=entry.device_id,
+                    check_liveness=False,  # the check loop already verified the picture is live
+                ))
+
+        future = self._inspector.submit(job)
+        self._inspections[entry.device_id] = future
         try:
-            from auto_flow import run_check
-            r = await run_check(
-                kvm,
-                device=entry.station,
-                template_root=template_root,
-                freeze_guard=self.freeze_guard,
-                device_id=entry.device_id,
-            )
+            raw = await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
+        except asyncio.TimeoutError:
+            logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", entry.device_id,
+                         self.inspection_timeout_sec)
+            return _unknown("inspection_timeout")
         except Exception as exc:
-            logger.warning("Template check error for %s: %s", entry.device_id, exc)
-            return {"error": "internal_error", "message": f"Template check error: {exc}"}
-        if r.get("error") == "frame_frozen":
-            return {"error": "frame_frozen", "message": r.get("message", "Frame presentation timestamp is static / frozen")}
-        base = {"state": "", "capacity": 0, "results": []}
-        if r.get("ok") and r.get("testing"):
-            return {**base, "kind": "waiting", "reason": "testing"}
-        rows = r.get("rows") or []
-        if r.get("ok") and rows:
-            results = [{"slot": index, "status": "PASS" if status == "pass" else "FAIL"}
-                       for index, status in rows]
-            return {"kind": "taken", "state": "", "reason": "template_rows",
-                    "capacity": len(rows), "results": results}
-        return {**base, "kind": "unknown", "reason": "template_not_matched"}
+            logger.exception("Inspection error for %s", entry.device_id)
+            return {"error": "internal_error", "message": f"inspection error: {exc}"}
+
+        if entry.station == "DFU":
+            return _round_observation(raw)
+        return _template_observation(raw)
 
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
