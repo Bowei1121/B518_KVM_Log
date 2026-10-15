@@ -177,7 +177,7 @@ def probe_kvm(ip: str, timeout: float = 2.0, port: int = KVM_HTTP_PORT,
 
 def restart_refusal(stations: List[Dict[str, Any]]) -> Optional[str]:
     """Why Core must not restart now: any device with an action in progress. None when it may."""
-    busy = [str(st.get("device", "")) for st in stations if st.get("busy")]
+    busy = [str(st.get("device", "")) for st in stations if st.get("is_busy")]
     if not busy:
         return None
     return "以下設備正在執行動作，不能重啟 Core: " + "、".join(busy)
