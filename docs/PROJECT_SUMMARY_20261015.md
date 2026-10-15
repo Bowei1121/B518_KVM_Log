@@ -90,3 +90,4 @@
 - 本機副本：`.scratch/device-identity-protocol-1.0/issues/01～12-*.md`（本機編號 = GitHub 編號 − 1）。
 - 可立即開始：01 設備清單（#2）。前置：fail-closed 修正分支先合併 main。
 - fail-closed 修正 PR https://github.com/Bowei1121/B518_KVM_Log/pull/14 已合併 main（merge commit `63ef822`），並同步到 Gitea `main`。
+- 本 session 文件分支已開 PR：https://github.com/Bowei1121/B518_KVM_Log/pull/15 （純文件，可合併、無衝突）。
