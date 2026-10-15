@@ -82,3 +82,10 @@
 
 - 使用者確認三個測試切入點：TCP JSON 協定（主要）、設備清單載入與驗證（唯一新增）、DFU 輸入流程（沿用）。
 - Spec 已發布為 GitHub issue https://github.com/Bowei1121/B518_KVM_Log/issues/1 ，標籤 `ready-for-agent`（本次於 GitHub 新建此標籤）。
+
+### to-tickets
+
+- Spec 本機副本：`docs/specs/0001-device-identity-protocol-1.0.md`。
+- 拆成 12 張票，GitHub #2～#13（皆為 #1 的 sub-issue，原生 blocked-by 相依已設定）；#2～#12 標 `ready-for-agent`，#13（LabVIEW 改版）標 `ready-for-human`（本次新建此標籤）。
+- 本機副本：`.scratch/device-identity-protocol-1.0/issues/01～12-*.md`（本機編號 = GitHub 編號 − 1）。
+- 可立即開始：01 設備清單（#2）。前置：fail-closed 修正分支先合併 main。
