@@ -22,6 +22,11 @@ import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
 try:
+    from device_registry import DeviceRegistryError
+except ImportError:
+    from .device_registry import DeviceRegistryError  # type: ignore[import-not-found,no-redef]
+
+try:
     from device_lock import DeviceLockManager
 except ImportError:
     from .device_lock import DeviceLockManager  # type: ignore[import-not-found,no-redef]
@@ -36,14 +41,12 @@ try:
 except ImportError:
     from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
 
+try:
+    from device_registry import DeviceRegistry
+except ImportError:
+    from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
-
-
-DEFAULT_STATIONS = [
-    {"station": "DFU", "device": "1", "kvm_ip": "192.168.132.70"},
-    {"station": "FCT", "device": "1", "kvm_ip": "192.168.132.71"},
-    {"station": "BT", "device": "1", "kvm_ip": "192.168.132.72"},
-]
 
 
 class TcpJsonServer:
@@ -56,7 +59,7 @@ class TcpJsonServer:
         lock_manager: Optional[DeviceLockManager] = None,
         kvm_pool: Optional[KVMConnectionPool] = None,
         freeze_guard: Optional[FrameFreezeGuard] = None,
-        stations_config: Optional[list[Dict[str, Any]]] = None,
+        device_registry: Optional[DeviceRegistry] = None,
         template_root: Optional[str | Path] = None,
     ) -> None:
         self.host = host
@@ -67,10 +70,8 @@ class TcpJsonServer:
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
         self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
         self.freeze_guard = freeze_guard if freeze_guard is not None else FrameFreezeGuard()
-        self.stations_config: list[Dict[str, Any]] = (
-            [dict(s) for s in stations_config]
-            if stations_config is not None
-            else [dict(s) for s in DEFAULT_STATIONS]
+        self.device_registry: DeviceRegistry = (
+            device_registry if device_registry is not None else DeviceRegistry([])
         )
 
         self._server: Optional[asyncio.Server] = None
@@ -123,10 +124,10 @@ class TcpJsonServer:
         active_ips = set(self.kvm_pool.get_active_ips())
 
         stations_list: list[Dict[str, Any]] = []
-        for cfg in self.stations_config:
-            st_name = str(cfg.get("station", "UNKNOWN")).upper()
-            dev_id = str(cfg.get("device", "1"))
-            kvm_ip = str(cfg.get("kvm_ip", ""))
+        for entry in self.device_registry.entries():
+            st_name = entry.station
+            dev_id = entry.device_id
+            kvm_ip = entry.kvm_ip
 
             is_busy = dev_id in active_devices
             is_frozen = dev_id in frozen_devices or f"{st_name}:{dev_id}" in frozen_devices
@@ -543,6 +544,40 @@ class TcpJsonServer:
     def _generate_req_id(self) -> str:
         return f"req-{uuid.uuid4().hex[:8]}"
 
+    def _resolve_snapshot_device(self, req_id: str, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Reject raw KVM addressing and resolve the device ID to its KVM IP via the registry."""
+        for field in ("kvm_ip", "station"):
+            if field in req:
+                return {
+                    "req_id": req_id,
+                    "status": "error",
+                    "error": "forbidden_field",
+                    "message": f"field '{field}' is not allowed; address the device by 'device' ID",
+                }
+
+        raw_device = req.get("device")
+        device_id = "" if raw_device is None else str(raw_device)
+        if device_id == "":
+            return {
+                "req_id": req_id,
+                "status": "error",
+                "error": "missing_device",
+                "message": "snapshot requires a 'device' ID",
+            }
+
+        entry = self.device_registry.get(device_id)
+        if entry is None:
+            return {
+                "req_id": req_id,
+                "status": "error",
+                "error": "unknown_device",
+                "message": f"device '{device_id}' is not configured",
+                "device": device_id,
+            }
+
+        req["kvm_ip"] = entry.kvm_ip
+        return None
+
     async def _dispatch_command(
         self,
         req_id: str,
@@ -564,6 +599,11 @@ class TcpJsonServer:
                 "error": "unknown_command",
                 "message": f"Unknown command: '{cmd}'",
             }
+
+        if cmd == "snapshot":
+            addressing_error = self._resolve_snapshot_device(req_id, req)
+            if addressing_error is not None:
+                return addressing_error
 
         # Check per-device locking
         raw_device = req.get("device")
@@ -594,17 +634,8 @@ class TcpJsonServer:
                     "device": device_id,
                 }
 
-        # Check KVM connection pooling if kvm_ip is provided or inferred for snapshot
+        # Check KVM connection pooling (kvm_ip is set by the device registry for snapshot)
         raw_kvm_ip = req.get("kvm_ip")
-        if cmd in ("snapshot", "frame") and (raw_kvm_ip is None or not str(raw_kvm_ip).strip()) and (req.get("station") or req.get("device")):
-            st = str(req.get("station") or "").upper()
-            dev = str(req.get("device") or "")
-            for cfg in getattr(self, "stations_config", []):
-                if (st and cfg.get("station") == st) or (dev and str(cfg.get("device")) == dev):
-                    raw_kvm_ip = cfg.get("kvm_ip")
-                    req["kvm_ip"] = raw_kvm_ip
-                    break
-
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
             try:
@@ -852,6 +883,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Headless TCP JSON Server for B518 JetKVM Relay")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
+    parser.add_argument("--devices-file", default=None, help="Device list JSON (default: ~/Documents/template/devices.json)")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
     parser.add_argument("--log-file", default=None, help="Path to rotating log file")
     parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log file size before rotation")
@@ -878,7 +910,14 @@ def main() -> None:
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
 
-    server = TcpJsonServer(host=args.host, port=args.port)
+    try:
+        registry = DeviceRegistry.load(args.devices_file)
+    except DeviceRegistryError as exc:
+        for line in exc.errors:
+            logging.error("Device list error: %s", line)
+        raise SystemExit(1) from exc
+
+    server = TcpJsonServer(host=args.host, port=args.port, device_registry=registry)
     print(f"Starting Headless TCP JSON Server on {args.host}:{args.port}...")
     server.serve_forever()
 
