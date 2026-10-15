@@ -28,7 +28,7 @@ class TemplateCatalogTests(unittest.TestCase):
         self.assertIn("dock_icon", self.catalog.keys("DFU"))
         self.assertNotIn("slot_label", self.catalog.keys("DFU"))
         self.assertNotIn("group_label", self.catalog.keys("DFU"))
-        self.assertIn("slot7_7slot", self.catalog.keys("DFU"))
+        self.assertFalse(any(key.startswith("slot") for key in self.catalog.keys("DFU")))
         self.assertFalse(any(key.startswith("log_") for key in self.catalog.keys("DFU")))
         self.assertEqual(
             self.catalog.keys("BT"),
