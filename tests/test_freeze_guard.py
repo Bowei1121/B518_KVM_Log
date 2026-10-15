@@ -391,7 +391,7 @@ class TestTCPJsonServerFreezeGuard:
             assert "Frame presentation timestamp" in res.get("message", "")
 
     def test_check_live_advancing_kvm_passes_normally(self, running_server_with_kvm):
-        """When station check runs against live advancing KVM, passes with status ok."""
+        """Live advancing KVM with no visible result → no_result (not PASS, not frozen)."""
         server, kvm_map, (host, port) = running_server_with_kvm
         kvm_client = MockKVMClient(initial_pts=20.0)
         kvm_map["192.168.1.101"] = kvm_client
@@ -423,9 +423,11 @@ class TestTCPJsonServerFreezeGuard:
                 res = recv_json(sock, timeout=3.0)
 
                 assert res["req_id"] == "req-chk-02"
-                assert res["status"] == "ok"
+                # Live PTS alone is not a test result: fail closed, but not frozen.
+                assert res["status"] == "error"
+                assert res["error"] == "no_result"
+                assert res["result"] == "NONE"
                 assert res["device"] == "2"
-                assert res.get("verified") is True
         finally:
             stop_event.set()
             thread.join(timeout=1.0)
@@ -521,7 +523,7 @@ class TestTCPJsonServerFreezeGuard:
                 assert res_frozen["error"] == "frame_frozen"
                 assert res_frozen["device"] == "10"
 
-                assert res_live["status"] == "ok"
+                assert res_live["error"] == "no_result"
                 assert res_live["device"] == "20"
         finally:
             stop_stream.set()
