@@ -50,19 +50,18 @@ logger = logging.getLogger("TcpJsonServer")
 
 PROTOCOL_VERSION = "1.0"
 CORE_VERSION = "2.0.0"
+CHECK_MAX_TIMEOUT_SEC = 3600
+CHECK_POLL_INTERVAL_SEC = 0.5
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
-# Extra fields allowed per command. check keeps its legacy fields until ticket #5 rewrites it.
+# Extra fields allowed per command.
 COMMAND_FIELDS: Dict[str, frozenset] = {
     "ping": frozenset(),
     "status": frozenset(),
     "core_status": frozenset(),
     "shutdown": frozenset(),
     "snapshot": frozenset({"format", "quality"}),
-    "check": frozenset({
-        "timeout_sec", "timeout", "poll_interval", "target_pattern", "pattern",
-        "freeze_threshold", "threshold_sec", "no_lock", "read_only",
-    }),
+    "check": frozenset({"timeout_sec"}),
 }
 ENVELOPE_KEYS = frozenset({
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
@@ -70,12 +69,12 @@ ENVELOPE_KEYS = frozenset({
 ERROR_CODE_MAP = {
     "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
-    "invalid_timeout": "invalid_argument",
 }
 DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
+    "check": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
 }
 
 
@@ -112,6 +111,7 @@ class TcpJsonServer:
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
+        self._dfu_gates: Dict[str, Any] = {}
         self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
         self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
 
@@ -305,284 +305,130 @@ class TcpJsonServer:
             "image_base64": img_b64,
         }
 
-    async def _evaluate_visual_condition(
-        self,
-        kvm: Any,
-        station: str,
-        device_id: str,
-        req: Dict[str, Any],
-        is_long_polling: bool = False,
-    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
-        """Evaluate the live frame against station rules, patterns, or custom evaluators.
-        
-        Returns:
-            (matched: bool, result_name: Optional[str], extra_data: Optional[Dict[str, Any]])
-            If result_name == "ERROR_FROZEN", indicates a freeze error occurred during inspection.
-            If result_name == "ERROR_CHECK", inspection itself raised; extra_data is the error reply.
-            matched is True only when a result was positively observed (fail closed).
-        """
-        # 1. Custom evaluator callback in request
-        evaluator = req.get("evaluator")
-        if callable(evaluator):
-            try:
-                res = evaluator(kvm)
-                if inspect.iscoroutine(res):
-                    res = await res
-                if res is not None and res is not False:
-                    match_res = "PASS" if res is True else str(res).upper()
-                    return True, match_res, {}
-                return False, None, {}
-            except Exception as exc:
-                logger.exception("Custom evaluator error: %s", exc)
+    async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any]) -> Dict[str, Any]:
+        """One reading of the Log Solution screen for a device, as a 1.0 check payload.
 
-        # 2. DFU Station: only a "taken" round decision carries a result.
-        if station == "DFU":
+        Returns the data dict, or {"error": code, "message": text} when the reading itself failed.
+        """
+        if entry.station == "DFU":
             try:
                 from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-                gate_key = device_id
-                if not hasattr(self, "_dfu_gates"):
-                    self._dfu_gates: Dict[str, Any] = {}
-                gate = self._dfu_gates.get(gate_key)
+                gate = self._dfu_gates.get(entry.device_id)
                 if gate is None:
-                    gate = RoundFrameGate(gate_key, require_presentation_time=True)
-                    self._dfu_gates[gate_key] = gate
+                    gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
+                    self._dfu_gates[entry.device_id] = gate
                 decision = observe_latest_round_frame(kvm, gate)
             except Exception as exc:
-                logger.warning("DFU inspection error for %s: %s", device_id, exc)
-                return False, "ERROR_CHECK", {
-                    "status": "error",
-                    "error": "check_failed",
-                    "message": f"DFU inspection error: {exc}",
-                    "device": device_id,
-                }
+                logger.exception("DFU inspection error for %s", entry.device_id)
+                return {"error": "internal_error", "message": f"DFU inspection error: {exc}"}
             if decision.kind == "frozen" or decision.reason == "frame_frozen":
-                return False, "ERROR_FROZEN", {
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": "DFU round frame stream is frozen",
-                    "device": device_id,
-                }
-            if decision.kind == "taken":
-                results = decision.results
-                # PASS only when every slot is PASS; FAIL/NOTEST/TIMEOUT → FAIL
-                final_res = "PASS" if results and all(r[1] == "PASS" for r in results) else "FAIL"
-                return True, final_res, {
-                    "kind": decision.kind,
-                    "reason": decision.reason,
-                    "results": results,
-                }
-            return False, None, {"kind": decision.kind, "reason": decision.reason}
-
-        no_result_extra: Dict[str, Any] = {}
-
-        # 3. OpenCV Template Catalog Inspection (BT / FCT)
-        frame_val = getattr(kvm, "frame", None)
-        if station in ("BT", "FCT") and hasattr(frame_val, "shape"):
-            template_root = req.get("template_root") or self.template_root
-            if not template_root:
-                from template_catalog import TemplateCatalog
-                template_root = TemplateCatalog.default_root()
-            try:
-                from auto_flow import run_check
-                r = await run_check(
-                    kvm,
-                    device=station,
-                    template_root=template_root,
-                    freeze_guard=self.freeze_guard,
-                    device_id=device_id,
-                )
-            except Exception as exc:
-                logger.warning("Template check error for %s/%s: %s", station, device_id, exc)
-                return False, "ERROR_CHECK", {
-                    "status": "error",
-                    "error": "check_failed",
-                    "message": f"Template check error: {exc}",
-                    "device": device_id,
-                }
-            if r.get("error") == "frame_frozen":
-                return False, "ERROR_FROZEN", {
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": r.get("message", "Frame presentation timestamp is static / frozen"),
-                    "device": device_id,
-                }
-            if r.get("ok"):
-                if r.get("testing"):
-                    if not is_long_polling:
-                        return True, "TESTING", {"check_result": r}
-                    return False, None, {"check_result": r}
-                rows = r.get("rows") or []
-                if rows:
-                    final_res = "PASS" if all(row[1] == "pass" for row in rows) else "FAIL"
-                    return True, final_res, {"check_result": r}
-            # window not found / missing templates / empty rows → no result
-            no_result_extra = {"check_result": r}
-
-        # 4/5 below read mock-only attributes (result / visual_state / str frame);
-        # a real JetKVMClient exposes none of them, so they never yield a result there.
-        # 4. Target Pattern matching
-        target_pattern = req.get("target_pattern") or req.get("pattern")
-        if target_pattern is not None:
-            target_str = str(target_pattern).upper()
-            for attr in ("result", "visual_state", "pattern", "status", "visual_result"):
-                val = getattr(kvm, attr, None)
-                if val is not None and str(val).upper() == target_str:
-                    return True, target_str, {}
-            if isinstance(frame_val, str) and frame_val.upper() == target_str:
-                return True, target_str, {}
-            return False, None, no_result_extra
-
-        # 5. Direct KVM visual state attributes
-        if getattr(kvm, "result", None) is not None:
-            res_str = str(kvm.result).upper()
-            if res_str in ("PASS", "FAIL"):
-                return True, res_str, {}
-        if getattr(kvm, "visual_state", None) is not None:
-            vstate = str(kvm.visual_state).upper()
-            if vstate in ("PASS", "FAIL", "COMPLETE", "DONE"):
-                res_str = "PASS" if vstate in ("PASS", "COMPLETE", "DONE") else "FAIL"
-                return True, res_str, {}
-
-        # 6. Nothing positively observed → no result (never PASS on liveness alone)
-        return False, None, no_result_extra
-
-    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Station vision check handler with long-polling and Frame Freeze Guard protection."""
-        kvm = req.get("_kvm_client")
-        entry = req.get("_device_entry")
-        if entry is None:
-            return {"status": "error", "error": "unknown_device", "message": "device is not configured"}
-        station = entry.station
-        device_id = entry.device_id
-        threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
-        guard_threshold = float(threshold_window) if threshold_window is not None else None
-        dev_key = device_id
-
-        if kvm is None:
+                return {"error": "frame_frozen", "message": "DFU round frame stream is frozen"}
+            if decision.reason == "no_frame":
+                return {"error": "no_frame", "message": "No frame received from KVM yet"}
             return {
-                "status": "error",
-                "error": "missing_kvm",
-                "message": "KVM client not available. Specify 'kvm_ip' in request.",
-                "device": device_id,
+                "kind": decision.kind,
+                "state": decision.state.value if decision.state is not None else "",
+                "reason": decision.reason,
+                "capacity": int(decision.capacity),
+                "results": [{"slot": slot, "status": status} for slot, status in decision.results],
             }
 
-        raw_timeout = req.get("timeout_sec") if req.get("timeout_sec") is not None else req.get("timeout")
-        has_timeout_arg = raw_timeout is not None
-        timeout_val: float = 0.0
-        if has_timeout_arg:
-            try:
-                timeout_val = float(raw_timeout)
-            except (ValueError, TypeError):
-                return {
-                    "status": "error",
-                    "error": "invalid_timeout",
-                    "message": f"Invalid timeout_sec: {raw_timeout}",
-                    "device": device_id,
-                }
-            if timeout_val < 0:
-                return {
-                    "status": "error",
-                    "error": "invalid_timeout",
-                    "message": f"Negative timeout_sec: {timeout_val}",
-                    "device": device_id,
-                }
+        # BT / FCT: template catalog until their Log Solution contract lands (ticket #5 note).
+        frame_val = getattr(kvm, "frame", None)
+        if not hasattr(frame_val, "shape"):
+            return {"error": "no_frame", "message": "No frame received from KVM yet"}
+        template_root = req.get("template_root") or self.template_root
+        if not template_root:
+            from template_catalog import TemplateCatalog
+            template_root = TemplateCatalog.default_root()
+        try:
+            from auto_flow import run_check
+            r = await run_check(
+                kvm,
+                device=entry.station,
+                template_root=template_root,
+                freeze_guard=self.freeze_guard,
+                device_id=entry.device_id,
+            )
+        except Exception as exc:
+            logger.warning("Template check error for %s: %s", entry.device_id, exc)
+            return {"error": "internal_error", "message": f"Template check error: {exc}"}
+        if r.get("error") == "frame_frozen":
+            return {"error": "frame_frozen", "message": r.get("message", "Frame presentation timestamp is static / frozen")}
+        base = {"state": "", "capacity": 0, "results": []}
+        if r.get("ok") and r.get("testing"):
+            return {**base, "kind": "waiting", "reason": "testing"}
+        rows = r.get("rows") or []
+        if r.get("ok") and rows:
+            results = [{"slot": index, "status": "PASS" if status == "pass" else "FAIL"}
+                       for index, status in rows]
+            return {"kind": "taken", "state": "", "reason": "template_rows",
+                    "capacity": len(rows), "results": results}
+        return {**base, "kind": "unknown", "reason": "template_not_matched"}
 
-        is_long_polling = has_timeout_arg and timeout_val > 0.0
-        poll_interval = float(req.get("poll_interval") or 0.1)
+    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
-        start_time = time.monotonic()
+        timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
+        already_taken or an error, and otherwise times out with the last observed state.
+        """
+        kvm = req.get("_kvm_client")
+        entry = req.get("_device_entry")
+        timeout_sec = float(req["timeout_sec"])
         reader = req.get("_reader")
         writer = req.get("_writer")
+        start_time = time.monotonic()
+        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
 
         while True:
-            # 0. Check client connection liveness & server status
+            elapsed = time.monotonic() - start_time
             is_client_gone = (reader is not None and reader.at_eof()) or (
                 writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
             )
             if is_client_gone:
-                logger.info("Client disconnected during check for device %s", device_id)
-                return {
-                    "status": "cancelled",
-                    "error": "client_disconnected",
-                    "device": device_id,
-                }
+                logger.info("Client disconnected during check for device %s", entry.device_id)
+                return {"status": "cancelled", "error": "client_disconnected"}
             if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
-                return {
-                    "status": "error",
-                    "error": "server_shutting_down",
-                    "device": device_id,
-                }
+                return {"status": "error", "error": "server_shutting_down"}
 
-            # 1. Frame Freeze Guard verification across all stations (BT, FCT, DFU)
+            # Frame Freeze Guard: the picture's timestamps must keep advancing.
             is_live, freeze_err = await self.freeze_guard.verify_liveness(
                 kvm,
-                device_id=dev_key,
-                threshold_window=guard_threshold,
-                poll_interval=min(poll_interval, 0.05),
+                device_id=entry.device_id,
+                poll_interval=0.05,
             )
             if not is_live:
-                elapsed = time.monotonic() - start_time
-                err_dict = dict(freeze_err or {})
-                err_dict["status"] = "error"
-                if "error" not in err_dict:
-                    err_dict["error"] = "frame_frozen"
-                err_dict["device"] = device_id
-                err_dict["elapsed_sec"] = round(elapsed, 2)
-                return err_dict
-
-            # 2. Visual condition evaluation
-            matched, res_name, extra_data = await self._evaluate_visual_condition(
-                kvm, station, device_id, req, is_long_polling=is_long_polling
-            )
-
-            if res_name in ("ERROR_FROZEN", "ERROR_CHECK"):
-                elapsed = time.monotonic() - start_time
-                err_resp = dict(extra_data or {})
-                err_resp["elapsed_sec"] = round(elapsed, 2)
-                return err_resp
-
-            if matched:
-                elapsed = time.monotonic() - start_time
-                resp = {
-                    "status": "ok",
-                    "result": res_name,
-                    "elapsed_sec": round(elapsed, 2),
-                    "station": station,
-                    "device": device_id,
+                return {
+                    "status": "error",
+                    "error": "frame_frozen",
+                    "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
                 }
-                if extra_data:
-                    resp.update(extra_data)
-                return resp
 
-            # 3. Timeout check
-            now = time.monotonic()
-            elapsed = now - start_time
-            if has_timeout_arg and elapsed >= timeout_val:
+            obs = await self._observe_check(kvm, entry, req)
+            if "error" in obs:
+                return {"status": "error", "error": obs["error"], "message": obs.get("message", ""),
+                        "data": {**last, "kind": "unknown", "results": []}}
+            last = obs
+
+            if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
+                return {
+                    "status": "error",
+                    "error": "capacity_mismatch",
+                    "message": f"screen shows {obs['capacity']} slots, device is configured for {entry.channels}",
+                    "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
+                }
+            if obs["kind"] in ("taken", "paused", "already_taken"):
+                return {"status": "ok", "data": obs}
+            if timeout_sec == 0:
+                return {"status": "ok", "data": obs}
+            if elapsed >= timeout_sec:
                 return {
                     "status": "timeout",
-                    "result": "NONE",
-                    "elapsed_sec": round(max(elapsed, timeout_val), 1),
-                    "station": station,
-                    "device": device_id,
+                    "error": "timeout",
+                    "message": f"no reliable result within {timeout_sec:g} s",
+                    "data": last,
                 }
-            elif not has_timeout_arg:
-                # Single-shot check with nothing positively observed: fail closed.
-                resp = {
-                    "status": "error",
-                    "error": "no_result",
-                    "result": "NONE",
-                    "elapsed_sec": round(elapsed, 2),
-                    "station": station,
-                    "device": device_id,
-                    "message": "No test result visible on screen",
-                }
-                if extra_data:
-                    resp.update(extra_data)
-                return resp
-
-            # Wait before next poll iteration
-            sleep_time = min(poll_interval, max(0.01, timeout_val - elapsed))
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, timeout_sec - elapsed)))
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
         # Schedule the server loop to stop after replying cleanly to the client
@@ -632,6 +478,12 @@ class TcpJsonServer:
             return "missing_device", f"'{cmd}' requires a 'device' ID"
         if self.device_registry.get(device) is None:
             return "unknown_device", f"device '{device}' is not configured"
+        if cmd == "check":
+            timeout = req.get("timeout_sec")
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return "invalid_argument", "timeout_sec is required and must be a number"
+            if not 0 <= timeout <= CHECK_MAX_TIMEOUT_SEC:
+                return "invalid_argument", f"timeout_sec must be between 0 and {CHECK_MAX_TIMEOUT_SEC}"
         return None
 
     async def _dispatch_command(
@@ -664,11 +516,7 @@ class TcpJsonServer:
                 req["_device_entry"] = entry
                 req["kvm_ip"] = entry.kvm_ip
 
-        is_read_only = (
-            cmd in ("snapshot", "frame")
-            or req.get("no_lock") is True
-            or req.get("read_only") is True
-        )
+        is_read_only = cmd == "snapshot"
 
         if device_id is not None and not is_read_only:
             if not self.lock_manager.try_acquire(device_id, req_id=req_id):

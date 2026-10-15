@@ -28,7 +28,7 @@ RESULT_COLUMNS = 10
 BLACK_MAX = 80
 WHITE_MIN = 176
 COLOR_TOLERANCE = 20
-TERMINAL = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT"))
+TERMINAL = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
 
 class MarkerState(str, Enum):
