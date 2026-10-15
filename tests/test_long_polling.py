@@ -33,6 +33,67 @@ from protocol_helpers import make_registry, wire, numbered, ProbeServer
 from tcp_server import TcpJsonServer
 from round_frame_consumer import MarkerState, RoundFrameGate
 
+ROUTES = {
+    "BT-01": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.11",
+        "channels": 4
+    },
+    "BT-02": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.12",
+        "channels": 4
+    },
+    "BT-03": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.13",
+        "channels": 4
+    },
+    "BT-04": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.14",
+        "channels": 4
+    },
+    "BT-05": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.15",
+        "channels": 4
+    },
+    "BT-06": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.16",
+        "channels": 4
+    },
+    "BT-07": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.17",
+        "channels": 4
+    },
+    "BT-08": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.18",
+        "channels": 4
+    },
+    "BT-09": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.19",
+        "channels": 4
+    },
+    "BT-10": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.20",
+        "channels": 4
+    },
+    "DFU-20": {
+        "station": "DFU",
+        "kvm_ip": "192.168.210.21",
+        "channels": 4
+    }
+}
+
+
+ROUTES.update({f"BT-{n}": {"station": "BT", "kvm_ip": f"192.168.210.{100 + n}", "channels": 4} for n in (11, 12, 13)})
+
 
 # ---------------------------------------------------------------------------
 # Test Helpers & Mock KVM
@@ -124,7 +185,7 @@ def running_server_with_kvm_pool():
     pool = KVMConnectionPool(client_factory=client_factory)
     lock_mgr = DeviceLockManager()
     freeze_guard = FrameFreezeGuard(freeze_threshold=0.2)
-    server = ProbeServer(device_registry=make_registry(), 
+    server = ProbeServer(device_registry=make_registry(ROUTES), 
         host="127.0.0.1",
         port=0,
         lock_manager=lock_mgr,
@@ -151,7 +212,7 @@ class TestLongPollingVisualVerification:
         """When target pattern or result is already met, return immediately with status ok."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=10.0, initial_result="PASS")
-        kvm_map["192.168.1.10"] = kvm
+        kvm_map["192.168.210.11"] = kvm
 
         # Live stream in background
         stop_stream = threading.Event()
@@ -172,8 +233,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-003",
                         "cmd": "check",
-                        "device": "DFU-01",
-                        "kvm_ip": "192.168.1.10",
+                        "device": "BT-01",
                         "timeout_sec": 30,
                     },
                 )
@@ -183,7 +243,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-003"
                 assert res["status"] == "ok"
                 assert res["data"]["result"] == "PASS"
-                assert res["device"] == "DFU-01"
+                assert res["device"] == "BT-01"
                 assert "elapsed_sec" in res
                 assert elapsed < 1.0
         finally:
@@ -194,7 +254,7 @@ class TestLongPollingVisualVerification:
         """TCP socket stays open while server polls, returning once condition is met in background."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=20.0, initial_result=None)
-        kvm_map["192.168.1.11"] = kvm
+        kvm_map["192.168.210.12"] = kvm
 
         stop_stream = threading.Event()
 
@@ -218,8 +278,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-delayed",
                         "cmd": "check",
-                        "device": "DFU-02",
-                        "kvm_ip": "192.168.1.11",
+                        "device": "BT-02",
                         "timeout_sec": 10,
                         "poll_interval": 0.05,
                     },
@@ -230,7 +289,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-delayed"
                 assert res["status"] == "ok"
                 assert res["data"]["result"] == "PASS"
-                assert res["device"] == "DFU-02"
+                assert res["device"] == "BT-02"
                 assert 0.3 <= elapsed <= 2.0
                 assert 0.3 <= res["elapsed_sec"] <= 2.0
         finally:
@@ -241,7 +300,7 @@ class TestLongPollingVisualVerification:
         """When no match occurs within timeout_sec, return timeout response with result NONE."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=30.0, initial_result=None)
-        kvm_map["192.168.1.12"] = kvm
+        kvm_map["192.168.210.13"] = kvm
 
         stop_stream = threading.Event()
 
@@ -261,8 +320,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-to",
                         "cmd": "check",
-                        "device": "DFU-03",
-                        "kvm_ip": "192.168.1.12",
+                        "device": "BT-03",
                         "timeout_sec": 0.5,
                         "poll_interval": 0.05,
                     },
@@ -273,7 +331,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-to"
                 assert res["status"] == "timeout"
                 assert res["data"]["result"] == "NONE"
-                assert res["device"] == "DFU-03"
+                assert res["device"] == "BT-03"
                 assert elapsed >= 0.45
                 assert res["elapsed_sec"] >= 0.5
         finally:
@@ -284,7 +342,7 @@ class TestLongPollingVisualVerification:
         """While Client A is long-polling device 4, Client B gets immediate busy rejection."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=40.0, initial_result=None)
-        kvm_map["192.168.1.13"] = kvm
+        kvm_map["192.168.210.14"] = kvm
 
         stop_stream = threading.Event()
 
@@ -306,8 +364,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-client-a",
                         "cmd": "check",
-                        "device": "DFU-04",
-                        "kvm_ip": "192.168.1.13",
+                        "device": "BT-04",
                         "timeout_sec": 1.0,
                         "poll_interval": 0.05,
                     },
@@ -320,7 +377,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-client-b",
                         "cmd": "probe",
-                        "device": "DFU-04",
+                        "device": "BT-04",
                     },
                 )
                 res_b = recv_json(sock_b, timeout=2.0)
@@ -328,7 +385,7 @@ class TestLongPollingVisualVerification:
                 assert res_b["req_id"] == "req-client-b"
                 assert res_b["status"] == "error"
                 assert res_b["error"] == "device_busy"
-                assert res_b["device"] == "DFU-04"
+                assert res_b["device"] == "BT-04"
 
                 # Client A eventually times out
                 res_a = recv_json(sock_a, timeout=3.0)
@@ -342,7 +399,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-client-b-retry",
                         "cmd": "probe",
-                        "device": "DFU-04",
+                        "device": "BT-04",
                     },
                 )
                 res_b_retry = recv_json(sock_b, timeout=2.0)
@@ -357,7 +414,7 @@ class TestLongPollingVisualVerification:
         """If video stream freezes mid-poll, Frame Freeze Guard aborts check before timeout_sec."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=50.0, initial_result=None)
-        kvm_map["192.168.1.14"] = kvm
+        kvm_map["192.168.210.15"] = kvm
 
         stop_stream = threading.Event()
 
@@ -380,8 +437,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-freeze-abort",
                         "cmd": "check",
-                        "device": "DFU-05",
-                        "kvm_ip": "192.168.1.14",
+                        "device": "BT-05",
                         "timeout_sec": 5.0,  # Long timeout
                         "freeze_threshold": 0.2,  # Short freeze threshold
                         "poll_interval": 0.05,
@@ -393,7 +449,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-freeze-abort"
                 assert res["status"] == "error"
                 assert res["error"] == "frame_frozen"
-                assert res["device"] == "DFU-05"
+                assert res["device"] == "BT-05"
                 # Aborted well before the 5.0s timeout!
                 assert elapsed < 2.0
 
@@ -403,7 +459,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-followup",
                         "cmd": "probe",
-                        "device": "DFU-05",
+                        "device": "BT-05",
                     },
                 )
                 res2 = recv_json(sock, timeout=2.0)
@@ -418,8 +474,8 @@ class TestLongPollingVisualVerification:
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm_dev6 = MockKVMClient(initial_pts=60.0, initial_result=None)
         kvm_dev7 = MockKVMClient(initial_pts=70.0, initial_result="PASS")
-        kvm_map["192.168.1.15"] = kvm_dev6
-        kvm_map["192.168.1.16"] = kvm_dev7
+        kvm_map["192.168.210.16"] = kvm_dev6
+        kvm_map["192.168.210.17"] = kvm_dev7
 
         stop_stream = threading.Event()
 
@@ -442,8 +498,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "c1-long-poll",
                         "cmd": "check",
-                        "device": "DFU-06",
-                        "kvm_ip": "192.168.1.15",
+                        "device": "BT-06",
                         "timeout_sec": 2.0,
                         "poll_interval": 0.05,
                     },
@@ -468,8 +523,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "c2-check-dev7",
                         "cmd": "check",
-                        "device": "DFU-07",
-                        "kvm_ip": "192.168.1.16",
+                        "device": "BT-07",
                         "timeout_sec": 2.0,
                     },
                 )
@@ -490,7 +544,7 @@ class TestLongPollingVisualVerification:
         """When a client drops socket mid-poll, server exits poll and frees device lock."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=80.0, initial_result=None)
-        kvm_map["192.168.1.17"] = kvm
+        kvm_map["192.168.210.18"] = kvm
 
         stop_stream = threading.Event()
 
@@ -509,8 +563,7 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "drop-req",
                     "cmd": "check",
-                    "device": "DFU-08",
-                    "kvm_ip": "192.168.1.17",
+                    "device": "BT-08",
                     "timeout_sec": 10.0,
                     "poll_interval": 0.05,
                 },
@@ -528,7 +581,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "c2-after-drop",
                         "cmd": "probe",
-                        "device": "DFU-08",
+                        "device": "BT-08",
                     },
                 )
                 res = recv_json(sock2, timeout=2.0)
@@ -543,7 +596,7 @@ class TestLongPollingVisualVerification:
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=90.0)
         kvm.pattern = "TESTING"
-        kvm_map["192.168.1.18"] = kvm
+        kvm_map["192.168.210.19"] = kvm
 
         stop_stream = threading.Event()
 
@@ -565,8 +618,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-custom-pat",
                         "cmd": "check",
-                        "device": "DFU-09",
-                        "kvm_ip": "192.168.1.18",
+                        "device": "BT-09",
                         "target_pattern": "CUSTOM_PASS",
                         "timeout_sec": 5.0,
                         "poll_interval": 0.05,
@@ -577,7 +629,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-custom-pat"
                 assert res["status"] == "ok"
                 assert res["data"]["result"] == "CUSTOM_PASS"
-                assert res["device"] == "DFU-09"
+                assert res["device"] == "BT-09"
                 assert 0.2 <= res["elapsed_sec"] <= 2.0
         finally:
             stop_stream.set()
@@ -587,7 +639,7 @@ class TestLongPollingVisualVerification:
         """Server rejects negative timeout and missing KVM cleanly."""
         server, kvm_map, (host, port) = running_server_with_kvm_pool
         kvm = MockKVMClient(initial_pts=100.0)
-        kvm_map["192.168.1.19"] = kvm
+        kvm_map["192.168.210.20"] = kvm
 
         with socket.create_connection((host, port), timeout=3.0) as sock:
             # 1. Negative timeout
@@ -596,8 +648,7 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "err-neg-to",
                     "cmd": "check",
-                    "device": "DFU-10",
-                    "kvm_ip": "192.168.1.19",
+                    "device": "BT-10",
                     "timeout_sec": -5,
                 },
             )
@@ -611,8 +662,7 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "err-str-to",
                     "cmd": "check",
-                    "device": "DFU-10",
-                    "kvm_ip": "192.168.1.19",
+                    "device": "BT-10",
                     "timeout_sec": "not-a-number",
                 },
             )
@@ -620,18 +670,18 @@ class TestLongPollingVisualVerification:
             assert r2["status"] == "error"
             assert r2["error"] == "invalid_argument"
 
-            # 3. Missing kvm_ip
+            # 3. Device ID not in the device list (KVM IP is never taken from the request)
             send_json(
                 sock,
                 {
                     "req_id": "err-no-kvm",
                     "cmd": "check",
-                    "device": "DFU-10",
+                    "device": "BT-99",
                 },
             )
             r3 = recv_json(sock)
             assert r3["status"] == "error"
-            assert r3["error"] == "kvm_connect_failed"
+            assert r3["error"] == "unknown_device"
 
     def test_dfu_station_long_polling_transition(self, running_server_with_kvm_pool):
         """DFU station long-polling holds until round-frame marker transitions to complete."""
@@ -643,7 +693,7 @@ class TestLongPollingVisualVerification:
         complete_frame = render_frame(MarkerState.COMPLETE, ["PASS", "PASS"])
 
         kvm = MockKVMClient(initial_pts=110.0, frame_data=monitoring_frame)
-        kvm_map["192.168.1.20"] = kvm
+        kvm_map["192.168.210.21"] = kvm
 
         stop_stream = threading.Event()
 
@@ -665,9 +715,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-dfu-lp",
                         "cmd": "check",
-                        "station": "DFU",
                         "device": "DFU-20",
-                        "kvm_ip": "192.168.1.20",
                         "timeout_sec": 4.0,
                         "poll_interval": 0.05,
                     },
@@ -689,12 +737,12 @@ class TestLongPollingVisualVerification:
         server, kvm_map, (host, port) = running_server_with_kvm_pool
 
         # 3 stations with different completion delays
-        delays = {"DFU-11": 0.2, "DFU-12": 0.4, "DFU-13": 0.6}
+        delays = {"BT-11": 0.2, "BT-12": 0.4, "BT-13": 0.6}
         kvms = {}
         for dev, delay in delays.items():
             k = MockKVMClient(initial_pts=200.0 + float(dev[-2:]))
             kvms[dev] = k
-            kvm_map[f"192.168.1.{dev[-2:]}"] = k
+            kvm_map[ROUTES[dev]["kvm_ip"]] = k
 
         stop_stream = threading.Event()
 
@@ -721,7 +769,6 @@ class TestLongPollingVisualVerification:
                         "req_id": f"req-par-{dev}",
                         "cmd": "check",
                         "device": dev,
-                        "kvm_ip": f"192.168.1.{dev[-2:]}",
                         "timeout_sec": 3.0,
                         "poll_interval": 0.04,
                     },

@@ -133,8 +133,8 @@ def running_core_service():
         json.dumps(
             {
                 "DFU-01": {"station": "DFU", "kvm_ip": "192.168.1.10", "channels": 4},
-                "DFU-02": {"station": "DFU", "kvm_ip": "192.168.1.13", "channels": 4},
-                "DFU-03": {"station": "DFU", "kvm_ip": "192.168.1.14", "channels": 4},
+                "BT-02": {"station": "BT", "kvm_ip": "192.168.1.13", "channels": 4},
+                "BT-03": {"station": "BT", "kvm_ip": "192.168.1.14", "channels": 4},
                 "FCT-01": {"station": "FCT", "kvm_ip": "192.168.1.11", "channels": 4},
                 "BT-01": {"station": "BT", "kvm_ip": "192.168.1.12", "channels": 4},
             }
@@ -227,7 +227,7 @@ class TestLightweightMonitorUIClient:
         """
         server, kvm_map, (host, port) = running_core_service
         kvm = MockKVMClient(initial_pts=50.0, initial_result=None)
-        kvm_map["192.168.1.10"] = kvm
+        kvm_map["192.168.1.12"] = kvm
 
         # Frame advancement worker
         stop_stream = threading.Event()
@@ -248,9 +248,7 @@ class TestLightweightMonitorUIClient:
                     {
                         "req_id": "labview-test-01",
                         "cmd": "check",
-                        "device": "DFU-01",
-                        "station": "BT",
-                        "kvm_ip": "192.168.1.10",
+                        "device": "BT-01",
                         "target_pattern": "PASS",
                         "timeout_sec": 1.5,
                         "poll_interval": 0.05,
@@ -259,12 +257,12 @@ class TestLightweightMonitorUIClient:
                 time.sleep(0.1)
 
                 # Verify device 1 is actively locked by LabVIEW
-                assert server.lock_manager.is_locked("DFU-01") is True
+                assert server.lock_manager.is_locked("BT-01") is True
 
                 # 2. Concurrently, UI client requests snapshot of the SAME device 1
                 ui_client = CoreServiceClient(host=host, port=port)
                 snap_res = ui_client.get_snapshot(
-                    device="DFU-01",
+                    device="BT-01",
                     timeout=2.0,
                 )
 
@@ -292,7 +290,7 @@ class TestLightweightMonitorUIClient:
         """Closing or crashing UI process/socket has zero impact on Core Service or active LabVIEW sessions."""
         server, kvm_map, (host, port) = running_core_service
         kvm = MockKVMClient(initial_pts=20.0, initial_result="PASS")
-        kvm_map["192.168.1.11"] = kvm
+        kvm_map["192.168.1.13"] = kvm
 
         stop_stream = threading.Event()
 
@@ -331,9 +329,7 @@ class TestLightweightMonitorUIClient:
                     {
                         "req_id": "lv-check-after-ui-crash",
                         "cmd": "check",
-                        "device": "DFU-02",
-                        "station": "BT",
-                        "kvm_ip": "192.168.1.11",
+                        "device": "BT-02",
                     },
                 )
                 lv_check = recv_json(labview_sock, timeout=3.0)
@@ -354,7 +350,7 @@ class TestLightweightMonitorUIClient:
         """UI manual diagnostic check triggers check and handles busy conflicts gracefully."""
         server, kvm_map, (host, port) = running_core_service
         kvm = MockKVMClient(initial_pts=30.0, initial_result="PASS")
-        kvm_map["192.168.1.12"] = kvm
+        kvm_map["192.168.1.14"] = kvm
 
         stop_stream = threading.Event()
 
@@ -371,26 +367,22 @@ class TestLightweightMonitorUIClient:
 
             # 1. Successful manual check
             res = client.manual_check(
-                station="BT",
-                device="DFU-03",
-                kvm_ip="192.168.1.12",
+                device="BT-03",
                 timeout_sec=2.0,
             )
             assert res.get("status") == "ok"
             assert res["data"].get("result") == "PASS"
 
             # 2. When device is locked by another client, manual check fails fast with busy
-            assert server.lock_manager.try_acquire("DFU-03", req_id="other-tester") is True
+            assert server.lock_manager.try_acquire("BT-03", req_id="other-tester") is True
             res_busy = client.manual_check(
-                station="BT",
-                device="DFU-03",
-                kvm_ip="192.168.1.12",
+                device="BT-03",
                 timeout_sec=1.0,
             )
             assert res_busy.get("status") == "error"
             assert res_busy.get("error") == "device_busy"
 
-            server.lock_manager.release("DFU-03")
+            server.lock_manager.release("BT-03")
             client.disconnect()
         finally:
             stop_stream.set()

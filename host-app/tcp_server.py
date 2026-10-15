@@ -52,7 +52,7 @@ PROTOCOL_VERSION = "1.0"
 CORE_VERSION = "2.0.0"
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
-# Extra fields allowed per command. check keeps its legacy fields until ticket #4/#5 rewrite it.
+# Extra fields allowed per command. check keeps its legacy fields until ticket #5 rewrites it.
 COMMAND_FIELDS: Dict[str, frozenset] = {
     "ping": frozenset(),
     "status": frozenset(),
@@ -61,8 +61,7 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "snapshot": frozenset({"format", "quality"}),
     "check": frozenset({
         "timeout_sec", "timeout", "poll_interval", "target_pattern", "pattern",
-        "station", "dev_type", "kvm_ip", "freeze_threshold", "threshold_sec",
-        "no_lock", "read_only",
+        "freeze_threshold", "threshold_sec", "no_lock", "read_only",
     }),
 }
 ENVELOPE_KEYS = frozenset({
@@ -177,7 +176,7 @@ class TcpJsonServer:
             kvm_ip = entry.kvm_ip
 
             is_busy = dev_id in active_devices
-            is_frozen = dev_id in frozen_devices or f"{st_name}:{dev_id}" in frozen_devices
+            is_frozen = dev_id in frozen_devices
             is_connected = kvm_ip in active_ips
 
             if is_busy:
@@ -217,7 +216,7 @@ class TcpJsonServer:
                 "station": entry.station,
                 "connected": entry.kvm_ip in active_ips,
                 "busy": entry.device_id in active_devices,
-                "frozen": entry.device_id in frozen_devices or f"{entry.station}:{entry.device_id}" in frozen_devices,
+                "frozen": entry.device_id in frozen_devices,
                 "channels": entry.channels,
             })
         return {"core_uptime_sec": int(uptime), "devices": devices}
@@ -340,7 +339,7 @@ class TcpJsonServer:
         if station == "DFU":
             try:
                 from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-                gate_key = f"{station}:{device_id}"
+                gate_key = device_id
                 if not hasattr(self, "_dfu_gates"):
                     self._dfu_gates: Dict[str, Any] = {}
                 gate = self._dfu_gates.get(gate_key)
@@ -390,6 +389,7 @@ class TcpJsonServer:
                     device=station,
                     template_root=template_root,
                     freeze_guard=self.freeze_guard,
+                    device_id=device_id,
                 )
             except Exception as exc:
                 logger.warning("Template check error for %s/%s: %s", station, device_id, exc)
@@ -449,11 +449,14 @@ class TcpJsonServer:
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Station vision check handler with long-polling and Frame Freeze Guard protection."""
         kvm = req.get("_kvm_client")
-        station = str(req.get("station") or req.get("dev_type") or "BT").upper()
-        device_id = str(req.get("device") or "default")
+        entry = req.get("_device_entry")
+        if entry is None:
+            return {"status": "error", "error": "unknown_device", "message": "device is not configured"}
+        station = entry.station
+        device_id = entry.device_id
         threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
         guard_threshold = float(threshold_window) if threshold_window is not None else None
-        dev_key = f"{station}:{device_id}"
+        dev_key = device_id
 
         if kvm is None:
             return {
@@ -646,16 +649,20 @@ class TcpJsonServer:
 
         handler = self._handlers[cmd]
 
-        if cmd == "snapshot":
-            req["kvm_ip"] = self.device_registry.get(str(req.get("device"))).kvm_ip
-
         # Check per-device locking
         raw_device = req.get("device")
         device_id: Optional[str] = (
-            str(raw_device).strip()
-            if raw_device is not None and str(raw_device).strip() != ""
+            str(raw_device)
+            if raw_device is not None and str(raw_device) != ""
             else None
         )
+
+        # Only the device ID is trusted from the wire: KVM IP and station come from the registry.
+        if device_id is not None:
+            entry = self.device_registry.get(device_id)
+            if entry is not None:
+                req["_device_entry"] = entry
+                req["kvm_ip"] = entry.kvm_ip
 
         is_read_only = (
             cmd in ("snapshot", "frame")
@@ -678,7 +685,7 @@ class TcpJsonServer:
                     "device": device_id,
                 }
 
-        # Check KVM connection pooling (kvm_ip is set by the device registry for snapshot)
+        # Check KVM connection pooling (kvm_ip comes from the device registry)
         raw_kvm_ip = req.get("kvm_ip")
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
@@ -692,7 +699,7 @@ class TcpJsonServer:
                 err_resp = {
                     "req_id": req_id,
                     "status": "error",
-                    "error": "kvm_connection_failed",
+                    "error": "kvm_connect_failed",
                     "message": f"Failed to connect to KVM '{kvm_ip}': {exc}",
                 }
                 if device_id is not None:

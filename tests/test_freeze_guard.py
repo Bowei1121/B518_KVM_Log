@@ -31,6 +31,35 @@ from device_lock import DeviceLockManager
 from kvm_pool import KVMConnectionPool
 
 
+ROUTES = {
+    "BT-01": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.11",
+        "channels": 4
+    },
+    "FCT-02": {
+        "station": "FCT",
+        "kvm_ip": "192.168.210.12",
+        "channels": 4
+    },
+    "BT-03": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.13",
+        "channels": 4
+    },
+    "BT-10": {
+        "station": "BT",
+        "kvm_ip": "192.168.210.14",
+        "channels": 4
+    },
+    "FCT-20": {
+        "station": "FCT",
+        "kvm_ip": "192.168.210.15",
+        "channels": 4
+    }
+}
+
+
 # ---------------------------------------------------------------------------
 # Test Helpers & Mock KVM
 # ---------------------------------------------------------------------------
@@ -347,7 +376,7 @@ def running_server_with_kvm():
     pool = KVMConnectionPool(client_factory=client_factory)
     lock_mgr = DeviceLockManager()
     freeze_guard = FrameFreezeGuard(freeze_threshold=0.2)
-    server = ProbeServer(device_registry=make_registry(), 
+    server = ProbeServer(device_registry=make_registry(ROUTES), 
         host="127.0.0.1",
         port=0,
         lock_manager=lock_mgr,
@@ -369,7 +398,7 @@ class TestTCPJsonServerFreezeGuard:
         server, kvm_map, (host, port) = running_server_with_kvm
         # Pre-seed mock KVM
         kvm_client = MockKVMClient(initial_pts=10.0)
-        kvm_map["192.168.1.100"] = kvm_client
+        kvm_map["192.168.210.11"] = kvm_client
 
         with socket.create_connection((host, port), timeout=3.0) as sock:
             send_json(
@@ -377,9 +406,7 @@ class TestTCPJsonServerFreezeGuard:
                 {
                     "req_id": "req-chk-01",
                     "cmd": "check",
-                    "station": "BT",
-                    "device": "DFU-01",
-                    "kvm_ip": "192.168.1.100",
+                    "device": "BT-01",
                     "freeze_threshold": 0.15,
                 },
             )
@@ -388,14 +415,14 @@ class TestTCPJsonServerFreezeGuard:
             assert res["req_id"] == "req-chk-01"
             assert res["status"] == "error"
             assert res["error"] == "frame_frozen"
-            assert res["device"] == "DFU-01"
+            assert res["device"] == "BT-01"
             assert "Frame presentation timestamp" in res.get("message", "")
 
     def test_check_live_advancing_kvm_passes_normally(self, running_server_with_kvm):
         """Live advancing KVM with no visible result → no_result (not PASS, not frozen)."""
         server, kvm_map, (host, port) = running_server_with_kvm
         kvm_client = MockKVMClient(initial_pts=20.0)
-        kvm_map["192.168.1.101"] = kvm_client
+        kvm_map["192.168.210.12"] = kvm_client
 
         # Background thread that simulates advancing frames
         stop_event = threading.Event()
@@ -415,9 +442,7 @@ class TestTCPJsonServerFreezeGuard:
                     {
                         "req_id": "req-chk-02",
                         "cmd": "check",
-                        "station": "FCT",
-                        "device": "DFU-02",
-                        "kvm_ip": "192.168.1.101",
+                        "device": "FCT-02",
                         "freeze_threshold": 0.3,
                     },
                 )
@@ -428,7 +453,7 @@ class TestTCPJsonServerFreezeGuard:
                 assert res["status"] == "error"
                 assert res["error"] == "no_result"
                 assert res["data"]["result"] == "NONE"
-                assert res["device"] == "DFU-02"
+                assert res["device"] == "FCT-02"
         finally:
             stop_event.set()
             thread.join(timeout=1.0)
@@ -436,7 +461,7 @@ class TestTCPJsonServerFreezeGuard:
     def test_device_lock_released_after_freeze_error(self, running_server_with_kvm):
         """Ensures that per-device lock is cleanly released when frame_frozen error occurs."""
         server, kvm_map, (host, port) = running_server_with_kvm
-        kvm_map["192.168.1.102"] = MockKVMClient(initial_pts=30.0)
+        kvm_map["192.168.210.13"] = MockKVMClient(initial_pts=30.0)
 
         with socket.create_connection((host, port), timeout=3.0) as sock:
             # 1. Trigger freeze error
@@ -445,9 +470,7 @@ class TestTCPJsonServerFreezeGuard:
                 {
                     "req_id": "req-chk-03a",
                     "cmd": "check",
-                    "station": "BT",
-                    "device": "DFU-03",
-                    "kvm_ip": "192.168.1.102",
+                    "device": "BT-03",
                     "freeze_threshold": 0.1,
                 },
             )
@@ -462,7 +485,7 @@ class TestTCPJsonServerFreezeGuard:
                 {
                     "req_id": "req-chk-03b",
                     "cmd": "probe",
-                    "device": "DFU-03",
+                    "device": "BT-03",
                 },
             )
             res2 = recv_json(sock)
@@ -474,8 +497,8 @@ class TestTCPJsonServerFreezeGuard:
         server, kvm_map, (host, port) = running_server_with_kvm
         frozen_kvm = MockKVMClient(initial_pts=40.0)
         live_kvm = MockKVMClient(initial_pts=50.0)
-        kvm_map["192.168.1.104"] = frozen_kvm
-        kvm_map["192.168.1.105"] = live_kvm
+        kvm_map["192.168.210.14"] = frozen_kvm
+        kvm_map["192.168.210.15"] = live_kvm
 
         # Stream live_kvm in background thread
         stop_stream = threading.Event()
@@ -498,9 +521,7 @@ class TestTCPJsonServerFreezeGuard:
                     {
                         "req_id": "req-frozen",
                         "cmd": "check",
-                        "station": "BT",
-                        "device": "DFU-10",
-                        "kvm_ip": "192.168.1.104",
+                        "device": "BT-10",
                         "freeze_threshold": 0.15,
                     },
                 )
@@ -510,9 +531,7 @@ class TestTCPJsonServerFreezeGuard:
                     {
                         "req_id": "req-live",
                         "cmd": "check",
-                        "station": "FCT",
-                        "device": "DFU-20",
-                        "kvm_ip": "192.168.1.105",
+                        "device": "FCT-20",
                         "freeze_threshold": 0.3,
                     },
                 )
@@ -522,10 +541,10 @@ class TestTCPJsonServerFreezeGuard:
 
                 assert res_frozen["status"] == "error"
                 assert res_frozen["error"] == "frame_frozen"
-                assert res_frozen["device"] == "DFU-10"
+                assert res_frozen["device"] == "BT-10"
 
                 assert res_live["error"] == "no_result"
-                assert res_live["device"] == "DFU-20"
+                assert res_live["device"] == "FCT-20"
         finally:
             stop_stream.set()
             stream_th.join(timeout=1.0)

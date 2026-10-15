@@ -180,7 +180,7 @@ def test_status_lists_devices_in_order_without_kvm_ip(server):
     assert resp["status"] == "ok"
     assert isinstance(resp["data"]["core_uptime_sec"], int)
     devices = resp["data"]["devices"]
-    assert [d["device"] for d in devices] == [f"DFU-{i:02d}" for i in range(1, 21)]
+    assert [d["device"] for d in devices if d["station"] == "DFU"] == [f"DFU-{i:02d}" for i in range(1, 21)]
     assert set(devices[0].keys()) == {"device", "station", "connected", "busy", "frozen", "channels"}
     assert devices[0]["station"] == "DFU"
     assert devices[0]["channels"] == 4
