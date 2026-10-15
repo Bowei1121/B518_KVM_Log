@@ -19,3 +19,20 @@
 
 - 從架構候選中選定一項進入 grilling／實作（首選設備識別與 Device Lock）。
 - 依整合規格設計輪次 UUID、結果保存、ACK 的協定欄位與實作次序，並建立 GitHub issues。
+
+## grilling：架構候選 1「統一設備識別與 Device Lock」
+
+已確認（Q1–Q15）：
+
+- 設備 ID 採跨站唯一固定 ID：`DFU-01`～`DFU-07`、`FCT-01`、`BT-01`；嚴格比對，LabVIEW 端嚴格規範。
+- ATE 組成為測試機＋測試機電腦＋JetKVM 一對一；9 台 JetKVM 與上位機接同一台研華 EKI-2720G（非網管型，無 DHCP）。
+- 上位機 `~/Documents/template/devices.json` 為唯一設備清單（ID → 站別、KVM IP、DFU 4／7 格），取代程式內寫死清單與 `device_profiles.json`；錯誤即拒絕啟動；修改後需重啟 Core。
+- 指令只帶設備 ID，帶 `kvm_ip`／`station` 即拒絕；改用 JSON，舊逗號格式與 `TCPIP_test.vi`、README 範例需更新。
+- 每台 JetKVM 與上位機手設靜態 IP（建議上位機 .10、DFU .70–.76、FCT .77、BT .78）；JetKVM 正式版是否有靜態 IP 選項待現場確認（社群資料指 0.5.0 dev 起支援）。
+- `req_id` 由 LabVIEW 產生且必填，Core 原樣回傳；不是輪次 UUID。
+- 動作指令缺設備 ID 或 ID 錯誤即拒絕；長 `check` 期間同設備其他動作回 BUSY（ADR-0002）。
+- Monitor UI 拿掉手動 IP，改選設備；另需設計設定頁面。
+- 輪次 UUID／ACK／14 天保存另案討論。
+- 已產出 `docs/PROTOCOL.md` 1.0 草案（固定 envelope、固定 data 欄位、錯誤碼、LabVIEW typedef 清單、與現行程式落差）。
+
+查證：Log Solution 顯示契約 1.1 已有 `standby／monitoring／review／complete` 四種標記；橋接可辨識「監控中」與「待確認」，但現行長輪詢遇待確認不會立即回覆，`input`／`button` 尚未接上 Core JSON。
