@@ -36,6 +36,7 @@ from kvm_pool import KVMConnectionPool
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 from ui_app import CoreServiceClient
+from protocol_helpers import LogSolutionKVM
 
 
 # ---------------------------------------------------------------------------
@@ -122,12 +123,10 @@ def recv_json(sock: socket.socket, timeout: float = 5.0) -> Dict[str, Any]:
 @pytest.fixture
 def running_core_service():
     """Start headless TcpJsonServer configured with test stations and mock KVM pool."""
-    kvm_map: Dict[str, MockKVMClient] = {}
+    kvm_map: Dict[str, Any] = {}
 
     def client_factory(host: str, password: str = ""):
-        if host not in kvm_map:
-            kvm_map[host] = MockKVMClient(initial_pts=10.0)
-        return kvm_map[host]
+        return kvm_map.setdefault(host, LogSolutionKVM())
 
     device_registry = DeviceRegistry.from_text(
         json.dumps(
@@ -217,176 +216,90 @@ class TestLightweightMonitorUIClient:
         client.disconnect()
 
     def test_ui_snapshot_does_not_interfere_with_labview_automated_testing(self, running_core_service):
-        """UI can request snapshots of a device currently under active LabVIEW test without interference.
-        
-        Verification:
-        - LabVIEW starts long-poll check holding DeviceLock on device '1'.
-        - UI client requests snapshot of device '1' at the same time.
-        - UI snapshot succeeds immediately (does not return busy or error).
-        - LabVIEW test completes normally without lock contention or disruption.
-        """
+        """UI snapshot of a device under a LabVIEW long-poll succeeds immediately and does not steal the round."""
         server, kvm_map, (host, port) = running_core_service
-        kvm = MockKVMClient(initial_pts=50.0, initial_result=None)
-        kvm_map["192.168.1.12"] = kvm
+        kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
+        kvm.show("monitoring")
 
-        # Frame advancement worker
-        stop_stream = threading.Event()
+        with socket.create_connection((host, port), timeout=10.0) as labview_sock:
+            send_json(labview_sock, {"protocol_version": "1.0", "req_id": "labview-test-01",
+                                     "cmd": "check", "device": "DFU-01", "timeout_sec": 8})
+            time.sleep(0.3)
 
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
+            assert server.lock_manager.is_locked("DFU-01") is True
 
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
+            ui_client = CoreServiceClient(host=host, port=port)
+            snap_res = ui_client.get_snapshot(device="DFU-01", timeout=2.0)
+            assert snap_res.get("status") == "ok", f"Expected ok, got: {snap_res}"
+            assert len(snap_res["data"]["image_base64"]) > 0
 
-        try:
-            with socket.create_connection((host, port), timeout=5.0) as labview_sock:
-                # 1. LabVIEW starts long-polling check on device 1
-                send_json(
-                    labview_sock,
-                    {
-                        "req_id": "labview-test-01",
-                        "cmd": "check",
-                        "device": "BT-01",
-                        "target_pattern": "PASS",
-                        "timeout_sec": 1.5,
-                        "poll_interval": 0.05,
-                    },
-                )
-                time.sleep(0.1)
+            time.sleep(0.2)
+            kvm.show("complete", ["PASS", "FAIL", "NOTEST", "PASS"])
 
-                # Verify device 1 is actively locked by LabVIEW
-                assert server.lock_manager.is_locked("BT-01") is True
-
-                # 2. Concurrently, UI client requests snapshot of the SAME device 1
-                ui_client = CoreServiceClient(host=host, port=port)
-                snap_res = ui_client.get_snapshot(
-                    device="BT-01",
-                    timeout=2.0,
-                )
-
-                # UI snapshot MUST succeed and MUST NOT return 'busy'
-                assert snap_res.get("status") == "ok", f"Expected ok, got: {snap_res}"
-                assert "image_base64" in snap_res["data"]
-                assert len(snap_res["data"]["image_base64"]) > 0
-
-                # 3. Simulate LabVIEW test completing: set result to PASS
-                time.sleep(0.1)
-                kvm.result = "PASS"
-
-                # 4. LabVIEW receives clean test result
-                lv_res = recv_json(labview_sock, timeout=3.0)
-                assert lv_res["req_id"] == "labview-test-01"
-                assert lv_res["status"] == "ok"
-                assert lv_res["data"]["result"] == "PASS"
-
-                ui_client.disconnect()
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
+            lv_res = recv_json(labview_sock, timeout=10.0)
+            assert lv_res["req_id"] == "labview-test-01"
+            assert lv_res["status"] == "ok"
+            assert lv_res["data"]["kind"] == "taken"
+            assert [r["status"] for r in lv_res["data"]["results"]] == ["PASS", "FAIL", "NOTEST", "PASS"]
+            ui_client.disconnect()
 
     def test_terminating_or_restarting_ui_does_not_affect_core_service_or_labview(self, running_core_service):
         """Closing or crashing UI process/socket has zero impact on Core Service or active LabVIEW sessions."""
         server, kvm_map, (host, port) = running_core_service
-        kvm = MockKVMClient(initial_pts=20.0, initial_result="PASS")
-        kvm_map["192.168.1.13"] = kvm
+        kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
+        kvm.show("monitoring")
 
-        stop_stream = threading.Event()
+        with socket.create_connection((host, port), timeout=10.0) as labview_sock:
+            send_json(labview_sock, {"protocol_version": "1.0", "req_id": "lv-ping-1", "device": "",
+                                     "cmd": "ping"})
+            assert recv_json(labview_sock, timeout=2.0).get("status") == "ok"
 
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
+            ui_client = CoreServiceClient(host=host, port=port)
+            assert ui_client.connect() is True
+            assert ui_client.get_status().get("status") in ("running", "ok")
+            ui_client.disconnect()
+            time.sleep(0.1)
 
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
+            assert server.is_running is True
 
-        try:
-            # LabVIEW opens persistent TCP connection
-            with socket.create_connection((host, port), timeout=5.0) as labview_sock:
-                # LabVIEW sends a ping
-                send_json(labview_sock, {"req_id": "lv-ping-1", "cmd": "ping"})
-                lv_ping = recv_json(labview_sock, timeout=2.0)
-                assert lv_ping.get("status") == "ok"
+            send_json(labview_sock, {"protocol_version": "1.0", "req_id": "lv-check-after-ui-crash",
+                                     "device": "DFU-01", "cmd": "check", "timeout_sec": 8})
+            time.sleep(0.3)
+            kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
+            lv_check = recv_json(labview_sock, timeout=10.0)
+            assert lv_check.get("status") == "ok"
+            assert lv_check["data"]["kind"] == "taken"
 
-                # 1. UI connects and executes queries
-                ui_client = CoreServiceClient(host=host, port=port)
-                assert ui_client.connect() is True
-                ui_status1 = ui_client.get_status()
-                assert ui_status1.get("status") in ("running", "ok")
-
-                # 2. UI abruptly terminates (closes socket abruptly / simulated crash)
-                ui_client.disconnect()
-                time.sleep(0.1)
-
-                # 3. Core Service MUST remain running and healthy
-                assert server.is_running is True
-
-                # 4. LabVIEW's connection is intact and can execute check
-                send_json(
-                    labview_sock,
-                    {
-                        "req_id": "lv-check-after-ui-crash",
-                        "cmd": "check",
-                        "device": "BT-02",
-                    },
-                )
-                lv_check = recv_json(labview_sock, timeout=3.0)
-                assert lv_check.get("status") == "ok"
-                assert lv_check["data"].get("result") == "PASS"
-
-                # 5. UI restarts and reconnects cleanly
-                ui_client2 = CoreServiceClient(host=host, port=port)
-                assert ui_client2.connect() is True
-                ui_status2 = ui_client2.get_status()
-                assert ui_status2.get("status") in ("running", "ok")
-                ui_client2.disconnect()
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
+            ui_client2 = CoreServiceClient(host=host, port=port)
+            assert ui_client2.connect() is True
+            assert ui_client2.get_status().get("status") in ("running", "ok")
+            ui_client2.disconnect()
 
     def test_ui_manual_diagnostic_check(self, running_core_service):
-        """UI manual diagnostic check triggers check and handles busy conflicts gracefully."""
+        """UI manual check returns the synthetic round result and fails fast with busy while locked."""
         server, kvm_map, (host, port) = running_core_service
-        kvm = MockKVMClient(initial_pts=30.0, initial_result="PASS")
-        kvm_map["192.168.1.14"] = kvm
+        kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
+        kvm.show("monitoring")
 
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
+        client = CoreServiceClient(host=host, port=port)
+        out = {}
+        th = threading.Thread(target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=8.0)),
+                              daemon=True)
         th.start()
+        time.sleep(0.3)
+        kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
+        th.join(timeout=12.0)
 
-        try:
-            client = CoreServiceClient(host=host, port=port)
+        assert out["res"].get("status") == "ok"
+        assert out["res"]["data"]["kind"] == "taken"
 
-            # 1. Successful manual check
-            res = client.manual_check(
-                device="BT-03",
-                timeout_sec=2.0,
-            )
-            assert res.get("status") == "ok"
-            assert res["data"].get("result") == "PASS"
+        assert server.lock_manager.try_acquire("DFU-01", req_id="other-tester") is True
+        res_busy = client.manual_check(device="DFU-01", timeout_sec=1.0)
+        assert res_busy.get("status") == "error"
+        assert res_busy.get("error") == "device_busy"
 
-            # 2. When device is locked by another client, manual check fails fast with busy
-            assert server.lock_manager.try_acquire("BT-03", req_id="other-tester") is True
-            res_busy = client.manual_check(
-                device="BT-03",
-                timeout_sec=1.0,
-            )
-            assert res_busy.get("status") == "error"
-            assert res_busy.get("error") == "device_busy"
-
-            server.lock_manager.release("BT-03")
-            client.disconnect()
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
+        server.lock_manager.release("DFU-01")
+        client.disconnect()
 
     def test_ui_runs_as_separate_process_headless_check(self, running_core_service):
         """Verify ui_app runs as a decoupled standalone process using --headless-check."""

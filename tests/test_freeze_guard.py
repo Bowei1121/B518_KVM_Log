@@ -364,202 +364,110 @@ class TestDFURoundFrameGateFreeze:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def running_server_with_kvm():
-    """Start TcpJsonServer with custom mock KVM pool."""
-    kvm_map: Dict[str, MockKVMClient] = {}
+def freeze_rig():
+    """Server with one synthetic Log Solution KVM per device IP and a short freeze threshold."""
+    from protocol_helpers import LogSolutionKVM
+
+    kvms: Dict[str, Any] = {}
 
     def client_factory(host: str, password: str = ""):
-        if host not in kvm_map:
-            kvm_map[host] = MockKVMClient(initial_pts=10.0)
-        return kvm_map[host]
+        return kvms.setdefault(host, LogSolutionKVM())
 
-    pool = KVMConnectionPool(client_factory=client_factory)
-    lock_mgr = DeviceLockManager()
-    freeze_guard = FrameFreezeGuard(freeze_threshold=0.2)
-    server = ProbeServer(device_registry=make_registry(ROUTES), 
+    server = TcpJsonServer(
+        device_registry=make_registry(),
         host="127.0.0.1",
         port=0,
-        lock_manager=lock_mgr,
-        kvm_pool=pool,
-        freeze_guard=freeze_guard,
+        kvm_pool=KVMConnectionPool(client_factory=client_factory),
+        freeze_guard=FrameFreezeGuard(freeze_threshold=0.3),
     )
     server.start()
-
+    time.sleep(0.05)
     host, port = server.server_address
-    yield server, kvm_map, (host, port)
+    try:
+        yield server, kvms, (host, port)
+    finally:
+        server.stop()
+        server.wait(timeout=2.0)
 
-    server.stop()
-    server.wait(timeout=2.0)
+
+def _check_on(address, device, req_id, timeout_sec):
+    with socket.create_connection(address, timeout=10.0) as sock:
+        send_json(sock, {"protocol_version": "1.0", "req_id": req_id, "device": device,
+                         "cmd": "check", "timeout_sec": timeout_sec})
+        return recv_json(sock, timeout=10.0)
+
+
+def _kvm_for(kvms, device):
+    from protocol_helpers import LogSolutionKVM
+
+    ip = make_registry().get(device).kvm_ip
+    return kvms.setdefault(ip, LogSolutionKVM())
 
 
 class TestTCPJsonServerFreezeGuard:
-    def test_check_static_kvm_returns_frame_frozen_error(self, running_server_with_kvm):
-        """When station check runs against static KVM, returns {"status": "error", "error": "frame_frozen"}."""
-        server, kvm_map, (host, port) = running_server_with_kvm
-        # Pre-seed mock KVM
-        kvm_client = MockKVMClient(initial_pts=10.0)
-        kvm_map["192.168.210.11"] = kvm_client
+    def test_check_frozen_picture_returns_frame_frozen_error(self, freeze_rig):
+        server, kvms, address = freeze_rig
+        kvm = _kvm_for(kvms, "DFU-01")
+        kvm.show("monitoring")
+        kvm.freeze()
 
-        with socket.create_connection((host, port), timeout=3.0) as sock:
-            send_json(
-                sock,
-                {
-                    "req_id": "req-chk-01",
-                    "cmd": "check",
-                    "device": "BT-01",
-                    "freeze_threshold": 0.15,
-                },
-            )
+        res = _check_on(address, "DFU-01", "req-chk-01", 5)
+
+        assert res["req_id"] == "req-chk-01"
+        assert res["status"] == "error"
+        assert res["error"] == "frame_frozen"
+        assert res["device"] == "DFU-01"
+
+    def test_check_live_picture_is_not_reported_frozen(self, freeze_rig):
+        server, kvms, address = freeze_rig
+        _kvm_for(kvms, "DFU-01").show("monitoring")
+
+        res = _check_on(address, "DFU-01", "req-chk-live", 0)
+
+        assert res["status"] == "ok"
+        assert res["data"]["kind"] == "waiting"
+
+    def test_device_lock_released_after_freeze_error(self, freeze_rig):
+        server, kvms, address = freeze_rig
+        kvm = _kvm_for(kvms, "DFU-01")
+        kvm.show("monitoring")
+        kvm.freeze()
+        assert _check_on(address, "DFU-01", "req-frz", 5)["error"] == "frame_frozen"
+
+        followup = _check_on(address, "DFU-01", "req-after", 0)
+
+        assert followup["error"] != "device_busy"
+        assert not server.lock_manager.is_locked("DFU-01")
+
+    def test_multi_device_isolation_frozen_vs_live(self, freeze_rig):
+        server, kvms, address = freeze_rig
+        frozen = _kvm_for(kvms, "DFU-01")
+        frozen.show("monitoring")
+        frozen.freeze()
+        _kvm_for(kvms, "DFU-02").show("monitoring")
+
+        frozen_res = _check_on(address, "DFU-01", "req-f", 5)
+        live_res = _check_on(address, "DFU-02", "req-l", 0)
+
+        assert frozen_res["error"] == "frame_frozen"
+        assert live_res["status"] == "ok"
+        assert live_res["data"]["kind"] == "waiting"
+
+    def test_core_status_reports_frozen_device_only(self, freeze_rig):
+        server, kvms, address = freeze_rig
+        frozen = _kvm_for(kvms, "DFU-01")
+        frozen.show("monitoring")
+        frozen.freeze()
+        _check_on(address, "DFU-01", "req-frz-st", 5)
+        _kvm_for(kvms, "DFU-02").show("monitoring")
+
+        with socket.create_connection(address, timeout=3.0) as sock:
+            send_json(sock, {"protocol_version": "1.0", "req_id": "st", "device": "", "cmd": "status"})
             res = recv_json(sock, timeout=3.0)
 
-            assert res["req_id"] == "req-chk-01"
-            assert res["status"] == "error"
-            assert res["error"] == "frame_frozen"
-            assert res["device"] == "BT-01"
-            assert "Frame presentation timestamp" in res.get("message", "")
-
-    def test_check_live_advancing_kvm_passes_normally(self, running_server_with_kvm):
-        """Live advancing KVM with no visible result → no_result (not PASS, not frozen)."""
-        server, kvm_map, (host, port) = running_server_with_kvm
-        kvm_client = MockKVMClient(initial_pts=20.0)
-        kvm_map["192.168.210.12"] = kvm_client
-
-        # Background thread that simulates advancing frames
-        stop_event = threading.Event()
-
-        def stream_worker():
-            while not stop_event.is_set():
-                time.sleep(0.03)
-                kvm_client.advance(0.033)
-
-        thread = threading.Thread(target=stream_worker, daemon=True)
-        thread.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=3.0) as sock:
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-chk-02",
-                        "cmd": "check",
-                        "device": "FCT-02",
-                        "freeze_threshold": 0.3,
-                    },
-                )
-                res = recv_json(sock, timeout=3.0)
-
-                assert res["req_id"] == "req-chk-02"
-                # Live PTS alone is not a test result: fail closed, but not frozen.
-                assert res["status"] == "error"
-                assert res["error"] == "no_result"
-                assert res["data"]["result"] == "NONE"
-                assert res["device"] == "FCT-02"
-        finally:
-            stop_event.set()
-            thread.join(timeout=1.0)
-
-    def test_device_lock_released_after_freeze_error(self, running_server_with_kvm):
-        """Ensures that per-device lock is cleanly released when frame_frozen error occurs."""
-        server, kvm_map, (host, port) = running_server_with_kvm
-        kvm_map["192.168.210.13"] = MockKVMClient(initial_pts=30.0)
-
-        with socket.create_connection((host, port), timeout=3.0) as sock:
-            # 1. Trigger freeze error
-            send_json(
-                sock,
-                {
-                    "req_id": "req-chk-03a",
-                    "cmd": "check",
-                    "device": "BT-03",
-                    "freeze_threshold": 0.1,
-                },
-            )
-            res1 = recv_json(sock)
-            assert res1["status"] == "error"
-            assert res1["error"] == "frame_frozen"
-
-            # 2. Immediately send another command for same device 3.
-            # Must NOT be blocked by device_busy!
-            send_json(
-                sock,
-                {
-                    "req_id": "req-chk-03b",
-                    "cmd": "probe",
-                    "device": "BT-03",
-                },
-            )
-            res2 = recv_json(sock)
-            assert res2["status"] == "ok"
-            assert res2["data"]["pong"] is True
-
-    def test_multi_station_isolation_frozen_vs_live(self, running_server_with_kvm):
-        """Station BT (frozen) fails while Station FCT (live) succeeds concurrently."""
-        server, kvm_map, (host, port) = running_server_with_kvm
-        frozen_kvm = MockKVMClient(initial_pts=40.0)
-        live_kvm = MockKVMClient(initial_pts=50.0)
-        kvm_map["192.168.210.14"] = frozen_kvm
-        kvm_map["192.168.210.15"] = live_kvm
-
-        # Stream live_kvm in background thread
-        stop_stream = threading.Event()
-
-        def live_streamer():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                live_kvm.advance(0.033)
-
-        stream_th = threading.Thread(target=live_streamer, daemon=True)
-        stream_th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=3.0) as sock_frozen, \
-                 socket.create_connection((host, port), timeout=3.0) as sock_live:
-
-                # Send to frozen station
-                send_json(
-                    sock_frozen,
-                    {
-                        "req_id": "req-frozen",
-                        "cmd": "check",
-                        "device": "BT-10",
-                        "freeze_threshold": 0.15,
-                    },
-                )
-                # Send to live station
-                send_json(
-                    sock_live,
-                    {
-                        "req_id": "req-live",
-                        "cmd": "check",
-                        "device": "FCT-20",
-                        "freeze_threshold": 0.3,
-                    },
-                )
-
-                res_frozen = recv_json(sock_frozen)
-                res_live = recv_json(sock_live)
-
-                assert res_frozen["status"] == "error"
-                assert res_frozen["error"] == "frame_frozen"
-                assert res_frozen["device"] == "BT-10"
-
-                assert res_live["error"] == "no_result"
-                assert res_live["device"] == "FCT-20"
-        finally:
-            stop_stream.set()
-            stream_th.join(timeout=1.0)
-
-    def test_status_command_reports_freeze_guard_stats(self, running_server_with_kvm):
-        server, _, (host, port) = running_server_with_kvm
-        with socket.create_connection((host, port), timeout=2.0) as sock:
-            send_json(sock, {"req_id": "stat-1", "cmd": "core_status"})
-            res = recv_json(sock)
-            assert res["status"] == "ok"
-            status_data = res["data"]
-            assert "freeze_guard" in status_data
-            fg_info = status_data["freeze_guard"]
-            assert "freeze_threshold" in fg_info
-            assert "tracked_devices_count" in fg_info
+        frozen_by_device = {d["device"]: d["frozen"] for d in res["data"]["devices"]}
+        assert frozen_by_device["DFU-01"] is True
+        assert frozen_by_device["DFU-02"] is False
 
 
 class TestStationVisionChecksFreeze:

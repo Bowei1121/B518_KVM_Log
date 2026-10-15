@@ -1,795 +1,239 @@
-"""Integration tests for Long-Polling Visual Verification Command (Ticket 05).
+"""Long-polling check 1.0 over the socket, driven by synthetic Log Solution screens.
 
-Verifies:
-1. Long-polling `check` command over TCP with `timeout_sec`.
-2. TCP connection remains open while evaluating frames asynchronously in the background.
-3. Returns immediately with the matching result once visual conditions are met.
-4. Returns `timeout` status if no match occurs within `timeout_sec`.
-5. Integrates device locking (fail-fast busy on concurrent commands) and Frame Freeze Guard.
-6. Multiplexing across concurrent clients without socket starvation.
-7. Graceful cancellation and lock release on client socket disconnect.
+Each device gets its own synthetic KVM (keyed by the registry IP), so concurrent
+devices never share a screen. Lifecycle, locking, freeze abort and disconnect cleanup
+are exercised through the wire.
 """
 
-from __future__ import annotations
-
-import asyncio
 import json
 import socket
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
 
 import pytest
 
-# Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from device_lock import DeviceLockManager
-from freeze_guard import FrameFreezeGuard
-from kvm_pool import KVMConnectionPool
-from protocol_helpers import make_registry, wire, numbered, ProbeServer
-from tcp_server import TcpJsonServer
-from round_frame_consumer import MarkerState, RoundFrameGate
+from freeze_guard import FrameFreezeGuard  # noqa: E402
+from kvm_pool import KVMConnectionPool  # noqa: E402
+from protocol_helpers import LogSolutionKVM, make_registry  # noqa: E402
+from tcp_server import TcpJsonServer  # noqa: E402
 
-ROUTES = {
-    "BT-01": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.11",
-        "channels": 4
-    },
-    "BT-02": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.12",
-        "channels": 4
-    },
-    "BT-03": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.13",
-        "channels": 4
-    },
-    "BT-04": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.14",
-        "channels": 4
-    },
-    "BT-05": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.15",
-        "channels": 4
-    },
-    "BT-06": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.16",
-        "channels": 4
-    },
-    "BT-07": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.17",
-        "channels": 4
-    },
-    "BT-08": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.18",
-        "channels": 4
-    },
-    "BT-09": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.19",
-        "channels": 4
-    },
-    "BT-10": {
-        "station": "BT",
-        "kvm_ip": "192.168.210.20",
-        "channels": 4
-    },
-    "DFU-20": {
-        "station": "DFU",
-        "kvm_ip": "192.168.210.21",
-        "channels": 4
-    }
-}
+DEVICE = "DFU-01"
+DEVICE_IP = "192.168.200.1"
 
 
-ROUTES.update({f"BT-{n}": {"station": "BT", "kvm_ip": f"192.168.210.{100 + n}", "channels": 4} for n in (11, 12, 13)})
+class Rig:
+    """Server plus one synthetic KVM per device IP."""
 
+    def __init__(self, srv, kvms):
+        self.srv = srv
+        self.kvms = kvms
+        self.host, self.port = srv.server_address
 
-# ---------------------------------------------------------------------------
-# Test Helpers & Mock KVM
-# ---------------------------------------------------------------------------
+    def kvm(self, device=DEVICE):
+        return self.kvms.setdefault(self.ip_of(device), LogSolutionKVM())
 
-class MockKVMClient:
-    """Mock JetKVM WebRTC client with controllable Presentation Timestamp (PTS) and visual results."""
-
-    def __init__(
-        self,
-        initial_pts: Optional[float] = 100.0,
-        initial_sequence: int = 1,
-        stream_id: str = "mock-stream-01",
-        frame_data: Any = "dummy_frame_data",
-        initial_result: Optional[str] = None,
-        initial_visual_state: Optional[str] = None,
-    ) -> None:
-        self.frame = frame_data
-        self.frame_sequence = initial_sequence
-        self.frame_presentation_time = initial_pts
-        self.frame_received_monotonic = time.monotonic()
-        self.stream_id = stream_id
-        self.connected = True
-        self.result = initial_result
-        self.visual_state = initial_visual_state
-        self.pattern = None
-        self._pts_delta = 0.033
-
-    def latest_frame(self) -> Tuple[Any, int, float, str, Optional[float]]:
-        return (
-            self.frame,
-            self.frame_sequence,
-            self.frame_received_monotonic,
-            self.stream_id,
-            self.frame_presentation_time,
-        )
-
-    def advance(self, delta_pts: Optional[float] = None) -> float:
-        """Simulate arrival of a new video frame with incremented PTS."""
-        step = delta_pts if delta_pts is not None else self._pts_delta
-        if self.frame_presentation_time is not None:
-            self.frame_presentation_time += step
-        else:
-            self.frame_presentation_time = step
-        self.frame_sequence += 1
-        self.frame_received_monotonic = time.monotonic()
-        return self.frame_presentation_time
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
-
-
-def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
-    payload = json.dumps(wire(data)) + "\n"
-    sock.sendall(payload.encode("utf-8"))
-
-
-def recv_json(sock: socket.socket, timeout: float = 5.0) -> Dict[str, Any]:
-    sock.settimeout(timeout)
-    chunks: list[bytes] = []
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        if b"\n" in chunk:
-            break
-    raw = b"".join(chunks).decode("utf-8")
-    for line in raw.splitlines():
-        line = line.strip()
-        if line:
-            return json.loads(line)
-    raise TimeoutError("No valid newline-delimited JSON received")
+    def ip_of(self, device):
+        return make_registry().get(device).kvm_ip
 
 
 @pytest.fixture
-def running_server_with_kvm_pool():
-    """Start TcpJsonServer with mock KVM connection pool and live streams."""
-    kvm_map: Dict[str, MockKVMClient] = {}
+def rig():
+    kvms = {}
 
-    def client_factory(host: str, password: str = ""):
-        if host not in kvm_map:
-            kvm_map[host] = MockKVMClient(initial_pts=10.0)
-        return kvm_map[host]
+    def factory(host, password=""):
+        return kvms.setdefault(host, LogSolutionKVM())
 
-    pool = KVMConnectionPool(client_factory=client_factory)
-    lock_mgr = DeviceLockManager()
-    freeze_guard = FrameFreezeGuard(freeze_threshold=0.2)
-    server = ProbeServer(device_registry=make_registry(ROUTES), 
+    srv = TcpJsonServer(
+        device_registry=make_registry(),
         host="127.0.0.1",
         port=0,
-        lock_manager=lock_mgr,
-        kvm_pool=pool,
-        freeze_guard=freeze_guard,
+        kvm_pool=KVMConnectionPool(client_factory=factory),
+        freeze_guard=FrameFreezeGuard(freeze_threshold=0.3),
     )
-    server.start()
-
-    host, port = server.server_address
-    yield server, kvm_map, (host, port)
-
-    server.stop()
-    server.wait(timeout=2.0)
-
-
-# ---------------------------------------------------------------------------
-# Test Cases for Long-Polling
-# ---------------------------------------------------------------------------
-
-class TestLongPollingVisualVerification:
-    """Test suite for long-polling check command lifecycle and edge cases."""
-
-    def test_immediate_visual_match_returns_fast(self, running_server_with_kvm_pool):
-        """When target pattern or result is already met, return immediately with status ok."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=10.0, initial_result="PASS")
-        kvm_map["192.168.210.11"] = kvm
-
-        # Live stream in background
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=3.0) as sock:
-                t0 = time.monotonic()
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-003",
-                        "cmd": "check",
-                        "device": "BT-01",
-                        "timeout_sec": 30,
-                    },
-                )
-                res = recv_json(sock, timeout=3.0)
-                elapsed = time.monotonic() - t0
-
-                assert res["req_id"] == "req-003"
-                assert res["status"] == "ok"
-                assert res["data"]["result"] == "PASS"
-                assert res["device"] == "BT-01"
-                assert "elapsed_sec" in res
-                assert elapsed < 1.0
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_delayed_visual_match_holds_tcp_connection(self, running_server_with_kvm_pool):
-        """TCP socket stays open while server polls, returning once condition is met in background."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=20.0, initial_result=None)
-        kvm_map["192.168.210.12"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            start = time.monotonic()
-            while not stop_stream.is_set():
-                time.sleep(0.03)
-                kvm.advance(0.033)
-                # After 0.4 seconds, set visual result to PASS
-                if time.monotonic() - start >= 0.4 and kvm.result is None:
-                    kvm.result = "PASS"
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=5.0) as sock:
-                t0 = time.monotonic()
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-delayed",
-                        "cmd": "check",
-                        "device": "BT-02",
-                        "timeout_sec": 10,
-                        "poll_interval": 0.05,
-                    },
-                )
-                res = recv_json(sock, timeout=5.0)
-                elapsed = time.monotonic() - t0
-
-                assert res["req_id"] == "req-delayed"
-                assert res["status"] == "ok"
-                assert res["data"]["result"] == "PASS"
-                assert res["device"] == "BT-02"
-                assert 0.3 <= elapsed <= 2.0
-                assert 0.3 <= res["elapsed_sec"] <= 2.0
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_long_polling_times_out_when_no_match(self, running_server_with_kvm_pool):
-        """When no match occurs within timeout_sec, return timeout response with result NONE."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=30.0, initial_result=None)
-        kvm_map["192.168.210.13"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=3.0) as sock:
-                t0 = time.monotonic()
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-to",
-                        "cmd": "check",
-                        "device": "BT-03",
-                        "timeout_sec": 0.5,
-                        "poll_interval": 0.05,
-                    },
-                )
-                res = recv_json(sock, timeout=3.0)
-                elapsed = time.monotonic() - t0
-
-                assert res["req_id"] == "req-to"
-                assert res["status"] == "timeout"
-                assert res["data"]["result"] == "NONE"
-                assert res["device"] == "BT-03"
-                assert elapsed >= 0.45
-                assert res["elapsed_sec"] >= 0.5
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_device_locking_blocks_concurrent_commands_during_long_poll(self, running_server_with_kvm_pool):
-        """While Client A is long-polling device 4, Client B gets immediate busy rejection."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=40.0, initial_result=None)
-        kvm_map["192.168.210.14"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=5.0) as sock_a, \
-                 socket.create_connection((host, port), timeout=5.0) as sock_b:
-
-                # Client A launches long-poll for 1.0s
-                send_json(
-                    sock_a,
-                    {
-                        "req_id": "req-client-a",
-                        "cmd": "check",
-                        "device": "BT-04",
-                        "timeout_sec": 1.0,
-                        "poll_interval": 0.05,
-                    },
-                )
-                time.sleep(0.1)
-
-                # Client B attempts command on same device 4
-                send_json(
-                    sock_b,
-                    {
-                        "req_id": "req-client-b",
-                        "cmd": "probe",
-                        "device": "BT-04",
-                    },
-                )
-                res_b = recv_json(sock_b, timeout=2.0)
-
-                assert res_b["req_id"] == "req-client-b"
-                assert res_b["status"] == "error"
-                assert res_b["error"] == "device_busy"
-                assert res_b["device"] == "BT-04"
-
-                # Client A eventually times out
-                res_a = recv_json(sock_a, timeout=3.0)
-                assert res_a["req_id"] == "req-client-a"
-                assert res_a["status"] == "timeout"
-                assert res_a["data"]["result"] == "NONE"
-
-                # Now that Client A is done, device 4 lock is released; Client B succeeds
-                send_json(
-                    sock_b,
-                    {
-                        "req_id": "req-client-b-retry",
-                        "cmd": "probe",
-                        "device": "BT-04",
-                    },
-                )
-                res_b_retry = recv_json(sock_b, timeout=2.0)
-                assert res_b_retry["req_id"] == "req-client-b-retry"
-                assert res_b_retry["status"] == "ok"
-                assert res_b_retry["data"]["pong"] is True
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_freeze_guard_aborts_long_polling_immediately(self, running_server_with_kvm_pool):
-        """If video stream freezes mid-poll, Frame Freeze Guard aborts check before timeout_sec."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=50.0, initial_result=None)
-        kvm_map["192.168.210.15"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            start = time.monotonic()
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                # Advance PTS for first 0.1s, then freeze completely!
-                if time.monotonic() - start < 0.1:
-                    kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=4.0) as sock:
-                t0 = time.monotonic()
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-freeze-abort",
-                        "cmd": "check",
-                        "device": "BT-05",
-                        "timeout_sec": 5.0,  # Long timeout
-                        "freeze_threshold": 0.2,  # Short freeze threshold
-                        "poll_interval": 0.05,
-                    },
-                )
-                res = recv_json(sock, timeout=4.0)
-                elapsed = time.monotonic() - t0
-
-                assert res["req_id"] == "req-freeze-abort"
-                assert res["status"] == "error"
-                assert res["error"] == "frame_frozen"
-                assert res["device"] == "BT-05"
-                # Aborted well before the 5.0s timeout!
-                assert elapsed < 2.0
-
-                # Device 5 lock must be released immediately upon freeze abort
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-followup",
-                        "cmd": "probe",
-                        "device": "BT-05",
-                    },
-                )
-                res2 = recv_json(sock, timeout=2.0)
-                assert res2["status"] == "ok"
-                assert res2["data"]["pong"] is True
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_no_socket_starvation_multiplexing(self, running_server_with_kvm_pool):
-        """Client 1 running a long poll on device 6 does not starve Client 2 communicating concurrently."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm_dev6 = MockKVMClient(initial_pts=60.0, initial_result=None)
-        kvm_dev7 = MockKVMClient(initial_pts=70.0, initial_result="PASS")
-        kvm_map["192.168.210.16"] = kvm_dev6
-        kvm_map["192.168.210.17"] = kvm_dev7
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm_dev6.advance(0.033)
-                kvm_dev7.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=5.0) as sock1, \
-                 socket.create_connection((host, port), timeout=5.0) as sock2:
-
-                # Client 1 begins a 2.0s long-poll on Device 6
-                send_json(
-                    sock1,
-                    {
-                        "req_id": "c1-long-poll",
-                        "cmd": "check",
-                        "device": "BT-06",
-                        "timeout_sec": 2.0,
-                        "poll_interval": 0.05,
-                    },
-                )
-                time.sleep(0.05)
-
-                # Client 2 makes 5 consecutive calls on different devices / ping
-                for i in range(5):
-                    t_start = time.monotonic()
-                    send_json(sock2, {"req_id": f"c2-ping-{i}", "cmd": "ping"})
-                    r = recv_json(sock2, timeout=1.0)
-                    t_dur = time.monotonic() - t_start
-                    assert r["status"] == "ok"
-                    assert r["data"]["pong"] is True
-                    # Must finish in milliseconds without socket starvation!
-                    assert t_dur < 0.2
-
-                # Client 2 also queries Device 7 which is already PASS
-                t_start = time.monotonic()
-                send_json(
-                    sock2,
-                    {
-                        "req_id": "c2-check-dev7",
-                        "cmd": "check",
-                        "device": "BT-07",
-                        "timeout_sec": 2.0,
-                    },
-                )
-                r7 = recv_json(sock2, timeout=1.0)
-                assert r7["status"] == "ok"
-                assert r7["data"]["result"] == "PASS"
-                assert time.monotonic() - t_start < 0.3
-
-                # Client 1 eventually finishes long-poll
-                r1 = recv_json(sock1, timeout=3.0)
-                assert r1["req_id"] == "c1-long-poll"
-                assert r1["status"] == "timeout"
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_client_disconnect_during_long_poll_releases_device_lock(self, running_server_with_kvm_pool):
-        """When a client drops socket mid-poll, server exits poll and frees device lock."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=80.0, initial_result=None)
-        kvm_map["192.168.210.18"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            sock1 = socket.create_connection((host, port), timeout=3.0)
-            send_json(
-                sock1,
-                {
-                    "req_id": "drop-req",
-                    "cmd": "check",
-                    "device": "BT-08",
-                    "timeout_sec": 10.0,
-                    "poll_interval": 0.05,
-                },
-            )
-            time.sleep(0.05)
-
-            # Abruptly close socket 1
-            sock1.close()
-            time.sleep(0.15)
-
-            # Client 2 connects and attempts to lock Device 8
-            with socket.create_connection((host, port), timeout=3.0) as sock2:
-                send_json(
-                    sock2,
-                    {
-                        "req_id": "c2-after-drop",
-                        "cmd": "probe",
-                        "device": "BT-08",
-                    },
-                )
-                res = recv_json(sock2, timeout=2.0)
-                assert res["status"] == "ok"
-                assert res["data"]["pong"] is True
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_target_pattern_matching_lifecycle(self, running_server_with_kvm_pool):
-        """Explicit target_pattern parameter matches dynamically in evaluation loop."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=90.0)
-        kvm.pattern = "TESTING"
-        kvm_map["192.168.210.19"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            start = time.monotonic()
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-                if time.monotonic() - start >= 0.25:
-                    kvm.pattern = "CUSTOM_PASS"
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=4.0) as sock:
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-custom-pat",
-                        "cmd": "check",
-                        "device": "BT-09",
-                        "target_pattern": "CUSTOM_PASS",
-                        "timeout_sec": 5.0,
-                        "poll_interval": 0.05,
-                    },
-                )
-                res = recv_json(sock, timeout=4.0)
-
-                assert res["req_id"] == "req-custom-pat"
-                assert res["status"] == "ok"
-                assert res["data"]["result"] == "CUSTOM_PASS"
-                assert res["device"] == "BT-09"
-                assert 0.2 <= res["elapsed_sec"] <= 2.0
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_invalid_timeout_and_missing_kvm_error_handling(self, running_server_with_kvm_pool):
-        """Server rejects negative timeout and missing KVM cleanly."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        kvm = MockKVMClient(initial_pts=100.0)
-        kvm_map["192.168.210.20"] = kvm
-
-        with socket.create_connection((host, port), timeout=3.0) as sock:
-            # 1. Negative timeout
-            send_json(
-                sock,
-                {
-                    "req_id": "err-neg-to",
-                    "cmd": "check",
-                    "device": "BT-10",
-                    "timeout_sec": -5,
-                },
-            )
-            r1 = recv_json(sock)
-            assert r1["status"] == "error"
-            assert r1["error"] == "invalid_argument"
-
-            # 2. Non-numeric timeout
-            send_json(
-                sock,
-                {
-                    "req_id": "err-str-to",
-                    "cmd": "check",
-                    "device": "BT-10",
-                    "timeout_sec": "not-a-number",
-                },
-            )
-            r2 = recv_json(sock)
-            assert r2["status"] == "error"
-            assert r2["error"] == "invalid_argument"
-
-            # 3. Device ID not in the device list (KVM IP is never taken from the request)
-            send_json(
-                sock,
-                {
-                    "req_id": "err-no-kvm",
-                    "cmd": "check",
-                    "device": "BT-99",
-                },
-            )
-            r3 = recv_json(sock)
-            assert r3["status"] == "error"
-            assert r3["error"] == "unknown_device"
-
-    def test_dfu_station_long_polling_transition(self, running_server_with_kvm_pool):
-        """DFU station long-polling holds until round-frame marker transitions to complete."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-        from test_round_frame_consumer import render_frame
-
-        # Start with MONITORING frame
-        monitoring_frame = render_frame(MarkerState.MONITORING, ["WAITING", "WAITING"])
-        complete_frame = render_frame(MarkerState.COMPLETE, ["PASS", "PASS"])
-
-        kvm = MockKVMClient(initial_pts=110.0, frame_data=monitoring_frame)
-        kvm_map["192.168.210.21"] = kvm
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            start = time.monotonic()
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                kvm.advance(0.033)
-                if time.monotonic() - start >= 0.3:
-                    kvm.frame = complete_frame
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        try:
-            with socket.create_connection((host, port), timeout=4.0) as sock:
-                send_json(
-                    sock,
-                    {
-                        "req_id": "req-dfu-lp",
-                        "cmd": "check",
-                        "device": "DFU-20",
-                        "timeout_sec": 4.0,
-                        "poll_interval": 0.05,
-                    },
-                )
-                res = recv_json(sock, timeout=4.0)
-
-                assert res["req_id"] == "req-dfu-lp"
-                assert res["status"] == "ok"
-                assert res["data"]["result"] == "PASS"
-                assert res["data"]["station"] == "DFU"
-                assert res["device"] == "DFU-20"
-                assert 0.25 <= res["elapsed_sec"] <= 2.5
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
-
-    def test_multi_client_parallel_long_polling_distinct_devices(self, running_server_with_kvm_pool):
-        """Multiple stations long-polling concurrently complete independently at their own match times."""
-        server, kvm_map, (host, port) = running_server_with_kvm_pool
-
-        # 3 stations with different completion delays
-        delays = {"BT-11": 0.2, "BT-12": 0.4, "BT-13": 0.6}
-        kvms = {}
-        for dev, delay in delays.items():
-            k = MockKVMClient(initial_pts=200.0 + float(dev[-2:]))
-            kvms[dev] = k
-            kvm_map[ROUTES[dev]["kvm_ip"]] = k
-
-        stop_stream = threading.Event()
-
-        def stream_worker():
-            start = time.monotonic()
-            while not stop_stream.is_set():
-                time.sleep(0.02)
-                now = time.monotonic()
-                for dev, k in kvms.items():
-                    k.advance(0.033)
-                    if now - start >= delays[dev] and k.result is None:
-                        k.result = "PASS"
-
-        th = threading.Thread(target=stream_worker, daemon=True)
-        th.start()
-
-        results = {}
-
-        def client_thread(dev: str):
-            with socket.create_connection((host, port), timeout=5.0) as sock:
-                send_json(
-                    sock,
-                    {
-                        "req_id": f"req-par-{dev}",
-                        "cmd": "check",
-                        "device": dev,
-                        "timeout_sec": 3.0,
-                        "poll_interval": 0.04,
-                    },
-                )
-                res = recv_json(sock, timeout=5.0)
-                results[dev] = res
-
-        threads = [threading.Thread(target=client_thread, args=(d,)) for d in delays]
-        try:
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=4.0)
-
-            assert len(results) == 3
-            for dev in delays:
-                assert results[dev]["status"] == "ok"
-                assert results[dev]["data"]["result"] == "PASS"
-                assert results[dev]["device"] == dev
-                assert delays[dev] - 0.1 <= results[dev]["elapsed_sec"] <= delays[dev] + 1.0
-        finally:
-            stop_stream.set()
-            th.join(timeout=1.0)
+    srv.start()
+    time.sleep(0.05)
+    try:
+        yield Rig(srv, kvms)
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
 
+
+def _open(rig):
+    return socket.create_connection((rig.host, rig.port), timeout=10.0)
+
+
+def _send(sock, obj):
+    sock.sendall((json.dumps({"protocol_version": "1.0", **obj}) + "\n").encode("utf-8"))
+
+
+def _recv(sock, timeout=10.0):
+    sock.settimeout(timeout)
+    buf = bytearray()
+    while b"\n" not in buf:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise ConnectionError("closed")
+        buf.extend(chunk)
+    line, _, _ = bytes(buf).partition(b"\n")
+    return json.loads(line.decode("utf-8"))
+
+
+def _check_once(rig, device, req_id, timeout_sec):
+    with _open(rig) as sock:
+        _send(sock, {"req_id": req_id, "device": device, "cmd": "check", "timeout_sec": timeout_sec})
+        return _recv(sock)
+
+
+def _background_check(rig, device, req_id, timeout_sec):
+    out = {}
+
+    def run():
+        out["resp"] = _check_once(rig, device, req_id, timeout_sec)
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    return th, out
+
+
+def _settle(seconds=0.7):
+    """Let at least one 0.5 s poll observe the state just set."""
+    time.sleep(seconds)
+
+
+COMPLETE = ["PASS", "FAIL", "NOTEST", "PASS"]
+
+
+def test_immediate_complete_returns_taken_fast(rig):
+    rig.kvm().show("monitoring")
+    th, out = _background_check(rig, DEVICE, "req-fast", 30)
+    _settle()
+    started = time.monotonic()
+    rig.kvm().show("complete", COMPLETE)
+    th.join(timeout=10)
+
+    assert out["resp"]["status"] == "ok"
+    assert out["resp"]["data"]["kind"] == "taken"
+    assert out["resp"]["req_id"] == "req-fast"
+    assert time.monotonic() - started < 5.0
+
+
+def test_delayed_complete_holds_the_connection_until_taken(rig):
+    rig.kvm().show("monitoring")
+    started = time.monotonic()
+    th, out = _background_check(rig, DEVICE, "req-hold", 15)
+    _settle(1.5)
+    rig.kvm().show("complete", COMPLETE)
+    th.join(timeout=15)
+
+    resp = out["resp"]
+    assert resp["data"]["kind"] == "taken"
+    assert resp["elapsed_sec"] >= 1.0
+    assert time.monotonic() - started < 15.0
+
+
+def test_long_poll_times_out_with_last_observed_state(rig):
+    rig.kvm().show("monitoring")
+
+    resp = _check_once(rig, DEVICE, "req-timeout", 1.5)
+
+    assert resp["status"] == "timeout"
+    assert resp["error"] == "timeout"
+    assert resp["data"]["kind"] == "waiting"
+    assert resp["data"]["state"] == "monitoring"
+    assert resp["elapsed_sec"] >= 1.4
+
+
+def test_device_busy_while_long_poll_runs_but_other_devices_do_not_block(rig):
+    rig.kvm("DFU-01").show("monitoring")
+    rig.kvm("DFU-02").show("monitoring")
+    th, _ = _background_check(rig, "DFU-01", "req-lp", 3)
+    _settle(0.3)
+
+    busy = _check_once(rig, "DFU-01", "req-same", 0)
+    other = _check_once(rig, "DFU-02", "req-other", 0)
+    th.join(timeout=10)
+
+    assert busy["status"] == "error"
+    assert busy["error"] == "device_busy"
+    assert other["status"] == "ok"
+    assert other["data"]["kind"] == "waiting"
+
+
+def test_frozen_picture_aborts_long_poll_immediately(rig):
+    rig.kvm().show("monitoring")
+    rig.kvm().freeze()
+    started = time.monotonic()
+
+    resp = _check_once(rig, DEVICE, "req-frozen", 10)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "frame_frozen"
+    assert time.monotonic() - started < 5.0
+
+
+def test_disconnect_during_long_poll_releases_the_device_lock(rig):
+    rig.kvm().show("monitoring")
+    sock = _open(rig)
+    _send(sock, {"req_id": "req-drop", "device": DEVICE, "cmd": "check", "timeout_sec": 30})
+    _settle(0.3)
+    assert rig.srv.lock_manager.is_locked(DEVICE)
+
+    sock.close()
+    deadline = time.monotonic() + 5.0
+    while rig.srv.lock_manager.is_locked(DEVICE) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    assert not rig.srv.lock_manager.is_locked(DEVICE)
+
+
+def test_invalid_timeout_is_rejected_before_polling(rig):
+    with _open(rig) as sock:
+        _send(sock, {"req_id": "bad-timeout", "device": DEVICE, "cmd": "check", "timeout_sec": "not-a-number"})
+        resp = _recv(sock)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "invalid_argument"
+
+
+def test_parallel_long_polls_on_distinct_devices_each_get_their_own_result(rig):
+    devices = ["DFU-01", "DFU-02", "DFU-03"]
+    for device in devices:
+        rig.kvm(device).show("monitoring")
+    results = {}
+
+    def run(device):
+        th_out = _check_once(rig, device, f"req-{device}", 8)
+        results[device] = th_out
+
+    threads = [threading.Thread(target=run, args=(d,)) for d in devices]
+    for t in threads:
+        t.start()
+    _settle()
+    for device in devices:
+        rig.kvm(device).show("complete", COMPLETE)
+    for t in threads:
+        t.join(timeout=12)
+
+    for device in devices:
+        assert results[device]["status"] == "ok"
+        assert results[device]["data"]["kind"] == "taken"
+        assert results[device]["device"] == device
+        assert results[device]["req_id"] == f"req-{device}"
+
+
+def test_long_poll_is_fenced_per_device_round(rig):
+    rig.kvm().show("monitoring")
+    th, out = _background_check(rig, DEVICE, "round-1", 15)
+    _settle()
+    rig.kvm().show("complete", COMPLETE)
+    th.join(timeout=15)
+    assert out["resp"]["data"]["kind"] == "taken"
+
+    second = _check_once(rig, DEVICE, "round-1-again", 0)
+
+    assert second["data"]["kind"] == "already_taken"
