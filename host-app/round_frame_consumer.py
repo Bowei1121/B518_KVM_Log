@@ -430,7 +430,10 @@ def observe_latest_round_frame(kvm, gate, now=None):
 
 
 def tcp_round_reply(decision):
-    """Stable line protocol for the one-round check endpoint."""
+    """Legacy line format, kept only for the offline Ticket 16 evidence tools.
+
+    The TCP server speaks JSON 1.0 (docs/PROTOCOL.md); nothing on the wire uses this.
+    """
     if decision.kind == "frozen" or decision.reason == "frame_frozen":
         return "error:frame_frozen\r\n"
     if decision.kind == "taken":

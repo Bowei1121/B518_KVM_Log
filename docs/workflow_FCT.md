@@ -23,17 +23,19 @@
 1. 主畫面 Switch 取得最新 JetKVM 影格，使用 `FCT_dock_icon.png` 定位並點擊 FCT 程式 icon。
 2. 點擊後等待 0.5 秒讓 HMI 回到最前方；Dock 未命中或 HID 回報錯誤時立即停止。
 3. Switch 不輸入 SN、不點擊測試按鈕。
-4. FCT 的 TCP `input` 與 `button` 指令明確不支援，不建立 KVM 連線也不送 HID。
+4. FCT 的 TCP `input` 與 `button` 指令回 `unsupported_command`，不建立 KVM 連線也不送 HID。
 
 ## 視覺結果判讀
 
-1. 使用 `FCT_window.png` 定位 FCT 視窗；若視窗未命中，回覆視覺目標未找到。
-2. 在視窗範圍搜尋 `FCT_testing.png`。命中時，結果為測試中，回覆 `action_done,testing`。
+注意：FCT 目前以模板比對判讀（`auto_flow.run_check`），結果映射到 TCP `check` 1.0 的 `data` 結構（見 `docs/PROTOCOL.md`）。下列第 5、6 步的 OCR 配對是規劃，尚未實作；FCT 改用 Log Solution 顯示契約判讀列為待辦。
+
+1. 使用 `FCT_window.png` 定位 FCT 視窗；若視窗未命中，`kind` 為 `unknown`。
+2. 在視窗範圍搜尋 `FCT_testing.png`。命中時，`kind` 為 `waiting`、`reason` 為 `testing`。
 3. 未命中 Testing 時，搜尋所有 `FCT_pass.png` 與 `FCT_fail.png`。
 4. 依畫面垂直位置將所有 PASS／FAIL 標記由上而下排序。
 5. 將視窗寬度 22%～51% 的區域作為 SN 欄，使用 OCR 一次讀取所有可見 SN，再以垂直位置配對結果列。
-6. 回覆 action_done,index:SN:pass|fail,...。這是本 repo 的正式視覺判讀結果，不等待或合併機台本地 Log。
-7. 若找不到結果標記，回覆 action_done，表示已辨識到視窗但目前沒有可判讀的 PASS／FAIL 列。
+6. （規劃）回覆 `kind: taken`，`results` 為各列的 `{slot, status}`（PASS／FAIL）。這是本 repo 的正式視覺判讀結果，不等待或合併機台本地 Log。
+7. 若找不到結果標記，`kind` 為 `unknown`，不得當作產品 FAIL。
 
 ## 錯誤處理與診斷
 
