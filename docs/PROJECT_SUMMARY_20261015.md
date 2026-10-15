@@ -44,3 +44,10 @@
 - Q18：設定頁面已提供模擬圖，待使用者決定修改方向。Q19：Monitor UI 與 Core 同機。
 - Q20：同意嚴格欄位、`items` 陣列、只看逐格 `results`；PROTOCOL.md 已補 `timeout_sec` 白話說明與全指令 JSON 範例。
 - Q21：FCT／BT 過渡期保留模板判讀並套用同一 `CheckResp`；模板判讀改善空間待討論。
+
+### 模板判讀盤點（子代理唯讀調查，主線已核對關鍵點）
+
+- Core `check` 只有請求帶 `template_root` 才跑 OpenCV（`tcp_server.py:329`）；LabVIEW 與 Monitor UI 都不帶，因此 FCT／BT 在 Core 上實際不做模板判讀：無 timeout 時只憑畫面有在動就回 `PASS`，長輪詢則逾時回 `NONE`。
+- 即使跑模板：灰階比對、全域門檻 0.8、結果列用原尺寸 `find_all`（縮放約 ±5% 以上就找不到）、找不到任何標記時判 `PASS`、單張畫面決定、例外被吞掉後落到 `PASS`；凍結檢查在 `run_check` 內以站別為 key，多台 BT 共用狀態。
+- 列判讀、空結果→PASS、例外→PASS 等路徑皆無測試。
+- 待模板判讀議題討論時處理；尚未修改程式。
