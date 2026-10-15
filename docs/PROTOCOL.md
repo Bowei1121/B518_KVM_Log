@@ -2,7 +2,7 @@
 
 版本：`protocol_version = "1.0"`（草案）
 日期：2026-10-15（Asia/Taipei）
-狀態：設計草案，供 LabVIEW 設計 type definition。**尚未實作**；與現行程式的落差見第 9 節。
+狀態：設計草案，供 LabVIEW 設計 type definition。**尚未實作**；與現行程式的落差見第 10 節。
 相關：`CONTEXT.md`、ADR-0002／0003／0006、`docs/LABVIEW_LOG_SOLUTION_INTEGRATION.md`。
 
 輪次 UUID、結果保存、接收確認（ACK）不在 1.0 範圍，定案後以 1.1 加入。
@@ -70,7 +70,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 
 - 「上鎖」指令在同一台設備已有上鎖指令執行中時，立刻回 `device_busy`（ADR-0002 fail-fast）。不同設備互不影響。
 - 站別不支援的指令回 `unsupported_command`。
-- `check` 對 FCT／BT 的 Log Solution 判讀為目標行為，尚未實作（第 9 節）。
+- `check` 對 FCT／BT 的 Log Solution 判讀為目標行為，尚未實作（第 10 節）。
 
 ## 5. 各指令
 
@@ -129,6 +129,12 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `timeout_sec` | number | 是 | `0` = 只讀一次立即回覆；`> 0` = 長輪詢，最多 `3600` |
+
+`timeout_sec` 白話：LabVIEW 願意等多久。
+
+- `0`：「現在畫面是什麼狀態？」看一眼馬上回，通常不到 1 秒。
+- `600`：「有結果再告訴我，最多等 10 分鐘。」Core 會一直盯著畫面，結果出來、待確認、出錯就立刻回；10 分鐘到了還沒結果，回 `status = "timeout"`。
+- LabVIEW 的 TCP Read timeout 必須**大於** `timeout_sec`（建議多 30 秒），否則 LabVIEW 會先斷線。
 
 長輪詢在下列任一情況**立即回覆**，否則等到逾時：
 
@@ -193,6 +199,8 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果格數無關。
 
+只有 Log Solution 在 `standby`，或 `complete` 且本輪結果已取用時才允許輸入；`monitoring`／`review` 時回 `log_solution_busy`，不輸入任何 SN。
+
 ### 5.6 `button`（僅 BT）
 
 專屬請求欄位：
@@ -223,6 +231,7 @@ DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果�
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
 | `invalid_argument` | error | 指令欄位值不合法（slot 超出範圍、timeout 超出範圍等） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
+| `log_solution_busy` | error | `input` 時 Log Solution 為 `monitoring` 或 `review`（上一輪未結束或待確認） | 先完成本輪 `check`／人工確認 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM | 設備／網路異常，暫停 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
@@ -249,7 +258,126 @@ DFU 輸入 profile（4／7 格）只決定輸入視窗，與 `check` 的結果�
 | `InputResp` | Envelope + `data{entered[]}` |
 | `ButtonResp` | Envelope + `data{action}` |
 
-## 9. 與現行程式的落差（實作待辦）
+## 9. 完整範例
+
+每組為「LabVIEW 送出的一行」→「Core 回覆的一行」。實際傳輸時每筆都是單行，這裡為了閱讀而換行排版。
+
+### 9.1 `ping`
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0001","device":"","cmd":"ping"}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0001","device":"","cmd":"ping",
+ "status":"ok","error":"","message":"","elapsed_sec":0.0,
+ "data":{"pong":true,"core_version":"2.0.0"}}
+```
+
+### 9.2 `devices`
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"devices"}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"devices",
+ "status":"ok","error":"","message":"","elapsed_sec":0.0,
+ "data":{"devices":[
+   {"device":"DFU-01","station":"DFU","connected":true,"busy":false,"frozen":false},
+   {"device":"FCT-01","station":"FCT","connected":false,"busy":false,"frozen":false},
+   {"device":"BT-01","station":"BT","connected":true,"busy":true,"frozen":false}]}}
+```
+
+### 9.3 `snapshot`
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0003","device":"DFU-01","cmd":"snapshot","format":"jpeg","quality":80}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0003","device":"DFU-01","cmd":"snapshot",
+ "status":"ok","error":"","message":"","elapsed_sec":0.05,
+ "data":{"width":1920,"height":1080,"format":"jpeg","image_base64":"/9j/4AAQSkZJRg..."}}
+```
+
+### 9.4 `input`（DFU）
+
+SN 可以含逗號、冒號，JSON 字串會自動處理，不需要跳脫。
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0004","device":"DFU-01","cmd":"input",
+ "items":[{"slot":1,"sn":"F5K2-001"},{"slot":3,"sn":"F5K2:003,B"}]}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0004","device":"DFU-01","cmd":"input",
+ "status":"ok","error":"","message":"","elapsed_sec":8.7,
+ "data":{"entered":[1,3]}}
+```
+
+Log Solution 仍在監控中時（上一輪尚未結束）：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0005","device":"DFU-01","cmd":"input",
+ "status":"error","error":"log_solution_busy","message":"Log Solution state is monitoring","elapsed_sec":0.3,
+ "data":{"entered":[]}}
+```
+
+### 9.5 `button`（BT）
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0006","device":"BT-01","cmd":"button","action":"start_all"}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0006","device":"BT-01","cmd":"button",
+ "status":"ok","error":"","message":"","elapsed_sec":1.2,
+ "data":{"action":"start_all"}}
+```
+
+### 9.6 `check`
+
+只看一眼（`timeout_sec = 0`），目前監控中：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check","timeout_sec":0}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check",
+ "status":"ok","error":"","message":"","elapsed_sec":0.2,
+ "data":{"kind":"waiting","state":"monitoring","reason":"monitoring","capacity":4,"results":[]}}
+```
+
+長輪詢等到待確認，立即回：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0008","device":"DFU-01","cmd":"check","timeout_sec":600}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0008","device":"DFU-01","cmd":"check",
+ "status":"ok","error":"","message":"","elapsed_sec":145.3,
+ "data":{"kind":"paused","state":"review","reason":"confirmation_required","capacity":4,"results":[]}}
+```
+
+取得結果與逾時範例見 5.4。
+
+### 9.7 常見錯誤
+
+同一台設備已有動作在執行：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0009","device":"DFU-01","cmd":"input",
+ "status":"error","error":"device_busy","message":"DFU-01 is busy with req 6f1d0c2e-0008","elapsed_sec":0.0,
+ "data":{"entered":[]}}
+```
+
+設備 ID 大小寫錯誤：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0010","device":"dfu-01","cmd":"check",
+ "status":"error","error":"unknown_device","message":"device 'dfu-01' is not configured","elapsed_sec":0.0,
+ "data":{"kind":"","state":"","reason":"","capacity":0,"results":[]}}
+```
+
+帶了 `kvm_ip`：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0011","device":"DFU-01","cmd":"check",
+ "status":"error","error":"forbidden_field","message":"field 'kvm_ip' is not allowed","elapsed_sec":0.0,
+ "data":{"kind":"","state":"","reason":"","capacity":0,"results":[]}}
+```
+
+## 10. 與現行程式的落差（實作待辦）
 
 | 項目 | 現行 | 1.0 目標 |
 | --- | --- | --- |

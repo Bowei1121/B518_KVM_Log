@@ -36,3 +36,11 @@
 - 已產出 `docs/PROTOCOL.md` 1.0 草案（固定 envelope、固定 data 欄位、錯誤碼、LabVIEW typedef 清單、與現行程式落差）。
 
 查證：Log Solution 顯示契約 1.1 已有 `standby／monitoring／review／complete` 四種標記；橋接可辨識「監控中」與「待確認」，但現行長輪詢遇待確認不會立即回覆，`input`／`button` 尚未接上 Core JSON。
+
+### 第 4 輪（Q16–Q21）
+
+- Q16：Log Solution 為 `monitoring`／`review` 時 `input` 回 `log_solution_busy`。
+- Q17：`COMPLETING` 繼續等；`STOPPED`（人員手動停止監控）使用者傾向判 FAIL，處置方式待下一輪確認。
+- Q18：設定頁面已提供模擬圖，待使用者決定修改方向。Q19：Monitor UI 與 Core 同機。
+- Q20：同意嚴格欄位、`items` 陣列、只看逐格 `results`；PROTOCOL.md 已補 `timeout_sec` 白話說明與全指令 JSON 範例。
+- Q21：FCT／BT 過渡期保留模板判讀並套用同一 `CheckResp`；模板判讀改善空間待討論。
