@@ -5,7 +5,7 @@
 - **Monitor UI**: 用於觀測畫面、維護 Pattern、手動操作的 Tkinter GUI。它降級為一般的 Client，只透過 TCP 與 Core Service 溝通，不再自己直接去連 WebRTC 或管理 TCP Server。
 
 ## Connections & Concurrency
-- **設備 ID**: 一台設備（測試機＋測試機電腦＋JetKVM）的固定、跨站唯一識別，格式 `<站別>-<兩位數>`，例如 `DFU-01`。所有模組與協定以它為唯一設備 key；不同於 `req_id` 與輪次 ID。（ADR-0007，Proposed）
+- **設備 ID**: 一台設備（測試機＋測試機電腦＋JetKVM）的固定、跨站唯一識別，格式 `<站別>-<兩位數>`，例如 `DFU-01`。所有模組與協定以它為唯一設備 key；不同於 `req_id` 與輪次 ID。（ADR-0007，Accepted）
 - **設備清單**: 上位機 `~/Documents/template/devices.json`，設備 ID → 站別、KVM IP、測試通道數的唯一來源。
 - **測試通道數**: 一台設備的測試位置數 N；通道 1～N 與 Log Solution Slot 編號一致。
 - **KVM Connection Pool**: 在 Core Service 中管理所有 JetKVM 連線的機制。具備自動保活（閒置時定時背景抓圖）與閒置淘汰（例如 10 分鐘無指令即主動斷線釋放資源）功能。

@@ -129,6 +129,7 @@ class RunStats:
     rss_samples_mb: List[float] = field(default_factory=list)
     internal_errors: int = 0
     frozen_replies: int = 0
+    connection_errors: int = 0  # no reply came back, so these are not in reply_latencies
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add_reply(self, latency: float, status: str, error: str, kind: str = "") -> None:
@@ -142,6 +143,10 @@ class RunStats:
                 self.internal_errors += 1
             if error == "frame_frozen":
                 self.frozen_replies += 1
+
+    def add_connection_error(self) -> None:
+        with self.lock:
+            self.connection_errors += 1
 
 
 def summarise(stats: RunStats, frame_ages: Sequence[float], duration: float,
@@ -169,6 +174,7 @@ def summarise(stats: RunStats, frame_ages: Sequence[float], duration: float,
         "rss_end_mb": _round(rss[-1] if rss else None, 1),
         "internal_errors": stats.internal_errors,
         "frame_frozen_replies": stats.frozen_replies,
+        "connection_errors": stats.connection_errors,
     }
     checks = {
         "no_internal_errors": stats.internal_errors == 0,

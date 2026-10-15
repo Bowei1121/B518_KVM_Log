@@ -99,7 +99,7 @@ class LoadClient(threading.Thread):
                 if kind in ("taken", "already_taken") or reply.get("status") != "ok":
                     self.stop_event.wait(self.args.round_interval)
             except (OSError, ValueError, ConnectionError):
-                self.stats.add_reply(0.0, "client", "connection")
+                self.stats.add_connection_error()
                 if sock is not None:
                     sock.close()
                 sock = None

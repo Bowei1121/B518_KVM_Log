@@ -86,3 +86,18 @@ def test_channels_entry_accepts_digits_and_rejects_letters(window):
 
     assert win.tk.call(command, "12") == 1
     assert win.tk.call(command, "1a") == 0
+
+
+def test_probe_result_is_written_only_to_the_row_it_belongs_to(window):
+    win, _ = window
+    stale = win._rows[1]
+    win._rows[0]["selected"].set(True)
+    win._delete_selected()  # rebuilds every remaining row, so `stale` is no longer on the page
+    result = dsw.editor.ProbeResult(False, None, "無法連線: test")
+
+    win._show_probe(stale, result)  # must not raise on destroyed widgets or write to a shifted row
+
+    assert all(entry["probe"].cget("text") == "" for entry in win._rows)
+    win._show_probe(win._rows[1], result)
+    assert win._rows[1]["probe"].cget("text") == "無法連線: test"
+    assert win._rows[0]["probe"].cget("text") == ""

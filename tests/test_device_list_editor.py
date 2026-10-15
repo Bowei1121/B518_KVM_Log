@@ -187,7 +187,7 @@ def test_probe_reports_timeout_and_refusal_without_raising():
 # --- restart rule ------------------------------------------------------------
 
 def test_restart_is_refused_while_any_device_is_busy_and_names_it():
-    stations = [{"device": "DFU-01", "busy": False}, {"device": "BT-01", "busy": True}]
+    stations = [{"device": "DFU-01", "is_busy": False}, {"device": "BT-01", "is_busy": True}]
 
     message = editor.restart_refusal(stations)
 
@@ -195,4 +195,4 @@ def test_restart_is_refused_while_any_device_is_busy_and_names_it():
 
 
 def test_restart_is_allowed_when_all_devices_are_idle():
-    assert editor.restart_refusal([{"device": "DFU-01", "busy": False}]) is None
+    assert editor.restart_refusal([{"device": "DFU-01", "is_busy": False}]) is None

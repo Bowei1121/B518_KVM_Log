@@ -112,8 +112,10 @@ def test_snapshot_without_device_is_rejected(running_server):
 
 
 def test_different_stations_do_not_share_state(running_server):
-    first = _roundtrip(running_server, {"req_id": "s6", "cmd": "snapshot", "device": "FCT-01"})
-    second = _roundtrip(running_server, {"req_id": "s7", "cmd": "snapshot", "device": "BT-01"})
+    first = _roundtrip(running_server, {"req_id": "s6", "cmd": "snapshot", "device": "FCT-01",
+                                        "format": "jpeg", "quality": 80})
+    second = _roundtrip(running_server, {"req_id": "s7", "cmd": "snapshot", "device": "BT-01",
+                                         "format": "jpeg", "quality": 80})
 
     assert first["status"] == "ok"
     assert second["status"] == "ok"
