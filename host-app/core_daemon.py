@@ -244,7 +244,12 @@ def send_tcp_command(
 ) -> Dict[str, Any]:
     """Send a command over TCP and return parsed JSON response."""
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-    req: Dict[str, Any] = {"req_id": f"mgmt-{uuid.uuid4().hex[:8]}", "cmd": cmd}
+    req: Dict[str, Any] = {
+        "protocol_version": "1.0",
+        "req_id": f"mgmt-{uuid.uuid4().hex[:8]}",
+        "device": "",
+        "cmd": cmd,
+    }
     if payload:
         req.update(payload)
 
@@ -279,7 +284,7 @@ def query_status(
 
     # Attempt TCP status request
     try:
-        resp = send_tcp_command("status", host=host, port=port, timeout=timeout)
+        resp = send_tcp_command("core_status", host=host, port=port, timeout=timeout)
         if resp.get("status") == "ok":
             return {
                 "status": "running",

@@ -141,7 +141,7 @@ class CoreServiceClient:
     ) -> Dict[str, Any]:
         """Send a newline-delimited JSON command and read the parsed JSON reply."""
         req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        req: Dict[str, Any] = {"req_id": req_id, "cmd": cmd}
+        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
         if payload:
             req.update(payload)
 
@@ -190,7 +190,7 @@ class CoreServiceClient:
 
     def get_status(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query real-time Core Service status."""
-        res = self.send_request("status", timeout=timeout)
+        res = self.send_request("core_status", timeout=timeout)
         if res.get("status") == "ok" and isinstance(res.get("data"), dict):
             merged = dict(res["data"])
             merged["req_id"] = res.get("req_id")
@@ -201,7 +201,7 @@ class CoreServiceClient:
 
     def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query configured stations status."""
-        res = self.send_request("stations", timeout=timeout)
+        res = self.send_request("core_status", timeout=timeout)
         if res.get("status") == "ok" and isinstance(res.get("data"), dict):
             merged = dict(res["data"])
             merged["req_id"] = res.get("req_id")
@@ -224,8 +224,6 @@ class CoreServiceClient:
         payload: Dict[str, Any] = {
             "format": format,
             "quality": quality,
-            "read_only": True,
-            "no_lock": True,
         }
         if kvm_ip:
             payload["kvm_ip"] = kvm_ip
