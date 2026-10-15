@@ -145,3 +145,15 @@ def test_short_run_drives_simulated_devices_through_real_judgment(recording_dir,
     assert summary["reply_kind_counts"].get("taken", 0) > 0  # simulated rounds were judged and taken
     assert (reports[0].parent / "report.md").exists()
     assert code in (0, 1)
+
+
+def test_connection_errors_are_counted_apart_from_reply_latencies():
+    stats = rl.RunStats()
+    stats.add_reply(0.2, "ok", "")
+    stats.add_connection_error()
+
+    summary = rl.summarise(stats, [0.01], 10.0, dict(tool.DEFAULT_LIMITS))
+
+    assert summary["connection_errors"] == 1
+    assert summary["replies"] == 1
+    assert summary["reply_latency_max_sec"] == 0.2
