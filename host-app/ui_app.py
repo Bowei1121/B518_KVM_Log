@@ -212,44 +212,29 @@ class CoreServiceClient:
 
     def get_snapshot(
         self,
-        kvm_ip: Optional[str] = None,
-        station: Optional[str] = None,
-        device: Optional[str] = None,
-        save_path: Optional[Union[str, Path]] = None,
+        device: str,
         format: str = "jpeg",
         quality: int = 80,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """Request a snapshot image without acquiring device locks."""
+        """Request a snapshot image of a device by its device ID (read-only, no lock)."""
         payload: Dict[str, Any] = {
+            "device": device,
             "format": format,
             "quality": quality,
         }
-        if kvm_ip:
-            payload["kvm_ip"] = kvm_ip
-        if station:
-            payload["station"] = station
-        if device:
-            payload["device"] = device
-        if save_path:
-            payload["save_path"] = str(save_path)
         return self.send_request("snapshot", payload, timeout=timeout)
 
     def manual_check(
         self,
-        station: str,
         device: str,
-        kvm_ip: Optional[str] = None,
         timeout_sec: float = 5.0,
     ) -> Dict[str, Any]:
         """Trigger a manual visual check command through Core Service."""
         payload: Dict[str, Any] = {
-            "station": station,
             "device": device,
             "timeout_sec": timeout_sec,
         }
-        if kvm_ip:
-            payload["kvm_ip"] = kvm_ip
         return self.send_request("check", payload, timeout=timeout_sec + 4.0)
 
 
@@ -769,7 +754,7 @@ class AtlasUI(_BaseTk):
         self._append_log(f"向 Core Service 請求快照 ({station}:{device}, IP: {kvm_ip})...")
 
         def worker() -> None:
-            res = self.client.get_snapshot(kvm_ip=kvm_ip, station=station, device=device)
+            res = self.client.get_snapshot(device=device)
             self._ui_queue.put(lambda: self._display_snapshot_result(res))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -842,8 +827,6 @@ class AtlasUI(_BaseTk):
             device = self.var_sel_device.get().strip()
 
             res = self.client.get_snapshot(
-                kvm_ip=kvm_ip,
-                station=station,
                 device=device,
                 quality=65,
                 timeout=3.0,
@@ -920,9 +903,7 @@ class AtlasUI(_BaseTk):
 
         def worker() -> None:
             res = self.client.manual_check(
-                station=station,
                 device=device,
-                kvm_ip=kvm_ip,
                 timeout_sec=timeout_sec,
             )
             self._ui_queue.put(lambda: self._display_check_result(res))

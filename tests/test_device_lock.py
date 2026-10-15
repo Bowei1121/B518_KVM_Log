@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from device_lock import DeviceBusyError, DeviceLockManager
-from protocol_helpers import make_registry, wire, numbered
+from protocol_helpers import make_pool, make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 _SOCK_BUFFERS: dict[int, bytearray] = {}
@@ -44,7 +44,7 @@ def recv_json(sock: socket.socket, timeout: float = 3.0) -> dict:
 @pytest.fixture
 def running_server():
     """Fixture that starts a TcpJsonServer on an ephemeral port in a background thread."""
-    server = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0)
+    server = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0, kvm_pool=make_pool())
     server.start()
     time.sleep(0.05)
     try:
