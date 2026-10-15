@@ -18,7 +18,6 @@ import signal
 import socket
 import threading
 import time
-import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
 
@@ -76,10 +75,10 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
-    "check": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
+    "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
     "input": {"entered": []},
     "button": {"action": ""},
-    "inspect": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
+    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
 }
 
 
@@ -335,7 +334,7 @@ class TcpJsonServer:
             return {
                 "status": "error",
                 "error": "missing_kvm",
-                "message": "KVM client not available. Specify 'kvm_ip' in request.",
+                "message": "KVM connection not available for this device",
                 "device": device_id,
             }
 
@@ -361,8 +360,8 @@ class TcpJsonServer:
             }
 
         # Encode to JPEG/PNG base64
-        fmt = str(req.get("format") or "jpeg").lower()
-        quality = int(req.get("quality") or 80)
+        fmt = req["format"]
+        quality = req["quality"]
         img_b64 = ""
         width = 0
         height = 0
@@ -493,15 +492,11 @@ class TcpJsonServer:
 
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
-        from dfu_flow import DfuInputError, parse_items, run_dfu_input
+        from dfu_flow import DfuInputError, run_dfu_input
         from template_catalog import TemplateCatalog
 
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
-        try:
-            parse_items(req.get("items"), entry.channels)
-        except DfuInputError as exc:
-            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": []}}
         refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
         if refusal is not None:
             code, _, message = refusal.partition(": ")
@@ -593,17 +588,16 @@ class TcpJsonServer:
             self._loop.call_later(0.05, self._shutdown_event.set)
         return {}
 
-    def _generate_req_id(self) -> str:
-        return f"req-{uuid.uuid4().hex[:8]}"
-
     def _validate_request(self, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Protocol 1.0 request validation. Returns (error, message) for the first violation."""
         if req.get("protocol_version") != PROTOCOL_VERSION:
             return "unsupported_protocol_version", f"protocol_version must be '{PROTOCOL_VERSION}'"
 
         req_id = req.get("req_id")
-        if not isinstance(req_id, str) or req_id == "":
+        if req_id is None or req_id == "":
             return "missing_req_id", "req_id is required"
+        if not isinstance(req_id, str):
+            return "invalid_request", "req_id must be a string"
 
         cmd = req.get("cmd")
         if cmd is None or cmd == "":
@@ -642,6 +636,23 @@ class TcpJsonServer:
                 return "unsupported_command", f"'button' is only supported for BT devices"
             if req.get("action") != "start_all":
                 return "invalid_argument", "action must be 'start_all'"
+        if cmd == "input":
+            from dfu_flow import DfuInputError, parse_items
+            try:
+                parse_items(req.get("items"), self.device_registry.get(device).channels)
+            except DfuInputError as exc:
+                return exc.code, str(exc)
+        if cmd == "snapshot":
+            fmt = req.get("format")
+            if fmt not in ("jpeg", "png"):
+                return "invalid_argument", "format must be 'jpeg' or 'png'"
+            quality = req.get("quality")
+            if isinstance(quality, bool) or not isinstance(quality, int):
+                return "invalid_argument", "quality is required and must be an integer"
+            if fmt == "png" and quality != 0:
+                return "invalid_argument", "quality must be 0 for png"
+            if fmt == "jpeg" and not 1 <= quality <= 100:
+                return "invalid_argument", "quality must be between 1 and 100 for jpeg"
         if cmd in ("check", "inspect"):
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
@@ -725,15 +736,7 @@ class TcpJsonServer:
                 result = await asyncio.to_thread(handler, req)
 
             # If handler explicitly returns an envelope with custom status like busy/error/timeout/cancelled/ok
-            if isinstance(result, dict) and result.get("status") in ("error", "busy", "timeout", "cancelled"):
-                resp = dict(result)
-                if "req_id" not in resp:
-                    resp["req_id"] = req_id
-                if "device" not in resp and device_id is not None:
-                    resp["device"] = device_id
-                return resp
-
-            if isinstance(result, dict) and result.get("status") == "ok":
+            if isinstance(result, dict) and result.get("status") in ("ok", "error", "busy", "timeout", "cancelled"):
                 resp = dict(result)
                 if "req_id" not in resp:
                     resp["req_id"] = req_id
@@ -793,6 +796,8 @@ class TcpJsonServer:
             return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
 
         raw = await self._dispatch_command(req_id, cmd, req, reader=reader, writer=writer)
+        if raw.get("error") == "client_disconnected":
+            return b""  # PROTOCOL 7: the client is gone, so nothing is written
         return self._encode_result(started, req_id, device, cmd, raw)
 
     def _encode_result(

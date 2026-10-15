@@ -6,12 +6,16 @@ from docs/PROTOCOL.md section 6 is reachable over the wire.
 
 import json
 import socket
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
-from protocol_helpers import make_registry
-from tcp_server import TcpJsonServer
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
+
+from protocol_helpers import make_registry  # noqa: E402
+from tcp_server import TcpJsonServer  # noqa: E402
 
 ENVELOPE_FIELDS = {
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec", "data",
@@ -218,3 +222,79 @@ def test_reply_never_auto_assigns_req_id_when_request_has_one(server):
     assert resp["req_id"] == "keep-me"
     assert resp["device"] == ""
     assert resp["cmd"] == "ping"
+
+
+@pytest.mark.parametrize("req_id", [5, True, ["r"], {"a": 1}])
+def test_present_non_string_req_id_is_invalid_request(server, req_id):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": "ping"})
+
+    _assert_envelope(resp)
+    assert resp["error"] == "invalid_request"
+    assert resp["req_id"] == ""
+
+
+@pytest.mark.parametrize("cmd", ["check", "inspect"])
+def test_check_error_reply_has_empty_kind_as_in_protocol_9_7(server, cmd):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "k1", "device": "dfu-01", "cmd": cmd,
+                          "timeout_sec": 0})
+
+    assert resp["error"] == "unknown_device"
+    assert resp["data"] == {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []}
+
+
+@pytest.mark.parametrize("items", [
+    [],
+    "nope",
+    [{"slot": 1}],
+    [{"slot": True, "sn": "A"}],
+    [{"slot": 1, "sn": "A"}, {"slot": 1, "sn": "B"}],
+    [{"slot": 1, "sn": ""}],
+    [{"slot": 1, "sn": "S" * 65}],
+    [{"slot": 1, "sn": "A", "extra": 1}],
+])
+def test_input_items_are_refused_before_lock_and_kvm_connect(server, items):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "in-bad", "device": "DFU-01", "cmd": "input",
+                          "items": items})
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "invalid_argument"
+    assert not server.lock_manager.is_locked("DFU-01")
+    assert server.kvm_pool.active_count() == 0
+
+
+def test_input_slot_outside_the_channel_count_is_refused_without_kvm(server):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "in9", "device": "DFU-01", "cmd": "input",
+                          "items": [{"slot": 9, "sn": "SN9"}]})
+
+    assert resp["error"] == "invalid_argument"
+    assert not server.lock_manager.is_locked("DFU-01")
+    assert server.kvm_pool.active_count() == 0
+
+
+@pytest.mark.parametrize("payload", [
+    {"format": "gif", "quality": 80},
+    {"format": "jpeg"},
+    {"format": "jpeg", "quality": True},
+    {"format": "jpeg", "quality": 0},
+    {"format": "jpeg", "quality": 101},
+    {"format": "png", "quality": 5},
+])
+def test_snapshot_format_and_quality_are_refused_before_kvm_connect(server, payload):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "sn-bad", "device": "DFU-01", "cmd": "snapshot",
+                          **payload})
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "invalid_argument"
+    assert not server.lock_manager.is_locked("DFU-01")
+    assert server.kvm_pool.active_count() == 0
+
+
+@pytest.mark.parametrize("payload", [
+    {"format": "jpeg", "quality": 1},
+    {"format": "jpeg", "quality": 80},
+    {"format": "png", "quality": 0},
+])
+def test_valid_snapshot_formats_pass_validation(server, payload):
+    req = {"protocol_version": "1.0", "req_id": "sn-ok", "device": "DFU-01", "cmd": "snapshot", **payload}
+
+    assert server._validate_request(req) is None

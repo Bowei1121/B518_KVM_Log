@@ -5,6 +5,7 @@ devices never share a screen. Lifecycle, locking, freeze abort and disconnect cl
 are exercised through the wire.
 """
 
+import asyncio
 import json
 import socket
 import sys
@@ -237,3 +238,72 @@ def test_long_poll_is_fenced_per_device_round(rig):
     second = _check_once(rig, DEVICE, "round-1-again", 0)
 
     assert second["data"]["kind"] == "already_taken"
+
+
+class _GoneWriter:
+    """Writer of a client that has already disconnected; records anything the server writes."""
+
+    _transport = None
+
+    def __init__(self):
+        self.written = []
+
+    def get_extra_info(self, name):
+        return None
+
+    def is_closing(self):
+        return True
+
+    def write(self, data):
+        self.written.append(data)
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
+def test_cancelled_check_of_a_gone_client_writes_no_reply_and_releases_the_lock():
+    kvm = LogSolutionKVM()
+    kvm.show("monitoring")
+    srv = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0,
+                        kvm_pool=KVMConnectionPool(client_factory=lambda host, password="": kvm))
+    srv._is_running = True
+    writer = _GoneWriter()
+    line = json.dumps({"protocol_version": "1.0", "req_id": "gone-1", "device": DEVICE, "cmd": "check",
+                       "timeout_sec": 30}) + "\n"
+
+    async def serve_one_line():
+        reader = asyncio.StreamReader()
+        reader.feed_data(line.encode("utf-8"))
+        reader.feed_eof()
+        await srv._client_connected_cb(reader, writer)
+
+    asyncio.run(serve_one_line())
+
+    assert writer.written == []
+    assert not srv.lock_manager.is_locked(DEVICE)
+
+
+def test_check_in_progress_is_answered_server_shutting_down_when_core_stops(rig):
+    rig.kvm().show("monitoring")
+    sock = _open(rig)
+    try:
+        _send(sock, {"req_id": "req-stop", "device": DEVICE, "cmd": "check", "timeout_sec": 30})
+        deadline = time.monotonic() + 5.0
+        while not rig.srv.lock_manager.is_locked(DEVICE) and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        rig.srv._is_running = False  # the flag stop() clears; the poll checks it on its next pass
+        resp = _recv(sock)
+    finally:
+        sock.close()
+        rig.srv._is_running = True  # so the fixture's stop() still reaches the server loop
+
+    assert resp["req_id"] == "req-stop"
+    assert resp["status"] == "error"
+    assert resp["error"] == "server_shutting_down"
