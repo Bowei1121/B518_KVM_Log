@@ -206,23 +206,20 @@ class CoreServiceClient:
 
     def get_status(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query real-time Core Service status."""
-        res = self.send_request("core_status", timeout=timeout)
-        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
-            merged = dict(res["data"])
-            merged["req_id"] = res.get("req_id")
-            if "status" not in merged:
-                merged["status"] = "running"
-            return merged
-        return res
+        return self._core_status(timeout, default_status="running")
 
     def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query configured stations status."""
+        return self._core_status(timeout, default_status="ok")
+
+    def _core_status(self, timeout: float, default_status: str) -> Dict[str, Any]:
+        """core_status reply flattened; default_status fills "status" when the Core omits it."""
         res = self.send_request("core_status", timeout=timeout)
         if res.get("status") == "ok" and isinstance(res.get("data"), dict):
             merged = dict(res["data"])
             merged["req_id"] = res.get("req_id")
             if "status" not in merged:
-                merged["status"] = "ok"
+                merged["status"] = default_status
             return merged
         return res
 
@@ -805,7 +802,6 @@ class AtlasUI(_BaseTk):
             b64_data = res.get("image_base64", "")
             w = res.get("width", 0)
             h = res.get("height", 0)
-            pts_str = "PTS: n/a"
 
             if b64_data:
                 try:
@@ -814,9 +810,9 @@ class AtlasUI(_BaseTk):
                     self._latest_pil_image = pil_img
                     self._render_image_on_canvas(pil_img)
                     self.lbl_preview_info.config(
-                        text=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"
+                        text=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"
                     )
-                    self._append_log(f"快照接收成功 ({w}x{h}, {pts_str})")
+                    self._append_log(f"快照接收成功 ({w}x{h})")
                 except Exception as exc:
                     self._append_log(f"解碼快照影像失敗: {exc}")
             else:
@@ -881,9 +877,8 @@ class AtlasUI(_BaseTk):
                         self._latest_pil_image = pil_img
                         w = res.get("width", pil_img.width)
                         h = res.get("height", pil_img.height)
-                        pts_str = "PTS: n/a"
 
-                        def update_ui(img=pil_img, info=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"):
+                        def update_ui(img=pil_img, info=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"):
                             self._render_image_on_canvas(img)
                             self.lbl_preview_info.config(text=info)
 
