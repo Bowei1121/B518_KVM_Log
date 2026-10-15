@@ -60,3 +60,11 @@
 - A24：模板判讀改善留待下一議題。A25：現場將全面使用 Core 版；同意先修 FCT／BT `check` 看不到結果仍回 PASS 的問題。
 
 效能實測（本機 i7-1068NG7，`inspect_app_frame` 1080p 單張）：一般 UI 畫面 0.8–5.6 ms；高紋理／雜訊畫面最差約 3.5 s。判讀在 asyncio 事件迴圈中同步執行，慢畫面會卡住所有設備與 TCP。9 路 WebRTC 解碼負載未量測。
+
+### 第 6 輪（Q26–Q31）
+
+- Q26：長輪詢改每 0.5 秒看一次。Q27：判讀移出主迴圈、單張時間上限；DFU／FCT／BT 桌面已是純色。
+- Q28：目前只有 3 台 ATE 電腦可驗證；上位機 i7-12700／16G。
+- Q29：LabVIEW 用 `status`（原 `devices` 改名，含 `core_uptime_sec`）；完整內部狀態改名 `core_status` 僅供 Monitor UI。
+- Q30：模板跟通道數走（B）；使用者原本做法為只用 checkbox 模板、自動依由左至右、由上而下排序決定 slot 1～N。
+- Q31：測試通道數套用三站，`check` 格數不符回 `capacity_mismatch`；B518 全部為 4 通道。
