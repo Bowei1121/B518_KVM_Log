@@ -57,8 +57,11 @@ class TcpJsonServer:
         kvm_pool: Optional[KVMConnectionPool] = None,
         freeze_guard: Optional[FrameFreezeGuard] = None,
         stations_config: Optional[list[Dict[str, Any]]] = None,
+        template_root: Optional[str | Path] = None,
     ) -> None:
         self.host = host
+        # None → TemplateCatalog.default_root() at check time (~/Documents/template)
+        self.template_root = template_root
         self.port = port
         self.server_address: tuple[str, int] = (host, port)
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
@@ -269,6 +272,8 @@ class TcpJsonServer:
         Returns:
             (matched: bool, result_name: Optional[str], extra_data: Optional[Dict[str, Any]])
             If result_name == "ERROR_FROZEN", indicates a freeze error occurred during inspection.
+            If result_name == "ERROR_CHECK", inspection itself raised; extra_data is the error reply.
+            matched is True only when a result was positively observed (fail closed).
         """
         # 1. Custom evaluator callback in request
         evaluator = req.get("evaluator")
@@ -284,7 +289,7 @@ class TcpJsonServer:
             except Exception as exc:
                 logger.exception("Custom evaluator error: %s", exc)
 
-        # 2. DFU Station
+        # 2. DFU Station: only a "taken" round decision carries a result.
         if station == "DFU":
             try:
                 from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
@@ -296,38 +301,41 @@ class TcpJsonServer:
                     gate = RoundFrameGate(gate_key, require_presentation_time=True)
                     self._dfu_gates[gate_key] = gate
                 decision = observe_latest_round_frame(kvm, gate)
-                if decision.kind == "frozen" or decision.reason == "frame_frozen":
-                    return False, "ERROR_FROZEN", {
-                        "status": "error",
-                        "error": "frame_frozen",
-                        "message": "DFU round frame stream is frozen",
-                        "device": device_id,
-                    }
-                if decision.kind in ("complete", "taken") or getattr(decision, "results_complete", False):
-                    results = decision.results
-                    if results and any(r[1] == "FAIL" for r in results):
-                        final_res = "FAIL"
-                    else:
-                        final_res = "PASS"
-                    return True, final_res, {
-                        "kind": decision.kind,
-                        "reason": decision.reason,
-                        "results": results,
-                    }
-                # If not long polling and we observed something, return whatever state
-                if not is_long_polling:
-                    return True, "PASS", {
-                        "kind": decision.kind,
-                        "reason": decision.reason,
-                        "results": decision.results,
-                    }
-                return False, None, {"kind": decision.kind, "reason": decision.reason}
             except Exception as exc:
-                logger.debug("DFU inspection fallback: %s", exc)
+                logger.warning("DFU inspection error for %s: %s", device_id, exc)
+                return False, "ERROR_CHECK", {
+                    "status": "error",
+                    "error": "check_failed",
+                    "message": f"DFU inspection error: {exc}",
+                    "device": device_id,
+                }
+            if decision.kind == "frozen" or decision.reason == "frame_frozen":
+                return False, "ERROR_FROZEN", {
+                    "status": "error",
+                    "error": "frame_frozen",
+                    "message": "DFU round frame stream is frozen",
+                    "device": device_id,
+                }
+            if decision.kind == "taken":
+                results = decision.results
+                # PASS only when every slot is PASS; FAIL/NOTEST/TIMEOUT → FAIL
+                final_res = "PASS" if results and all(r[1] == "PASS" for r in results) else "FAIL"
+                return True, final_res, {
+                    "kind": decision.kind,
+                    "reason": decision.reason,
+                    "results": results,
+                }
+            return False, None, {"kind": decision.kind, "reason": decision.reason}
+
+        no_result_extra: Dict[str, Any] = {}
 
         # 3. OpenCV Template Catalog Inspection (BT / FCT)
-        template_root = req.get("template_root")
-        if template_root:
+        frame_val = getattr(kvm, "frame", None)
+        if station in ("BT", "FCT") and hasattr(frame_val, "shape"):
+            template_root = req.get("template_root") or self.template_root
+            if not template_root:
+                from template_catalog import TemplateCatalog
+                template_root = TemplateCatalog.default_root()
             try:
                 from auto_flow import run_check
                 r = await run_check(
@@ -336,30 +344,35 @@ class TcpJsonServer:
                     template_root=template_root,
                     freeze_guard=self.freeze_guard,
                 )
-                if r.get("error") == "frame_frozen":
-                    return False, "ERROR_FROZEN", {
-                        "status": "error",
-                        "error": "frame_frozen",
-                        "message": r.get("message", "Frame presentation timestamp is static / frozen"),
-                        "device": device_id,
-                    }
-                if r.get("ok"):
-                    if r.get("testing"):
-                        if not is_long_polling:
-                            return True, "TESTING", {"check_result": r}
-                        return False, None, {"check_result": r}
-                    rows = r.get("rows", [])
-                    if rows and any(row[1] == "fail" for row in rows):
-                        final_res = "FAIL"
-                    else:
-                        final_res = "PASS"
-                    return True, final_res, {"check_result": r}
-                if not is_long_polling:
-                    return False, None, {"check_result": r}
-                return False, None, {"check_result": r}
             except Exception as exc:
-                logger.debug("Auto flow check exception: %s", exc)
+                logger.warning("Template check error for %s/%s: %s", station, device_id, exc)
+                return False, "ERROR_CHECK", {
+                    "status": "error",
+                    "error": "check_failed",
+                    "message": f"Template check error: {exc}",
+                    "device": device_id,
+                }
+            if r.get("error") == "frame_frozen":
+                return False, "ERROR_FROZEN", {
+                    "status": "error",
+                    "error": "frame_frozen",
+                    "message": r.get("message", "Frame presentation timestamp is static / frozen"),
+                    "device": device_id,
+                }
+            if r.get("ok"):
+                if r.get("testing"):
+                    if not is_long_polling:
+                        return True, "TESTING", {"check_result": r}
+                    return False, None, {"check_result": r}
+                rows = r.get("rows") or []
+                if rows:
+                    final_res = "PASS" if all(row[1] == "pass" for row in rows) else "FAIL"
+                    return True, final_res, {"check_result": r}
+            # window not found / missing templates / empty rows → no result
+            no_result_extra = {"check_result": r}
 
+        # 4/5 below read mock-only attributes (result / visual_state / str frame);
+        # a real JetKVMClient exposes none of them, so they never yield a result there.
         # 4. Target Pattern matching
         target_pattern = req.get("target_pattern") or req.get("pattern")
         if target_pattern is not None:
@@ -368,29 +381,23 @@ class TcpJsonServer:
                 val = getattr(kvm, attr, None)
                 if val is not None and str(val).upper() == target_str:
                     return True, target_str, {}
-            frame_val = getattr(kvm, "frame", None)
             if isinstance(frame_val, str) and frame_val.upper() == target_str:
                 return True, target_str, {}
-            return False, None, {}
+            return False, None, no_result_extra
 
         # 5. Direct KVM visual state attributes
-        if hasattr(kvm, "result") and kvm.result is not None:
+        if getattr(kvm, "result", None) is not None:
             res_str = str(kvm.result).upper()
             if res_str in ("PASS", "FAIL"):
                 return True, res_str, {}
-        if hasattr(kvm, "visual_state") and kvm.visual_state is not None:
+        if getattr(kvm, "visual_state", None) is not None:
             vstate = str(kvm.visual_state).upper()
             if vstate in ("PASS", "FAIL", "COMPLETE", "DONE"):
                 res_str = "PASS" if vstate in ("PASS", "COMPLETE", "DONE") else "FAIL"
                 return True, res_str, {}
-            if vstate in ("TESTING", "BUSY", "WAITING", "RUNNING", "MONITORING"):
-                return False, None, {}
 
-        # 6. Default fallback: if not long polling, stream PTS liveness verification is sufficient
-        if not is_long_polling:
-            return True, "PASS", {"verified": True, "message": "Live frame PTS verified"}
-
-        return False, None, {}
+        # 6. Nothing positively observed → no result (never PASS on liveness alone)
+        return False, None, no_result_extra
 
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Station vision check handler with long-polling and Frame Freeze Guard protection."""
@@ -478,7 +485,7 @@ class TcpJsonServer:
                 kvm, station, device_id, req, is_long_polling=is_long_polling
             )
 
-            if res_name == "ERROR_FROZEN":
+            if res_name in ("ERROR_FROZEN", "ERROR_CHECK"):
                 elapsed = time.monotonic() - start_time
                 err_resp = dict(extra_data or {})
                 err_resp["elapsed_sec"] = round(elapsed, 2)
@@ -488,7 +495,7 @@ class TcpJsonServer:
                 elapsed = time.monotonic() - start_time
                 resp = {
                     "status": "ok",
-                    "result": res_name or "PASS",
+                    "result": res_name,
                     "elapsed_sec": round(elapsed, 2),
                     "station": station,
                     "device": device_id,
@@ -509,15 +516,19 @@ class TcpJsonServer:
                     "device": device_id,
                 }
             elif not has_timeout_arg:
-                return {
-                    "status": "ok",
-                    "result": "PASS",
-                    "verified": True,
+                # Single-shot check with nothing positively observed: fail closed.
+                resp = {
+                    "status": "error",
+                    "error": "no_result",
+                    "result": "NONE",
                     "elapsed_sec": round(elapsed, 2),
                     "station": station,
                     "device": device_id,
-                    "message": "Live frame PTS verified",
+                    "message": "No test result visible on screen",
                 }
+                if extra_data:
+                    resp.update(extra_data)
+                return resp
 
             # Wait before next poll iteration
             sleep_time = min(poll_interval, max(0.01, timeout_val - elapsed))
