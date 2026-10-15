@@ -1,0 +1,47 @@
+{
+  "DFU-01": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.70",
+    "channels": 4
+  },
+  "DFU-02": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.71",
+    "channels": 4
+  },
+  "DFU-03": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.72",
+    "channels": 4
+  },
+  "DFU-04": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.73",
+    "channels": 4
+  },
+  "DFU-05": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.74",
+    "channels": 4
+  },
+  "DFU-06": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.75",
+    "channels": 4
+  },
+  "DFU-07": {
+    "station": "DFU",
+    "kvm_ip": "192.168.132.76",
+    "channels": 4
+  },
+  "FCT-01": {
+    "station": "FCT",
+    "kvm_ip": "192.168.132.77",
+    "channels": 4
+  },
+  "BT-01": {
+    "station": "BT",
+    "kvm_ip": "192.168.132.78",
+    "channels": 4
+  }
+}

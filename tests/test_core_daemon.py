@@ -35,6 +35,23 @@ from core_daemon import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _valid_device_list(tmp_path_factory, monkeypatch):
+    """Core refuses to start without a valid device list; spawned daemons read it via the env override."""
+    devices = tmp_path_factory.mktemp("devices") / "devices.json"
+    devices.write_text(
+        json.dumps(
+            {
+                "DFU-01": {"station": "DFU", "kvm_ip": "192.168.132.70", "channels": 4},
+                "FCT-01": {"station": "FCT", "kvm_ip": "192.168.132.77", "channels": 4},
+                "BT-01": {"station": "BT", "kvm_ip": "192.168.132.78", "channels": 4},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("B518_DEVICES_FILE", str(devices))
+
+
 def get_free_port() -> int:
     """Acquire an ephemeral port available for testing."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

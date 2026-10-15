@@ -30,6 +30,7 @@ if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
 from device_lock import DeviceLockManager
+from device_registry import DeviceRegistry
 from freeze_guard import FrameFreezeGuard
 from kvm_pool import KVMConnectionPool
 from tcp_server import TcpJsonServer
@@ -127,11 +128,15 @@ def running_core_service():
             kvm_map[host] = MockKVMClient(initial_pts=10.0)
         return kvm_map[host]
 
-    stations_config = [
-        {"station": "DFU", "device": "1", "kvm_ip": "192.168.1.10"},
-        {"station": "FCT", "device": "1", "kvm_ip": "192.168.1.11"},
-        {"station": "BT", "device": "1", "kvm_ip": "192.168.1.12"},
-    ]
+    device_registry = DeviceRegistry.from_text(
+        json.dumps(
+            {
+                "DFU-01": {"station": "DFU", "kvm_ip": "192.168.1.10", "channels": 4},
+                "FCT-01": {"station": "FCT", "kvm_ip": "192.168.1.11", "channels": 4},
+                "BT-01": {"station": "BT", "kvm_ip": "192.168.1.12", "channels": 4},
+            }
+        )
+    )
 
     pool = KVMConnectionPool(client_factory=client_factory)
     lock_mgr = DeviceLockManager()
@@ -142,7 +147,7 @@ def running_core_service():
         lock_manager=lock_mgr,
         kvm_pool=pool,
         freeze_guard=freeze_guard,
-        stations_config=stations_config,
+        device_registry=device_registry,
     )
     server.start()
 
@@ -191,7 +196,7 @@ class TestLightweightMonitorUIClient:
         assert stations["DFU"]["status"] in ("IDLE", "DISCONNECTED")
 
         # 2. Simulate LabVIEW locking device "1" (DFU)
-        assert server.lock_manager.try_acquire("1", req_id="labview-sim-1") is True
+        assert server.lock_manager.try_acquire("DFU-01", req_id="labview-sim-1") is True
 
         st_res2 = client.get_stations(timeout=2.0)
         stations2 = {s["station"]: s for s in st_res2.get("stations", [])}
@@ -199,7 +204,7 @@ class TestLightweightMonitorUIClient:
         assert stations2["DFU"]["is_busy"] is True
 
         # 3. LabVIEW releases lock
-        server.lock_manager.release("1")
+        server.lock_manager.release("DFU-01")
 
         st_res3 = client.get_stations(timeout=2.0)
         stations3 = {s["station"]: s for s in st_res3.get("stations", [])}
@@ -240,7 +245,7 @@ class TestLightweightMonitorUIClient:
                     {
                         "req_id": "labview-test-01",
                         "cmd": "check",
-                        "device": "1",
+                        "device": "DFU-01",
                         "station": "BT",
                         "kvm_ip": "192.168.1.10",
                         "target_pattern": "PASS",
@@ -251,14 +256,12 @@ class TestLightweightMonitorUIClient:
                 time.sleep(0.1)
 
                 # Verify device 1 is actively locked by LabVIEW
-                assert server.lock_manager.is_locked("1") is True
+                assert server.lock_manager.is_locked("DFU-01") is True
 
                 # 2. Concurrently, UI client requests snapshot of the SAME device 1
                 ui_client = CoreServiceClient(host=host, port=port)
                 snap_res = ui_client.get_snapshot(
-                    kvm_ip="192.168.1.10",
-                    device="1",
-                    station="BT",
+                    device="DFU-01",
                     timeout=2.0,
                 )
 
