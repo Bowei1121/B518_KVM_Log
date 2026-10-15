@@ -155,13 +155,13 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `capacity` | number | 畫面結果格數 1–20；無法辨識為 `0` |
 | `results` | array of object | 僅 `kind = "taken"` 時有內容，其餘為 `[]` |
 | `results[].slot` | number | 1–20；第一排左至右 1–10，第二排 11–20 |
-| `results[].status` | string | `PASS`／`FAIL`／`NOTEST`／`TIMEOUT` |
+| `results[].status` | string | `PASS`／`FAIL`／`NOTEST`／`TIMEOUT`／`STOPPED`（人員手動停止監控，原樣回傳） |
 
 `kind` 與 LabVIEW 動作：
 
 | `kind` | 意義 | LabVIEW 動作 |
 | --- | --- | --- |
-| `taken` | 本輪完整結果已可靠取得 | 依本輪參與清單對應 SN；PASS 良品，FAIL／NOTEST／TIMEOUT 不良品 |
+| `taken` | 本輪完整結果已可靠取得 | 依本輪參與清單對應 SN；PASS 良品，FAIL／NOTEST／TIMEOUT 不良品；STOPPED 判不良並交作業員重工 |
 | `waiting` | 監控中／尚未完成 | 繼續 `check` |
 | `paused` | 待確認 | 暫停設備動作，等人員在 Log Solution 處理後再 `check` |
 | `already_taken` | 本輪已取用過 | 不重做設備動作；重傳機制屬 1.1 |
