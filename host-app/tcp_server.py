@@ -78,6 +78,7 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
     "check": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []},
     "input": {"entered": []},
+    "button": {"action": ""},
 }
 
 
@@ -199,6 +200,7 @@ class TcpJsonServer:
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
+        self.register_handler("button", self._handle_button, fields=("action",), device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -426,6 +428,20 @@ class TcpJsonServer:
             return "log_solution_busy: round result not yet taken"
         return f"log_solution_busy: Log Solution state is {observation.state.value}"
 
+    async def _handle_button(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """BT button 1.0: Start All on a BT device."""
+        from bt_flow import BtButtonError, run_start_all
+        from template_catalog import TemplateCatalog
+
+        entry = req["_device_entry"]
+        template_root = self.template_root or TemplateCatalog.default_root()
+        try:
+            result = await run_start_all(req["_kvm_client"], template_root=template_root,
+                                         log=logger.info, diagnostics_key=entry.device_id)
+        except BtButtonError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
+        return {"status": "ok", "data": result}
+
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
         from dfu_flow import DfuInputError, parse_items, run_dfu_input
@@ -564,6 +580,11 @@ class TcpJsonServer:
             return "unknown_device", f"device '{device}' is not configured"
         if cmd == "input" and self.device_registry.get(device).station != "DFU":
             return "unsupported_command", f"'input' is only supported for DFU devices"
+        if cmd == "button":
+            if self.device_registry.get(device).station != "BT":
+                return "unsupported_command", f"'button' is only supported for BT devices"
+            if req.get("action") != "start_all":
+                return "invalid_argument", "action must be 'start_all'"
         if cmd == "check":
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
