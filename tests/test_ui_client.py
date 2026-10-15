@@ -293,10 +293,12 @@ class TestLightweightMonitorUIClient:
         assert out["res"].get("status") == "ok"
         assert out["res"]["kind"] == "taken"
 
+        # Manual checks are read-only: a LabVIEW lock on the device does not block them.
         assert server.lock_manager.try_acquire("DFU-01", req_id="other-tester") is True
-        res_busy = client.manual_check(device="DFU-01", timeout_sec=1.0)
-        assert res_busy.get("status") == "error"
-        assert res_busy.get("error") == "device_busy"
+        res_locked = client.manual_check(device="DFU-01", timeout_sec=1.0)
+        assert res_locked.get("status") == "ok"
+        assert res_locked.get("error") != "device_busy"
+        assert server.lock_manager.is_locked("DFU-01") is True
 
         server.lock_manager.release("DFU-01")
         client.disconnect()

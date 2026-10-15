@@ -60,7 +60,7 @@ def core():
                 "cmd": request["cmd"], "status": "ok", "error": "", "message": "", "elapsed_sec": 0.0}
         if request["cmd"] == "snapshot":
             data = {"width": 4, "height": 3, "format": "jpeg", "image_base64": "AAAA"}
-        elif request["cmd"] == "check":
+        elif request["cmd"] in ("check", "inspect"):
             data = {"kind": "taken", "state": "complete", "reason": "reliable_complete", "capacity": 4,
                     "results": [{"slot": 1, "status": "PASS"}]}
         elif request["cmd"] == "core_status":
@@ -103,7 +103,7 @@ def test_manual_check_request_carries_device_and_timeout_only(core):
     res = client.manual_check(device="DFU-01", timeout_sec=2.0)
 
     request = core.requests[-1]
-    assert request["cmd"] == "check"
+    assert request["cmd"] == "inspect"
     assert request["device"] == "DFU-01"
     assert request["timeout_sec"] == 2.0
     assert FORBIDDEN.isdisjoint(request)

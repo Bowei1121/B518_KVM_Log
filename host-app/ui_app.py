@@ -246,7 +246,8 @@ class CoreServiceClient:
             "device": device,
             "timeout_sec": timeout_sec,
         }
-        return _flatten(self.send_request("check", payload, timeout=timeout_sec + 4.0))
+        # inspect is the Monitor UI's read-only check: no device lock, never consumes the round.
+        return _flatten(self.send_request("inspect", payload, timeout=timeout_sec + 4.0))
 
 
 _BaseToplevel: Any = tk.Toplevel if _TK_OK else object
