@@ -77,3 +77,8 @@
 - 新增 `docs/adr/0007-device-registry-and-unified-identity.md`（Proposed）；CONTEXT.md 新增設備 ID、設備清單、測試通道數；PROTOCOL.md 改 `status`、加 `capacity_mismatch`、通道數與 checkbox 自動排序。
 - 子 session 已完成 FCT／BT／DFU `check` fail-closed 修正：commit `b6b01b6`，分支 `claude/elated-chaplygin-31da83`，134 tests passed，未合併 main。
 - 待使用者確認共同理解後，再拆 GitHub issues 並實作。
+
+### to-spec
+
+- 使用者確認三個測試切入點：TCP JSON 協定（主要）、設備清單載入與驗證（唯一新增）、DFU 輸入流程（沿用）。
+- Spec 已發布為 GitHub issue https://github.com/Bowei1121/B518_KVM_Log/issues/1 ，標籤 `ready-for-agent`（本次於 GitHub 新建此標籤）。
