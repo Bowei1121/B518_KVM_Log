@@ -33,6 +33,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._saved_snapshot: List[Dict[str, Any]] = []
         self._errors: Dict[Any, List[str]] = {}
         self._posted: "queue.Queue[Callable[[], None]]" = queue.Queue()
+        self._dirty = False
 
         self._build()
         self._load_from_file()
@@ -116,23 +117,22 @@ class DeviceSettingsWindow(tk.Toplevel):
         numeric = (self.register(lambda text: text == "" or text.isdigit()), "%P")
         e_channels = tk.Entry(self.table, textvariable=channels, width=8, font=("Arial", 10),
                               validate="key", validatecommand=numeric)
-        probe_btn = tk.Button(self.table, text="測試", command=lambda i=index: self._probe_row(i))
         probe_lbl = tk.Label(self.table, text="", font=("Arial", 9), fg="#555", width=18, anchor="w")
         error_lbl = tk.Label(self.table, text="", font=("Arial", 9), fg=ERROR_COLOR, anchor="w", justify="left")
+
+        vars_ = {"device": device, "station": station, "kvm_ip": ip, "channels": channels}
+        # The probe is bound to this entry object, not to its position in self._rows.
+        entry: Dict[str, Any] = {"selected": selected, "vars": vars_, "probe": probe_lbl, "error": error_lbl,
+                                 "widgets": []}
+        probe_btn = tk.Button(self.table, text="測試", command=lambda: self._probe_row(entry))
 
         for col, widget in enumerate((check, e_device, combo, e_ip, e_channels, probe_btn), start=0):
             widget.grid(row=r * 2 - 1, column=col, padx=4, pady=2, sticky="w")
         probe_lbl.grid(row=r * 2 - 1, column=6, sticky="w")
         error_lbl.grid(row=r * 2, column=1, columnspan=6, padx=4, sticky="w")
 
-        vars_ = {"device": device, "station": station, "kvm_ip": ip, "channels": channels}
-        self._rows.append({
-            "selected": selected,
-            "vars": vars_,
-            "probe": probe_lbl,
-            "error": error_lbl,
-            "widgets": [check, e_device, combo, e_ip, e_channels, probe_btn, probe_lbl, error_lbl],
-        })
+        entry["widgets"] = [check, e_device, combo, e_ip, e_channels, probe_btn, probe_lbl, error_lbl]
+        self._rows.append(entry)
         for var in vars_.values():
             var.trace_add("write", lambda *_a: self._update_dirty())
         self._update_dirty()
@@ -151,7 +151,7 @@ class DeviceSettingsWindow(tk.Toplevel):
 
     @property
     def dirty(self) -> bool:
-        return bool(getattr(self, "_dirty", False))
+        return self._dirty
 
     def _delete_selected(self) -> None:
         keep = [entry for entry in self._rows if not entry["selected"].get()]
@@ -199,20 +199,24 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._status(note, OK_COLOR)
 
     # -------------------------------------------------------------- probing
-    def _probe_row(self, index: int) -> None:
-        ip = self._rows[index]["vars"]["kvm_ip"].get().strip()
-        self._rows[index]["probe"].config(text="測試中…", fg="#555")
+    def _probe_row(self, entry: Dict[str, Any]) -> None:
+        ip = entry["vars"]["kvm_ip"].get().strip()
+        entry["probe"].config(text="測試中…", fg="#555")
 
         def worker() -> None:
             result = editor.probe_kvm(ip)
-            self._post(lambda: self._rows[index]["probe"].config(
-                text=result.message, fg=OK_COLOR if result.ok else ERROR_COLOR))
+            self._post(lambda: self._show_probe(entry, result))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _show_probe(self, entry: Dict[str, Any], result: Any) -> None:
+        if not any(live is entry for live in self._rows):
+            return  # the row was deleted or rebuilt while the probe ran; its widgets are gone
+        entry["probe"].config(text=result.message, fg=OK_COLOR if result.ok else ERROR_COLOR)
+
     def _probe_all(self) -> None:
-        for index in range(len(self._rows)):
-            self._probe_row(index)
+        for entry in list(self._rows):
+            self._probe_row(entry)
         self._status(f"已送出 {len(self._rows)} 台連線測試。", "#555")
 
     # -------------------------------------------------------------- restart
