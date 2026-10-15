@@ -33,6 +33,7 @@ from device_lock import DeviceLockManager
 from device_registry import DeviceRegistry
 from freeze_guard import FrameFreezeGuard
 from kvm_pool import KVMConnectionPool
+from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 from ui_app import CoreServiceClient
 
@@ -96,7 +97,7 @@ class MockKVMClient:
 
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
-    payload = json.dumps(data) + "\n"
+    payload = json.dumps(wire(data)) + "\n"
     sock.sendall(payload.encode("utf-8"))
 
 
@@ -132,6 +133,8 @@ def running_core_service():
         json.dumps(
             {
                 "DFU-01": {"station": "DFU", "kvm_ip": "192.168.1.10", "channels": 4},
+                "DFU-02": {"station": "DFU", "kvm_ip": "192.168.1.13", "channels": 4},
+                "DFU-03": {"station": "DFU", "kvm_ip": "192.168.1.14", "channels": 4},
                 "FCT-01": {"station": "FCT", "kvm_ip": "192.168.1.11", "channels": 4},
                 "BT-01": {"station": "BT", "kvm_ip": "192.168.1.12", "channels": 4},
             }
@@ -188,8 +191,8 @@ class TestLightweightMonitorUIClient:
 
         # 1. Initial state: all stations idle/disconnected
         st_res = client.get_stations(timeout=2.0)
-        assert st_res.get("status") == "ok"
-        stations = {s["station"]: s for s in st_res.get("stations", [])}
+        assert st_res.get("status") in ("running", "ok")
+        stations = {s["station"]: s for s in reversed(st_res.get("stations", []))}
         assert "DFU" in stations
         assert "FCT" in stations
         assert "BT" in stations
@@ -199,7 +202,7 @@ class TestLightweightMonitorUIClient:
         assert server.lock_manager.try_acquire("DFU-01", req_id="labview-sim-1") is True
 
         st_res2 = client.get_stations(timeout=2.0)
-        stations2 = {s["station"]: s for s in st_res2.get("stations", [])}
+        stations2 = {s["station"]: s for s in reversed(st_res2.get("stations", []))}
         assert stations2["DFU"]["status"] == "BUSY"
         assert stations2["DFU"]["is_busy"] is True
 
@@ -207,7 +210,7 @@ class TestLightweightMonitorUIClient:
         server.lock_manager.release("DFU-01")
 
         st_res3 = client.get_stations(timeout=2.0)
-        stations3 = {s["station"]: s for s in st_res3.get("stations", [])}
+        stations3 = {s["station"]: s for s in reversed(st_res3.get("stations", []))}
         assert stations3["DFU"]["status"] != "BUSY"
         assert stations3["DFU"]["is_busy"] is False
 
@@ -267,9 +270,8 @@ class TestLightweightMonitorUIClient:
 
                 # UI snapshot MUST succeed and MUST NOT return 'busy'
                 assert snap_res.get("status") == "ok", f"Expected ok, got: {snap_res}"
-                assert "image_base64" in snap_res
-                assert snap_res.get("pts") is not None
-                assert len(snap_res.get("image_base64", "")) > 0
+                assert "image_base64" in snap_res["data"]
+                assert len(snap_res["data"]["image_base64"]) > 0
 
                 # 3. Simulate LabVIEW test completing: set result to PASS
                 time.sleep(0.1)
@@ -279,7 +281,7 @@ class TestLightweightMonitorUIClient:
                 lv_res = recv_json(labview_sock, timeout=3.0)
                 assert lv_res["req_id"] == "labview-test-01"
                 assert lv_res["status"] == "ok"
-                assert lv_res["result"] == "PASS"
+                assert lv_res["data"]["result"] == "PASS"
 
                 ui_client.disconnect()
         finally:
@@ -329,14 +331,14 @@ class TestLightweightMonitorUIClient:
                     {
                         "req_id": "lv-check-after-ui-crash",
                         "cmd": "check",
-                        "device": "2",
+                        "device": "DFU-02",
                         "station": "BT",
                         "kvm_ip": "192.168.1.11",
                     },
                 )
                 lv_check = recv_json(labview_sock, timeout=3.0)
                 assert lv_check.get("status") == "ok"
-                assert lv_check.get("result") == "PASS"
+                assert lv_check["data"].get("result") == "PASS"
 
                 # 5. UI restarts and reconnects cleanly
                 ui_client2 = CoreServiceClient(host=host, port=port)
@@ -370,25 +372,25 @@ class TestLightweightMonitorUIClient:
             # 1. Successful manual check
             res = client.manual_check(
                 station="BT",
-                device="3",
+                device="DFU-03",
                 kvm_ip="192.168.1.12",
                 timeout_sec=2.0,
             )
             assert res.get("status") == "ok"
-            assert res.get("result") == "PASS"
+            assert res["data"].get("result") == "PASS"
 
             # 2. When device is locked by another client, manual check fails fast with busy
-            assert server.lock_manager.try_acquire("3", req_id="other-tester") is True
+            assert server.lock_manager.try_acquire("DFU-03", req_id="other-tester") is True
             res_busy = client.manual_check(
                 station="BT",
-                device="3",
+                device="DFU-03",
                 kvm_ip="192.168.1.12",
                 timeout_sec=1.0,
             )
-            assert res_busy.get("status") == "busy"
+            assert res_busy.get("status") == "error"
             assert res_busy.get("error") == "device_busy"
 
-            server.lock_manager.release("3")
+            server.lock_manager.release("DFU-03")
             client.disconnect()
         finally:
             stop_stream.set()

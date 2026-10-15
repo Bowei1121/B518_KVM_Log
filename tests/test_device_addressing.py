@@ -20,6 +20,7 @@ sys.path.insert(0, str(_HOST_APP_DIR))
 
 from device_registry import DeviceRegistry
 from kvm_pool import KVMConnectionPool
+from protocol_helpers import wire
 from tcp_server import TcpJsonServer
 
 
@@ -61,7 +62,7 @@ def running_server():
 def _roundtrip(server, payload: dict) -> dict:
     host, port = server.server_address
     with socket.create_connection((host, port), timeout=3.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        sock.sendall((json.dumps(wire(payload)) + "\n").encode("utf-8"))
         buf = b""
         while b"\n" not in buf:
             chunk = sock.recv(4096)
@@ -76,7 +77,7 @@ def test_snapshot_by_device_id_connects_to_registry_ip(running_server):
 
     assert resp["status"] == "ok"
     assert resp["device"] == "DFU-01"
-    assert resp["image_base64"] != ""
+    assert resp["data"]["image_base64"] != ""
     assert running_server.kvm_hosts == ["192.168.132.70"]
 
 

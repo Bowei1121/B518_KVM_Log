@@ -10,12 +10,13 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
 def send_json(sock: socket.socket, obj: dict) -> None:
     """Send a dictionary as a newline-delimited JSON string."""
-    line = json.dumps(obj) + "\n"
+    line = json.dumps(wire(obj)) + "\n"
     sock.sendall(line.encode("utf-8"))
 
 
@@ -41,7 +42,7 @@ def recv_json(sock: socket.socket, timeout: float = 2.0) -> dict:
 @pytest.fixture
 def running_server():
     """Fixture that starts a TcpJsonServer on an ephemeral port in a background thread."""
-    server = TcpJsonServer(host="127.0.0.1", port=0)
+    server = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0)
     server.start()
     time.sleep(0.05)
     try:
@@ -62,7 +63,7 @@ def test_server_starts_headlessly_and_pings(running_server):
 
         assert resp["req_id"] == "req-001"
         assert resp["status"] == "ok"
-        assert resp["data"] == "pong"
+        assert resp["data"]["pong"] is True
 
 
 def test_auto_assign_req_id_when_missing(running_server):
@@ -70,15 +71,12 @@ def test_auto_assign_req_id_when_missing(running_server):
     host, port = running_server.server_address
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
-        req = {"cmd": "ping"}
-        send_json(sock, req)
+        sock.sendall(b'{"protocol_version": "1.0", "cmd": "ping"}\n')
         resp = recv_json(sock)
 
-        assert "req_id" in resp
-        assert resp["req_id"] is not None
-        assert len(str(resp["req_id"])) > 0
-        assert resp["status"] == "ok"
-        assert resp["data"] == "pong"
+        assert resp["req_id"] == ""
+        assert resp["status"] == "error"
+        assert resp["error"] == "missing_req_id"
 
 
 def test_status_command(running_server):
@@ -86,7 +84,7 @@ def test_status_command(running_server):
     host, port = running_server.server_address
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
-        req = {"req_id": "req-status", "cmd": "status"}
+        req = {"req_id": "req-status", "cmd": "core_status"}
         send_json(sock, req)
         resp = recv_json(sock)
 
@@ -127,7 +125,7 @@ def test_concurrent_clients_multiplexing(running_server):
     for i in range(num_clients):
         assert results[i]["req_id"] == f"client-{i}-req"
         assert results[i]["status"] == "ok"
-        assert results[i]["data"] == "pong"
+        assert results[i]["data"]["pong"] is True
 
 
 def test_malformed_json_resilience(running_server):
@@ -147,7 +145,7 @@ def test_malformed_json_resilience(running_server):
         recovery_resp = recv_json(sock)
         assert recovery_resp["req_id"] == "recovery-req"
         assert recovery_resp["status"] == "ok"
-        assert recovery_resp["data"] == "pong"
+        assert recovery_resp["data"]["pong"] is True
 
 
 def test_unknown_command_and_missing_command(running_server):
@@ -184,7 +182,7 @@ def test_graceful_shutdown(running_server):
         resp = recv_json(sock1)
         assert resp["req_id"] == "shutdown-req"
         assert resp["status"] == "ok"
-        assert resp["data"] in ("shutting_down", "shutdown")
+        assert resp["data"] == {}
 
         # Wait for server thread to stop
         running_server.wait(timeout=3.0)
@@ -209,7 +207,7 @@ def test_fragmented_chunks_and_batched_commands(running_server):
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
         # 1. Fragmented line across two packets
-        chunk1 = b'{"req_id": "frag'
+        chunk1 = b'{"protocol_version": "1.0", "device": "", "req_id": "frag'
         chunk2 = b'-001", "cmd": "ping"}\n'
         sock.sendall(chunk1)
         time.sleep(0.05)
@@ -218,12 +216,12 @@ def test_fragmented_chunks_and_batched_commands(running_server):
         resp1 = recv_json(sock)
         assert resp1["req_id"] == "frag-001"
         assert resp1["status"] == "ok"
-        assert resp1["data"] == "pong"
+        assert resp1["data"]["pong"] is True
 
         # 2. Batched commands in a single TCP send
         batched = (
-            b'{"req_id": "batch-1", "cmd": "ping"}\n'
-            b'{"req_id": "batch-2", "cmd": "ping"}\n'
+            b'{"protocol_version": "1.0", "device": "", "req_id": "batch-1", "cmd": "ping"}\n'
+            b'{"protocol_version": "1.0", "device": "", "req_id": "batch-2", "cmd": "ping"}\n'
         )
         sock.sendall(batched)
 
@@ -241,8 +239,8 @@ def test_custom_registered_handler(running_server):
     async def custom_async_handler(req):
         return f"async_result_{req.get('val')}"
 
-    running_server.register_handler("custom_sync", custom_sync_handler)
-    running_server.register_handler("custom_async", custom_async_handler)
+    running_server.register_handler("custom_sync", custom_sync_handler, fields={"payload"})
+    running_server.register_handler("custom_async", custom_async_handler, fields={"val"})
 
     host, port = running_server.server_address
     with socket.create_connection((host, port), timeout=2.0) as sock:
@@ -256,5 +254,5 @@ def test_custom_registered_handler(running_server):
         res2 = recv_json(sock)
         assert res2["req_id"] == "c2"
         assert res2["status"] == "ok"
-        assert res2["data"] == "async_result_42"
+        assert res2["data"]["value"] == "async_result_42"
 

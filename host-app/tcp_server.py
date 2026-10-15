@@ -19,7 +19,7 @@ import socket
 import threading
 import time
 import uuid
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
 
 try:
     from device_registry import DeviceRegistryError
@@ -47,6 +47,37 @@ except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
 
 logger = logging.getLogger("TcpJsonServer")
+
+PROTOCOL_VERSION = "1.0"
+CORE_VERSION = "2.0.0"
+COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
+NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
+# Extra fields allowed per command. check keeps its legacy fields until ticket #4/#5 rewrite it.
+COMMAND_FIELDS: Dict[str, frozenset] = {
+    "ping": frozenset(),
+    "status": frozenset(),
+    "core_status": frozenset(),
+    "shutdown": frozenset(),
+    "snapshot": frozenset({"format", "quality"}),
+    "check": frozenset({
+        "timeout_sec", "timeout", "poll_interval", "target_pattern", "pattern",
+        "station", "dev_type", "kvm_ip", "freeze_threshold", "threshold_sec",
+        "no_lock", "read_only",
+    }),
+}
+ENVELOPE_KEYS = frozenset({
+    "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
+})
+ERROR_CODE_MAP = {
+    "kvm_connection_failed": "kvm_connect_failed",
+    "missing_kvm": "kvm_connect_failed",
+    "invalid_timeout": "invalid_argument",
+}
+DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
+    "ping": {"pong": False, "core_version": ""},
+    "status": {"core_uptime_sec": 0, "devices": []},
+    "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
+}
 
 
 class TcpJsonServer:
@@ -82,6 +113,8 @@ class TcpJsonServer:
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
+        self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
+        self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
 
         self._start_time: float = 0.0
         self._is_running = False
@@ -97,24 +130,38 @@ class TcpJsonServer:
         self,
         cmd: str,
         handler: Callable[[Dict[str, Any]], Any],
+        fields: Optional[Iterable[str]] = None,
+        device_bound: Optional[bool] = None,
     ) -> None:
         """Register a command handler.
-        
+
         Handler can be either a synchronous callable or an async coroutine.
         It accepts the request dict and returns the data/response dict.
+        ``fields`` lists the extra request fields the command accepts; ``device_bound``
+        makes the command require a registered device ID.
         """
         self._handlers[cmd] = handler
+        if fields is not None:
+            self._command_fields[cmd] = frozenset(fields)
+        else:
+            self._command_fields.setdefault(cmd, frozenset())
+        if device_bound is None:
+            device_bound = cmd in COMMAND_FIELDS and cmd not in NO_DEVICE_COMMANDS
+        if device_bound:
+            self._no_device_cmds.discard(cmd)
+        else:
+            self._no_device_cmds.add(cmd)
 
     def _register_default_handlers(self) -> None:
         self.register_handler("ping", self._handle_ping)
         self.register_handler("status", self._handle_status)
+        self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
-        self.register_handler("stations", self._handle_stations)
         self.register_handler("snapshot", self._handle_snapshot)
 
-    async def _handle_ping(self, req: Dict[str, Any]) -> str:
-        return "pong"
+    async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {"pong": True, "core_version": CORE_VERSION}
 
     async def _handle_stations(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Return real-time status of all configured test stations."""
@@ -158,6 +205,25 @@ class TcpJsonServer:
         }
 
     async def _handle_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """LabVIEW status: Core uptime and per-device state. KVM IPs are never returned."""
+        uptime = time.time() - self._start_time if self._start_time else 0.0
+        active_devices = set(self.lock_manager.get_active_devices())
+        frozen_devices = set(self.freeze_guard.get_status().get("frozen_devices", []))
+        active_ips = set(self.kvm_pool.get_active_ips())
+        devices: list[Dict[str, Any]] = []
+        for entry in self.device_registry.entries():
+            devices.append({
+                "device": entry.device_id,
+                "station": entry.station,
+                "connected": entry.kvm_ip in active_ips,
+                "busy": entry.device_id in active_devices,
+                "frozen": entry.device_id in frozen_devices or f"{entry.station}:{entry.device_id}" in frozen_devices,
+                "channels": entry.channels,
+            })
+        return {"core_uptime_sec": int(uptime), "devices": devices}
+
+    async def _handle_core_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Full internal Core state for Monitor UI / admin tools (not part of the LabVIEW protocol)."""
         uptime = time.time() - self._start_time if self._start_time else 0.0
         active_devices = self.lock_manager.get_active_devices()
         stations_res = await self._handle_stations(req)
@@ -178,9 +244,7 @@ class TcpJsonServer:
     async def _handle_snapshot(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Request and return a single frame snapshot as base64 without acquiring device locks."""
         kvm = req.get("_kvm_client")
-        device_id = str(req.get("device") or "default")
-        raw_kvm_ip = req.get("kvm_ip")
-        kvm_ip = str(raw_kvm_ip).strip() if raw_kvm_ip else None
+        device_id = str(req.get("device") or "")
 
         if kvm is None:
             return {
@@ -211,20 +275,6 @@ class TcpJsonServer:
                 "device": device_id,
             }
 
-        # Support optional save_path
-        save_path = req.get("save_path")
-        saved_path_str: Optional[str] = None
-        if save_path:
-            p = Path(save_path).resolve()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                import cv2
-                if hasattr(frame, "shape"):
-                    cv2.imwrite(str(p), frame)
-                    saved_path_str = str(p)
-            except Exception as exc:
-                logger.warning("Failed to save snapshot to %s: %s", p, exc)
-
         # Encode to JPEG/PNG base64
         fmt = str(req.get("format") or "jpeg").lower()
         quality = int(req.get("quality") or 80)
@@ -250,14 +300,10 @@ class TcpJsonServer:
 
         return {
             "status": "ok",
-            "kvm_ip": kvm_ip,
-            "device": device_id,
             "width": width,
             "height": height,
-            "pts": pts,
             "format": fmt,
             "image_base64": img_b64,
-            "saved_path": saved_path_str,
         }
 
     async def _evaluate_visual_condition(
@@ -535,47 +581,54 @@ class TcpJsonServer:
             sleep_time = min(poll_interval, max(0.01, timeout_val - elapsed))
             await asyncio.sleep(sleep_time)
 
-    async def _handle_shutdown(self, req: Dict[str, Any]) -> str:
+    async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
         # Schedule the server loop to stop after replying cleanly to the client
         if self._loop and self._shutdown_event:
             self._loop.call_later(0.05, self._shutdown_event.set)
-        return "shutting_down"
+        return {}
 
     def _generate_req_id(self) -> str:
         return f"req-{uuid.uuid4().hex[:8]}"
 
-    def _resolve_snapshot_device(self, req_id: str, req: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Reject raw KVM addressing and resolve the device ID to its KVM IP via the registry."""
-        for field in ("kvm_ip", "station"):
-            if field in req:
-                return {
-                    "req_id": req_id,
-                    "status": "error",
-                    "error": "forbidden_field",
-                    "message": f"field '{field}' is not allowed; address the device by 'device' ID",
-                }
+    def _validate_request(self, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Protocol 1.0 request validation. Returns (error, message) for the first violation."""
+        if req.get("protocol_version") != PROTOCOL_VERSION:
+            return "unsupported_protocol_version", f"protocol_version must be '{PROTOCOL_VERSION}'"
 
-        raw_device = req.get("device")
-        device_id = "" if raw_device is None else str(raw_device)
-        if device_id == "":
-            return {
-                "req_id": req_id,
-                "status": "error",
-                "error": "missing_device",
-                "message": "snapshot requires a 'device' ID",
-            }
+        req_id = req.get("req_id")
+        if not isinstance(req_id, str) or req_id == "":
+            return "missing_req_id", "req_id is required"
 
-        entry = self.device_registry.get(device_id)
-        if entry is None:
-            return {
-                "req_id": req_id,
-                "status": "error",
-                "error": "unknown_device",
-                "message": f"device '{device_id}' is not configured",
-                "device": device_id,
-            }
+        cmd = req.get("cmd")
+        if cmd is None or cmd == "":
+            return "missing_command", "cmd is required"
+        if not isinstance(cmd, str):
+            return "invalid_request", "cmd must be a string"
 
-        req["kvm_ip"] = entry.kvm_ip
+        device = req.get("device")
+        if not isinstance(device, str):
+            return "invalid_request", "device must be a string"
+
+        if cmd not in self._command_fields:
+            return "unknown_command", f"unknown command '{cmd}'"
+
+        allowed = self._command_fields[cmd]
+        for key in req:
+            if key in COMMON_FIELDS or key in allowed:
+                continue
+            if key in ("kvm_ip", "station"):
+                return "forbidden_field", f"field '{key}' is not allowed; address the device by 'device' ID"
+            return "unknown_field", f"field '{key}' is not defined for '{cmd}'"
+
+        if cmd in self._no_device_cmds:
+            if device != "":
+                return "invalid_argument", f"device must be empty for '{cmd}'"
+            return None
+
+        if device == "":
+            return "missing_device", f"'{cmd}' requires a 'device' ID"
+        if self.device_registry.get(device) is None:
+            return "unknown_device", f"device '{device}' is not configured"
         return None
 
     async def _dispatch_command(
@@ -591,19 +644,10 @@ class TcpJsonServer:
         if writer is not None:
             req["_writer"] = writer
 
-        handler = self._handlers.get(cmd)
-        if not handler:
-            return {
-                "req_id": req_id,
-                "status": "error",
-                "error": "unknown_command",
-                "message": f"Unknown command: '{cmd}'",
-            }
+        handler = self._handlers[cmd]
 
         if cmd == "snapshot":
-            addressing_error = self._resolve_snapshot_device(req_id, req)
-            if addressing_error is not None:
-                return addressing_error
+            req["kvm_ip"] = self.device_registry.get(str(req.get("device"))).kvm_ip
 
         # Check per-device locking
         raw_device = req.get("device")
@@ -707,52 +751,77 @@ class TcpJsonServer:
         reader: Optional[asyncio.StreamReader] = None,
         writer: Optional[asyncio.StreamWriter] = None,
     ) -> bytes:
-        """Parse one line, dispatch command, and return newline-terminated JSON response."""
+        """Parse one line, validate it, dispatch it, and return a newline-terminated 1.0 envelope."""
         line_str = raw_line.decode("utf-8", errors="replace").strip()
         if not line_str:
             return b""
 
-        # 1. Parse JSON
+        started = time.monotonic()
         try:
             req = json.loads(line_str)
         except Exception as exc:
-            err_resp = {
-                "req_id": None,
-                "status": "error",
-                "error": "invalid_json",
-                "message": f"Failed to parse JSON: {exc}",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
-
-        # 2. Validate object type
+            return self._encode_envelope(started, "", "", "", "error", "invalid_json", f"Failed to parse JSON: {exc}", {})
         if not isinstance(req, dict):
-            err_resp = {
-                "req_id": None,
-                "status": "error",
-                "error": "invalid_request",
-                "message": "Request must be a JSON object",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
+            return self._encode_envelope(started, "", "", "", "error", "invalid_request", "Request must be a JSON object", {})
 
-        # 3. Extract or assign req_id
-        req_id = req.get("req_id")
-        if req_id is None or str(req_id).strip() == "":
-            req_id = self._generate_req_id()
+        req_id = req.get("req_id") if isinstance(req.get("req_id"), str) else ""
+        device = req.get("device") if isinstance(req.get("device"), str) else ""
+        cmd = req.get("cmd") if isinstance(req.get("cmd"), str) else ""
 
-        # 4. Validate cmd
-        cmd = req.get("cmd")
-        if not cmd or not isinstance(cmd, str):
-            err_resp = {
-                "req_id": req_id,
-                "status": "error",
-                "error": "missing_command",
-                "message": "Missing 'cmd' field",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
+        invalid = self._validate_request(req)
+        if invalid is not None:
+            error, message = invalid
+            return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
 
-        # 5. Dispatch command
-        resp = await self._dispatch_command(req_id, cmd.strip(), req, reader=reader, writer=writer)
-        return (json.dumps(resp) + "\n").encode("utf-8")
+        raw = await self._dispatch_command(req_id, cmd, req, reader=reader, writer=writer)
+        return self._encode_result(started, req_id, device, cmd, raw)
+
+    def _encode_result(
+        self, started: float, req_id: str, device: str, cmd: str, raw: Dict[str, Any]
+    ) -> bytes:
+        """Map a handler result (ok/error/busy/timeout/...) onto the fixed 1.0 envelope."""
+        status = str(raw.get("status", "ok"))
+        if status in ("busy", "cancelled"):
+            status = "error"
+        if isinstance(raw.get("data"), dict):
+            payload = raw["data"]
+        elif "data" in raw:
+            payload = {"value": raw["data"]}
+        else:
+            payload = {k: v for k, v in raw.items() if k not in ENVELOPE_KEYS}
+
+        error = ""
+        message = str(raw.get("message", ""))
+        if status == "timeout":
+            error = "timeout"
+        elif status != "ok":
+            error = ERROR_CODE_MAP.get(str(raw.get("error") or "internal_error"), str(raw.get("error") or "internal_error"))
+        return self._encode_envelope(started, req_id, device, cmd, status, error, message, payload)
+
+    def _encode_envelope(
+        self,
+        started: float,
+        req_id: str,
+        device: str,
+        cmd: str,
+        status: str,
+        error: str,
+        message: str,
+        payload: Dict[str, Any],
+    ) -> bytes:
+        data = {**DEFAULT_DATA.get(cmd, {}), **payload}
+        envelope = {
+            "protocol_version": PROTOCOL_VERSION,
+            "req_id": req_id,
+            "device": device,
+            "cmd": cmd,
+            "status": status,
+            "error": error if status != "ok" else "",
+            "message": message if status != "ok" else "",
+            "elapsed_sec": round(time.monotonic() - started, 3),
+            "data": data,
+        }
+        return (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
 
     async def _client_connected_cb(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

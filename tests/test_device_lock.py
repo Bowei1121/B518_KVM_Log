@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from device_lock import DeviceBusyError, DeviceLockManager
+from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 _SOCK_BUFFERS: dict[int, bytearray] = {}
@@ -20,7 +21,7 @@ _SOCK_BUFFERS: dict[int, bytearray] = {}
 
 def send_json(sock: socket.socket, obj: dict) -> None:
     """Send a dictionary as a newline-delimited JSON string."""
-    line = json.dumps(obj) + "\n"
+    line = json.dumps(wire(obj)) + "\n"
     sock.sendall(line.encode("utf-8"))
 
 
@@ -43,7 +44,7 @@ def recv_json(sock: socket.socket, timeout: float = 3.0) -> dict:
 @pytest.fixture
 def running_server():
     """Fixture that starts a TcpJsonServer on an ephemeral port in a background thread."""
-    server = TcpJsonServer(host="127.0.0.1", port=0)
+    server = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0)
     server.start()
     time.sleep(0.05)
     try:
@@ -59,27 +60,27 @@ def running_server():
 
 def test_device_lock_manager_acquire_and_release():
     mgr = DeviceLockManager()
-    assert not mgr.is_locked("1")
+    assert not mgr.is_locked("DFU-01")
     assert mgr.get_active_devices() == []
 
-    assert mgr.try_acquire("1", req_id="req-1") is True
-    assert mgr.is_locked("1") is True
-    assert "1" in mgr.get_active_devices()
-    owner = mgr.get_owner("1")
+    assert mgr.try_acquire("DFU-01", req_id="req-1") is True
+    assert mgr.is_locked("DFU-01") is True
+    assert "DFU-01" in mgr.get_active_devices()
+    owner = mgr.get_owner("DFU-01")
     assert owner is not None
     assert owner["req_id"] == "req-1"
 
     # Secondary acquire must fail fast
-    assert mgr.try_acquire("1", req_id="req-2") is False
+    assert mgr.try_acquire("DFU-01", req_id="req-2") is False
 
-    mgr.release("1")
-    assert not mgr.is_locked("1")
+    mgr.release("DFU-01")
+    assert not mgr.is_locked("DFU-01")
     assert mgr.get_active_devices() == []
-    assert mgr.get_owner("1") is None
+    assert mgr.get_owner("DFU-01") is None
 
     # Re-acquire must succeed
-    assert mgr.try_acquire("1", req_id="req-3") is True
-    mgr.release("1")
+    assert mgr.try_acquire("DFU-01", req_id="req-3") is True
+    mgr.release("DFU-01")
 
 
 def test_device_lock_manager_normalization():
@@ -134,16 +135,16 @@ def test_device_lock_manager_context_manager():
 def test_tcp_device_field_in_request_and_response(running_server):
     """Verify commands target specific devices via 'device' and echo it on success."""
     host, port = running_server.server_address
+    running_server.register_handler("echo_dev", lambda req: {}, device_bound=True)
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
-        req = {"req_id": "req-dev-1", "cmd": "ping", "device": "station-1"}
+        req = {"req_id": "req-dev-1", "cmd": "echo_dev", "device": "DFU-01"}
         send_json(sock, req)
         resp = recv_json(sock)
 
         assert resp["req_id"] == "req-dev-1"
         assert resp["status"] == "ok"
-        assert resp["data"] == "pong"
-        assert resp["device"] == "station-1"
+        assert resp["device"] == "DFU-01"
 
 
 def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
@@ -157,7 +158,7 @@ def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
         time.sleep(0.4)
         return {"action": "done", "device": req.get("device")}
 
-    running_server.register_handler("slow_work", slow_device_handler)
+    running_server.register_handler("slow_work", slow_device_handler, device_bound=True)
 
     client1_resp = {}
     client2_resp = {}
@@ -165,7 +166,7 @@ def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
 
     def client1_worker():
         with socket.create_connection((host, port), timeout=3.0) as sock:
-            send_json(sock, {"req_id": "req-slow-1", "cmd": "slow_work", "device": "1"})
+            send_json(sock, {"req_id": "req-slow-1", "cmd": "slow_work", "device": "DFU-01"})
             client1_resp.update(recv_json(sock))
 
     def client2_worker():
@@ -173,7 +174,7 @@ def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
         assert started_event.wait(timeout=2.0)
         t_start = time.time()
         with socket.create_connection((host, port), timeout=2.0) as sock:
-            send_json(sock, {"req_id": "req-002", "cmd": "slow_work", "device": "1"})
+            send_json(sock, {"req_id": "req-002", "cmd": "slow_work", "device": "DFU-01"})
             client2_resp.update(recv_json(sock))
         nonlocal client2_duration
         client2_duration = time.time() - t_start
@@ -191,14 +192,14 @@ def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
     assert client2_duration is not None
     assert client2_duration < 0.25, f"Expected fast response, but took {client2_duration}s"
     assert client2_resp["req_id"] == "req-002"
-    assert client2_resp["status"] == "busy"
+    assert client2_resp["status"] == "error"
     assert client2_resp["error"] == "device_busy"
-    assert client2_resp["device"] == "1"
+    assert client2_resp["device"] == "DFU-01"
 
     # Client 1 should complete normally
     assert client1_resp["req_id"] == "req-slow-1"
     assert client1_resp["status"] == "ok"
-    assert client1_resp["device"] == "1"
+    assert client1_resp["device"] == "DFU-01"
 
 
 def test_tcp_subsequent_commands_processed_normally_after_active_command_completes(running_server):
@@ -209,24 +210,24 @@ def test_tcp_subsequent_commands_processed_normally_after_active_command_complet
         time.sleep(0.1)
         return "step_ok"
 
-    running_server.register_handler("short_work", short_work)
+    running_server.register_handler("short_work", short_work, device_bound=True)
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
         # First command
-        send_json(sock, {"req_id": "step-1", "cmd": "short_work", "device": "station-A"})
+        send_json(sock, {"req_id": "step-1", "cmd": "short_work", "device": "DFU-02"})
         r1 = recv_json(sock)
         assert r1["req_id"] == "step-1"
         assert r1["status"] == "ok"
-        assert r1["data"] == "step_ok"
-        assert r1["device"] == "station-A"
+        assert r1["data"]["value"] == "step_ok"
+        assert r1["device"] == "DFU-02"
 
         # Subsequent command targeting same device immediately succeeds
-        send_json(sock, {"req_id": "step-2", "cmd": "short_work", "device": "station-A"})
+        send_json(sock, {"req_id": "step-2", "cmd": "short_work", "device": "DFU-02"})
         r2 = recv_json(sock)
         assert r2["req_id"] == "step-2"
         assert r2["status"] == "ok"
-        assert r2["data"] == "step_ok"
-        assert r2["device"] == "station-A"
+        assert r2["data"]["value"] == "step_ok"
+        assert r2["device"] == "DFU-02"
 
 
 def test_tcp_concurrent_different_devices_execute_without_contention(running_server):
@@ -237,9 +238,9 @@ def test_tcp_concurrent_different_devices_execute_without_contention(running_ser
         time.sleep(0.35)
         return f"result_for_{req.get('device')}"
 
-    running_server.register_handler("parallel_work", parallel_work)
+    running_server.register_handler("parallel_work", parallel_work, device_bound=True)
 
-    devices = ["dev-1", "dev-2", "dev-3", "dev-4"]
+    devices = ["DFU-11", "DFU-12", "DFU-13", "DFU-14"]
     results = {}
     barrier = threading.Barrier(len(devices))
 
@@ -265,7 +266,7 @@ def test_tcp_concurrent_different_devices_execute_without_contention(running_ser
     for dev in devices:
         assert results[dev]["status"] == "ok"
         assert results[dev]["device"] == dev
-        assert results[dev]["data"] == f"result_for_{dev}"
+        assert results[dev]["data"]["value"] == f"result_for_{dev}"
 
 
 def test_tcp_device_agnostic_commands_not_blocked(running_server):
@@ -279,13 +280,13 @@ def test_tcp_device_agnostic_commands_not_blocked(running_server):
         time.sleep(0.4)
         return "task_done"
 
-    running_server.register_handler("long_task", long_task)
+    running_server.register_handler("long_task", long_task, device_bound=True)
 
     client1_done = threading.Event()
 
     def long_worker():
         with socket.create_connection((host, port), timeout=2.0) as sock:
-            send_json(sock, {"req_id": "long-1", "cmd": "long_task", "device": "busy-station"})
+            send_json(sock, {"req_id": "long-1", "cmd": "long_task", "device": "DFU-03"})
             recv_json(sock)
         client1_done.set()
 
@@ -303,13 +304,13 @@ def test_tcp_device_agnostic_commands_not_blocked(running_server):
 
         assert ping_latency < 0.1
         assert r_ping["status"] == "ok"
-        assert r_ping["data"] == "pong"
+        assert r_ping["data"]["pong"] is True
 
         # Status should show busy device
-        send_json(sock, {"req_id": "agnostic-status", "cmd": "status"})
+        send_json(sock, {"req_id": "agnostic-status", "cmd": "core_status"})
         r_status = recv_json(sock)
         assert r_status["status"] == "ok"
-        assert "busy-station" in r_status["data"]["busy_devices"]
+        assert "DFU-03" in r_status["data"]["busy_devices"]
 
     t.join(timeout=2.0)
 
@@ -321,26 +322,27 @@ def test_tcp_exception_releases_device_lock(running_server):
     def buggy_handler(req):
         raise RuntimeError("Something failed in hardware communication")
 
-    running_server.register_handler("buggy_cmd", buggy_handler)
+    running_server.register_handler("buggy_cmd", buggy_handler, device_bound=True)
+    running_server.register_handler("rec_cmd", lambda req: {"ok": True}, device_bound=True)
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
-        send_json(sock, {"req_id": "err-1", "cmd": "buggy_cmd", "device": "faulty-dev"})
+        send_json(sock, {"req_id": "err-1", "cmd": "buggy_cmd", "device": "DFU-04"})
         resp = recv_json(sock)
         assert resp["req_id"] == "err-1"
         assert resp["status"] == "error"
         assert resp["error"] == "internal_error"
-        assert resp["device"] == "faulty-dev"
+        assert resp["device"] == "DFU-04"
 
         # Device should be unlocked immediately
-        send_json(sock, {"req_id": "rec-1", "cmd": "ping", "device": "faulty-dev"})
+        send_json(sock, {"req_id": "rec-1", "cmd": "rec_cmd", "device": "DFU-04"})
         rec_resp = recv_json(sock)
         assert rec_resp["req_id"] == "rec-1"
         assert rec_resp["status"] == "ok"
-        assert rec_resp["device"] == "faulty-dev"
+        assert rec_resp["device"] == "DFU-04"
 
 
 def test_tcp_numeric_device_conflict_normalization(running_server):
-    """Verify integer device 1 conflicts with string '1' (normalization)."""
+    """Verify two requests naming the same device ID conflict (fail-fast device_busy)."""
     host, port = running_server.server_address
 
     started_event = threading.Event()
@@ -350,19 +352,19 @@ def test_tcp_numeric_device_conflict_normalization(running_server):
         time.sleep(0.3)
         return "ok"
 
-    running_server.register_handler("slow_norm", slow_worker)
+    running_server.register_handler("slow_norm", slow_worker, device_bound=True)
 
     client2_resp = {}
 
     def worker_num():
         with socket.create_connection((host, port), timeout=2.0) as sock:
-            send_json(sock, {"req_id": "r-num", "cmd": "slow_norm", "device": 1})
+            send_json(sock, {"req_id": "r-num", "cmd": "slow_norm", "device": "DFU-01"})
             recv_json(sock)
 
     def worker_str():
         assert started_event.wait(timeout=2.0)
         with socket.create_connection((host, port), timeout=2.0) as sock:
-            send_json(sock, {"req_id": "r-str", "cmd": "slow_norm", "device": "1"})
+            send_json(sock, {"req_id": "r-str", "cmd": "slow_norm", "device": "DFU-01"})
             client2_resp.update(recv_json(sock))
 
     t1 = threading.Thread(target=worker_num)
@@ -373,6 +375,6 @@ def test_tcp_numeric_device_conflict_normalization(running_server):
     t2.join(timeout=2.0)
 
     assert client2_resp["req_id"] == "r-str"
-    assert client2_resp["status"] == "busy"
+    assert client2_resp["status"] == "error"
     assert client2_resp["error"] == "device_busy"
-    assert client2_resp["device"] == "1"
+    assert client2_resp["device"] == "DFU-01"

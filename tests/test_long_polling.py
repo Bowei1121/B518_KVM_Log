@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from device_lock import DeviceLockManager
 from freeze_guard import FrameFreezeGuard
 from kvm_pool import KVMConnectionPool
+from protocol_helpers import make_registry, wire, numbered, ProbeServer
 from tcp_server import TcpJsonServer
 from round_frame_consumer import MarkerState, RoundFrameGate
 
@@ -88,7 +89,7 @@ class MockKVMClient:
 
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
-    payload = json.dumps(data) + "\n"
+    payload = json.dumps(wire(data)) + "\n"
     sock.sendall(payload.encode("utf-8"))
 
 
@@ -123,7 +124,7 @@ def running_server_with_kvm_pool():
     pool = KVMConnectionPool(client_factory=client_factory)
     lock_mgr = DeviceLockManager()
     freeze_guard = FrameFreezeGuard(freeze_threshold=0.2)
-    server = TcpJsonServer(
+    server = ProbeServer(device_registry=make_registry(), 
         host="127.0.0.1",
         port=0,
         lock_manager=lock_mgr,
@@ -171,7 +172,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-003",
                         "cmd": "check",
-                        "device": "1",
+                        "device": "DFU-01",
                         "kvm_ip": "192.168.1.10",
                         "timeout_sec": 30,
                     },
@@ -181,8 +182,8 @@ class TestLongPollingVisualVerification:
 
                 assert res["req_id"] == "req-003"
                 assert res["status"] == "ok"
-                assert res["result"] == "PASS"
-                assert res["device"] == "1"
+                assert res["data"]["result"] == "PASS"
+                assert res["device"] == "DFU-01"
                 assert "elapsed_sec" in res
                 assert elapsed < 1.0
         finally:
@@ -217,7 +218,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-delayed",
                         "cmd": "check",
-                        "device": "2",
+                        "device": "DFU-02",
                         "kvm_ip": "192.168.1.11",
                         "timeout_sec": 10,
                         "poll_interval": 0.05,
@@ -228,8 +229,8 @@ class TestLongPollingVisualVerification:
 
                 assert res["req_id"] == "req-delayed"
                 assert res["status"] == "ok"
-                assert res["result"] == "PASS"
-                assert res["device"] == "2"
+                assert res["data"]["result"] == "PASS"
+                assert res["device"] == "DFU-02"
                 assert 0.3 <= elapsed <= 2.0
                 assert 0.3 <= res["elapsed_sec"] <= 2.0
         finally:
@@ -260,7 +261,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-to",
                         "cmd": "check",
-                        "device": "3",
+                        "device": "DFU-03",
                         "kvm_ip": "192.168.1.12",
                         "timeout_sec": 0.5,
                         "poll_interval": 0.05,
@@ -271,8 +272,8 @@ class TestLongPollingVisualVerification:
 
                 assert res["req_id"] == "req-to"
                 assert res["status"] == "timeout"
-                assert res["result"] == "NONE"
-                assert res["device"] == "3"
+                assert res["data"]["result"] == "NONE"
+                assert res["device"] == "DFU-03"
                 assert elapsed >= 0.45
                 assert res["elapsed_sec"] >= 0.5
         finally:
@@ -305,7 +306,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-client-a",
                         "cmd": "check",
-                        "device": "4",
+                        "device": "DFU-04",
                         "kvm_ip": "192.168.1.13",
                         "timeout_sec": 1.0,
                         "poll_interval": 0.05,
@@ -318,36 +319,36 @@ class TestLongPollingVisualVerification:
                     sock_b,
                     {
                         "req_id": "req-client-b",
-                        "cmd": "ping",
-                        "device": "4",
+                        "cmd": "probe",
+                        "device": "DFU-04",
                     },
                 )
                 res_b = recv_json(sock_b, timeout=2.0)
 
                 assert res_b["req_id"] == "req-client-b"
-                assert res_b["status"] == "busy"
+                assert res_b["status"] == "error"
                 assert res_b["error"] == "device_busy"
-                assert res_b["device"] == "4"
+                assert res_b["device"] == "DFU-04"
 
                 # Client A eventually times out
                 res_a = recv_json(sock_a, timeout=3.0)
                 assert res_a["req_id"] == "req-client-a"
                 assert res_a["status"] == "timeout"
-                assert res_a["result"] == "NONE"
+                assert res_a["data"]["result"] == "NONE"
 
                 # Now that Client A is done, device 4 lock is released; Client B succeeds
                 send_json(
                     sock_b,
                     {
                         "req_id": "req-client-b-retry",
-                        "cmd": "ping",
-                        "device": "4",
+                        "cmd": "probe",
+                        "device": "DFU-04",
                     },
                 )
                 res_b_retry = recv_json(sock_b, timeout=2.0)
                 assert res_b_retry["req_id"] == "req-client-b-retry"
                 assert res_b_retry["status"] == "ok"
-                assert res_b_retry["data"] == "pong"
+                assert res_b_retry["data"]["pong"] is True
         finally:
             stop_stream.set()
             th.join(timeout=1.0)
@@ -379,7 +380,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-freeze-abort",
                         "cmd": "check",
-                        "device": "5",
+                        "device": "DFU-05",
                         "kvm_ip": "192.168.1.14",
                         "timeout_sec": 5.0,  # Long timeout
                         "freeze_threshold": 0.2,  # Short freeze threshold
@@ -392,7 +393,7 @@ class TestLongPollingVisualVerification:
                 assert res["req_id"] == "req-freeze-abort"
                 assert res["status"] == "error"
                 assert res["error"] == "frame_frozen"
-                assert res["device"] == "5"
+                assert res["device"] == "DFU-05"
                 # Aborted well before the 5.0s timeout!
                 assert elapsed < 2.0
 
@@ -401,13 +402,13 @@ class TestLongPollingVisualVerification:
                     sock,
                     {
                         "req_id": "req-followup",
-                        "cmd": "ping",
-                        "device": "5",
+                        "cmd": "probe",
+                        "device": "DFU-05",
                     },
                 )
                 res2 = recv_json(sock, timeout=2.0)
                 assert res2["status"] == "ok"
-                assert res2["data"] == "pong"
+                assert res2["data"]["pong"] is True
         finally:
             stop_stream.set()
             th.join(timeout=1.0)
@@ -441,7 +442,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "c1-long-poll",
                         "cmd": "check",
-                        "device": "6",
+                        "device": "DFU-06",
                         "kvm_ip": "192.168.1.15",
                         "timeout_sec": 2.0,
                         "poll_interval": 0.05,
@@ -456,7 +457,7 @@ class TestLongPollingVisualVerification:
                     r = recv_json(sock2, timeout=1.0)
                     t_dur = time.monotonic() - t_start
                     assert r["status"] == "ok"
-                    assert r["data"] == "pong"
+                    assert r["data"]["pong"] is True
                     # Must finish in milliseconds without socket starvation!
                     assert t_dur < 0.2
 
@@ -467,14 +468,14 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "c2-check-dev7",
                         "cmd": "check",
-                        "device": "7",
+                        "device": "DFU-07",
                         "kvm_ip": "192.168.1.16",
                         "timeout_sec": 2.0,
                     },
                 )
                 r7 = recv_json(sock2, timeout=1.0)
                 assert r7["status"] == "ok"
-                assert r7["result"] == "PASS"
+                assert r7["data"]["result"] == "PASS"
                 assert time.monotonic() - t_start < 0.3
 
                 # Client 1 eventually finishes long-poll
@@ -508,7 +509,7 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "drop-req",
                     "cmd": "check",
-                    "device": "8",
+                    "device": "DFU-08",
                     "kvm_ip": "192.168.1.17",
                     "timeout_sec": 10.0,
                     "poll_interval": 0.05,
@@ -526,13 +527,13 @@ class TestLongPollingVisualVerification:
                     sock2,
                     {
                         "req_id": "c2-after-drop",
-                        "cmd": "ping",
-                        "device": "8",
+                        "cmd": "probe",
+                        "device": "DFU-08",
                     },
                 )
                 res = recv_json(sock2, timeout=2.0)
                 assert res["status"] == "ok"
-                assert res["data"] == "pong"
+                assert res["data"]["pong"] is True
         finally:
             stop_stream.set()
             th.join(timeout=1.0)
@@ -564,7 +565,7 @@ class TestLongPollingVisualVerification:
                     {
                         "req_id": "req-custom-pat",
                         "cmd": "check",
-                        "device": "9",
+                        "device": "DFU-09",
                         "kvm_ip": "192.168.1.18",
                         "target_pattern": "CUSTOM_PASS",
                         "timeout_sec": 5.0,
@@ -575,8 +576,8 @@ class TestLongPollingVisualVerification:
 
                 assert res["req_id"] == "req-custom-pat"
                 assert res["status"] == "ok"
-                assert res["result"] == "CUSTOM_PASS"
-                assert res["device"] == "9"
+                assert res["data"]["result"] == "CUSTOM_PASS"
+                assert res["device"] == "DFU-09"
                 assert 0.2 <= res["elapsed_sec"] <= 2.0
         finally:
             stop_stream.set()
@@ -595,14 +596,14 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "err-neg-to",
                     "cmd": "check",
-                    "device": "10",
+                    "device": "DFU-10",
                     "kvm_ip": "192.168.1.19",
                     "timeout_sec": -5,
                 },
             )
             r1 = recv_json(sock)
             assert r1["status"] == "error"
-            assert r1["error"] == "invalid_timeout"
+            assert r1["error"] == "invalid_argument"
 
             # 2. Non-numeric timeout
             send_json(
@@ -610,14 +611,14 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "err-str-to",
                     "cmd": "check",
-                    "device": "10",
+                    "device": "DFU-10",
                     "kvm_ip": "192.168.1.19",
                     "timeout_sec": "not-a-number",
                 },
             )
             r2 = recv_json(sock)
             assert r2["status"] == "error"
-            assert r2["error"] == "invalid_timeout"
+            assert r2["error"] == "invalid_argument"
 
             # 3. Missing kvm_ip
             send_json(
@@ -625,12 +626,12 @@ class TestLongPollingVisualVerification:
                 {
                     "req_id": "err-no-kvm",
                     "cmd": "check",
-                    "device": "10",
+                    "device": "DFU-10",
                 },
             )
             r3 = recv_json(sock)
             assert r3["status"] == "error"
-            assert r3["error"] == "missing_kvm"
+            assert r3["error"] == "kvm_connect_failed"
 
     def test_dfu_station_long_polling_transition(self, running_server_with_kvm_pool):
         """DFU station long-polling holds until round-frame marker transitions to complete."""
@@ -665,7 +666,7 @@ class TestLongPollingVisualVerification:
                         "req_id": "req-dfu-lp",
                         "cmd": "check",
                         "station": "DFU",
-                        "device": "20",
+                        "device": "DFU-20",
                         "kvm_ip": "192.168.1.20",
                         "timeout_sec": 4.0,
                         "poll_interval": 0.05,
@@ -675,9 +676,9 @@ class TestLongPollingVisualVerification:
 
                 assert res["req_id"] == "req-dfu-lp"
                 assert res["status"] == "ok"
-                assert res["result"] == "PASS"
-                assert res["station"] == "DFU"
-                assert res["device"] == "20"
+                assert res["data"]["result"] == "PASS"
+                assert res["data"]["station"] == "DFU"
+                assert res["device"] == "DFU-20"
                 assert 0.25 <= res["elapsed_sec"] <= 2.5
         finally:
             stop_stream.set()
@@ -688,12 +689,12 @@ class TestLongPollingVisualVerification:
         server, kvm_map, (host, port) = running_server_with_kvm_pool
 
         # 3 stations with different completion delays
-        delays = {"30": 0.2, "31": 0.4, "32": 0.6}
+        delays = {"DFU-11": 0.2, "DFU-12": 0.4, "DFU-13": 0.6}
         kvms = {}
         for dev, delay in delays.items():
-            k = MockKVMClient(initial_pts=200.0 + float(dev))
+            k = MockKVMClient(initial_pts=200.0 + float(dev[-2:]))
             kvms[dev] = k
-            kvm_map[f"192.168.1.{dev}"] = k
+            kvm_map[f"192.168.1.{dev[-2:]}"] = k
 
         stop_stream = threading.Event()
 
@@ -720,7 +721,7 @@ class TestLongPollingVisualVerification:
                         "req_id": f"req-par-{dev}",
                         "cmd": "check",
                         "device": dev,
-                        "kvm_ip": f"192.168.1.{dev}",
+                        "kvm_ip": f"192.168.1.{dev[-2:]}",
                         "timeout_sec": 3.0,
                         "poll_interval": 0.04,
                     },
@@ -738,7 +739,7 @@ class TestLongPollingVisualVerification:
             assert len(results) == 3
             for dev in delays:
                 assert results[dev]["status"] == "ok"
-                assert results[dev]["result"] == "PASS"
+                assert results[dev]["data"]["result"] == "PASS"
                 assert results[dev]["device"] == dev
                 assert delays[dev] - 0.1 <= results[dev]["elapsed_sec"] <= delays[dev] + 1.0
         finally:
