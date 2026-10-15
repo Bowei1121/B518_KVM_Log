@@ -116,6 +116,8 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `format` | string | 是 | `jpeg` 或 `png` |
 | `quality` | number | 是 | 1–100，僅 `jpeg` 有效；`png` 請填 `0` |
 
+`format` 不是 `jpeg`／`png`、`quality` 缺少或非整數、`jpeg` 的 `quality` 不在 1–100、`png` 的 `quality` 不為 `0`，皆回 `invalid_argument`，且不連線 KVM。
+
 `data`：
 
 | 欄位 | 型別 | 說明 |
@@ -241,7 +243,7 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 | `unknown_device` | error | `device` 不在設備清單 | 檢查設備 ID |
 | `unknown_field` | error | 帶了未定義欄位 | 修正程式 |
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
-| `invalid_argument` | error | 指令欄位值不合法（slot 超出範圍、timeout 超出範圍等） | 修正程式 |
+| `invalid_argument` | error | 指令欄位值不合法（input 的 items 格式或 slot 超出範圍、snapshot 的 format／quality 不合法、timeout 超出範圍等） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
 | `log_solution_busy` | error | `input` 時 Log Solution 為 `monitoring` 或 `review`（上一輪未結束或待確認） | 先完成本輪 `check`／人工確認 |
 | `capacity_mismatch` | error | `check` 畫面結果格數與設定的測試通道數不同 | 檢查 Log Solution 設定，暫停 |
