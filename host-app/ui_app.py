@@ -76,6 +76,11 @@ try:
 except Exception:
     StreamerWindow = None  # type: ignore[assignment,misc]
 
+try:
+    from device_settings_window import DeviceSettingsWindow
+except Exception:
+    DeviceSettingsWindow = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger("MonitorUI")
 
 
@@ -426,6 +431,11 @@ class AtlasUI(_BaseTk):
         )
         self.btn_connect.pack(side="left", padx=6)
 
+        self.btn_device_settings = tk.Button(
+            top_frame, text="⚙ 設備設定", font=self.f_btn, command=self.on_open_device_settings
+        )
+        self.btn_device_settings.pack(side="left", padx=6)
+
         self.lbl_core_status = tk.Label(
             top_frame, text="● 未連線", font=self.f_bold, fg="gray"
         )
@@ -734,6 +744,31 @@ class AtlasUI(_BaseTk):
     # --------------------------------------------------------------------------
     # Snapshot & Live Stream Handling
     # --------------------------------------------------------------------------
+    def on_open_device_settings(self) -> None:
+        """Open the device list settings page (works without a running Core Service)."""
+        if DeviceSettingsWindow is None:
+            self._append_log("設備設定頁模組不可用。")
+            return
+        existing = getattr(self, "_settings_window", None)
+        if existing is not None:
+            try:
+                existing.lift()
+                return
+            except tk.TclError:
+                self._settings_window = None
+        self._settings_window = DeviceSettingsWindow(self, client=self.client, restart_core=self._restart_core_daemon)
+
+    def _restart_core_daemon(self) -> Dict[str, Any]:
+        """Stop and start Core Service on this machine; the settings page checks for busy devices first."""
+        from core_daemon import restart_core_daemon
+
+        try:
+            res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=10.0)
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        ok = res.get("status") in ("running", "ok")
+        return {"status": "ok" if ok else "error", "message": res.get("message", res)}
+
     def on_toggle_connect(self) -> None:
         """Parse core service address and reconnect."""
         addr_text = self.e_core_addr.get().strip()
