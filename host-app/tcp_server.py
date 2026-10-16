@@ -97,6 +97,12 @@ def _unknown(reason: str) -> Dict[str, Any]:
     return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
 
 
+def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
+    """check/inspect error reply: data keeps the last observation, with kind unknown and no results."""
+    return {"status": "error", "error": code, "message": message,
+            "data": {**last, "kind": "unknown", "results": []}}
+
+
 def _round_observation(decision: Any) -> Dict[str, Any]:
     """Map a round-gate decision onto the check 1.0 data shape."""
     if decision.kind == "frozen" or decision.reason == "frame_frozen":
@@ -444,6 +450,12 @@ class TcpJsonServer:
             self._round_gates[device_id] = gate
         return gate
 
+    def _template_root(self) -> Any:
+        """Configured template root, or TemplateCatalog.default_root() (~/Documents/template)."""
+        from template_catalog import TemplateCatalog
+
+        return self.template_root or TemplateCatalog.default_root()
+
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
         """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
         from round_frame_consumer import MarkerState, read_latest_app_frame
@@ -478,7 +490,6 @@ class TcpJsonServer:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
         from bt_flow import BtStartError, run_start_all
         from dfu_flow import DfuInputError, run_dfu_ok
-        from template_catalog import TemplateCatalog
 
         kvm = req["_kvm_client"]
         entry = req["_device_entry"]
@@ -487,7 +498,7 @@ class TcpJsonServer:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
 
-        template_root = self.template_root or TemplateCatalog.default_root()
+        template_root = self._template_root()
         try:
             if entry.station == "DFU":
                 result = await run_dfu_ok(kvm, template_root=template_root,
@@ -502,10 +513,9 @@ class TcpJsonServer:
     async def _handle_monitor_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """monitor_start 1.0: open Log Solution from the Dock and start monitoring (all stations)."""
         from monitor_flow import MonitorStartError, run_monitor_start
-        from template_catalog import TemplateCatalog
 
         entry = req["_device_entry"]
-        template_root = self.template_root or TemplateCatalog.default_root()
+        template_root = self._template_root()
         try:
             result = await run_monitor_start(
                 req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
@@ -518,7 +528,6 @@ class TcpJsonServer:
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
         from dfu_flow import DfuInputError, run_dfu_input
-        from template_catalog import TemplateCatalog
 
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
@@ -527,7 +536,7 @@ class TcpJsonServer:
             code, _, message = refusal.partition(": ")
             return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
 
-        template_root = self.template_root or TemplateCatalog.default_root()
+        template_root = self._template_root()
         try:
             result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
                                          log=logger.info, diagnostics_key=entry.device_id)
@@ -549,7 +558,6 @@ class TcpJsonServer:
         already_taken or an error, and otherwise times out with the last observed state.
         """
         from monitor_flow import MonitorStartError, bring_log_solution_forward
-        from template_catalog import TemplateCatalog
 
         kvm = req.get("_kvm_client")
         entry = req.get("_device_entry")
@@ -590,8 +598,7 @@ class TcpJsonServer:
 
             obs = await self._observe_check(kvm, entry, req, read_only=read_only, stability=stability)
             if "error" in obs:
-                return {"status": "error", "error": obs["error"], "message": obs.get("message", ""),
-                        "data": {**last, "kind": "unknown", "results": []}}
+                return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
 
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
@@ -618,22 +625,17 @@ class TcpJsonServer:
                     if unseen_since is None:
                         unseen_since = now
                     if dock_recoveries >= self.max_dock_recoveries:
-                        return {
-                            "status": "error",
-                            "error": "log_solution_not_visible",
-                            "message": f"Log Solution not visible after {dock_recoveries} Dock clicks",
-                            "data": {**last, "kind": "unknown", "results": []},
-                        }
+                        return _check_error("log_solution_not_visible",
+                                            f"Log Solution not visible after {dock_recoveries} Dock clicks", last)
                     if now - unseen_since >= self.visibility_lost_sec:
                         dock_recoveries += 1
                         unseen_since = None
-                        template_root = self.template_root or TemplateCatalog.default_root()
+                        template_root = self._template_root()
                         try:
                             await bring_log_solution_forward(kvm, template_root=template_root,
                                                              diagnostics_key=entry.device_id)
                         except MonitorStartError as exc:
-                            return {"status": "error", "error": exc.code, "message": str(exc),
-                                    "data": {**last, "kind": "unknown", "results": []}}
+                            return _check_error(exc.code, str(exc), last)
                         await asyncio.sleep(self.dock_recheck_sec)
                         continue
                 else:
