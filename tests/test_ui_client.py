@@ -324,3 +324,236 @@ class TestLightweightMonitorUIClient:
 
         assert proc.returncode == 0, f"Process failed: {proc.stderr}"
         assert "running" in proc.stdout or "ok" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Monitor UI channel separation (Issue #20)
+# ---------------------------------------------------------------------------
+
+def _envelope(req: Dict[str, Any], data: Dict[str, Any], req_id: Optional[str] = None) -> Dict[str, Any]:
+    """Build a reply in the real 1.0 envelope shape (see tcp_server._encode_envelope)."""
+    return {
+        "protocol_version": "1.0",
+        "req_id": req["req_id"] if req_id is None else req_id,
+        "device": req.get("device", ""),
+        "cmd": req["cmd"],
+        "status": "ok",
+        "error": "",
+        "message": "",
+        "elapsed_sec": 0.001,
+        "data": data,
+    }
+
+
+CORE_STATUS_DATA = {
+    "uptime_seconds": 1.0,
+    "active_connections": 1,
+    "busy_devices": [],
+    "stations": [],
+    "version": "1.0.0",
+}
+
+
+class _FakeCore:
+    """Newline-delimited JSON server. behaviour(req, conn_index) returns a reply dict and may block."""
+
+    def __init__(self, behaviour) -> None:
+        self._behaviour = behaviour
+        self.requests: List[Dict[str, Any]] = []
+        self.connections = 0
+        self._lock = threading.Lock()
+        self._conns: List[socket.socket] = []
+        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(16)
+        self.port = self._srv.getsockname()[1]
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+
+    def _accept_loop(self) -> None:
+        while True:
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                return
+            with self._lock:
+                idx = self.connections
+                self.connections += 1
+                self._conns.append(conn)
+            threading.Thread(target=self._serve, args=(conn, idx), daemon=True).start()
+
+    def _serve(self, conn: socket.socket, idx: int) -> None:
+        reader = conn.makefile("rb")
+        try:
+            for line in reader:
+                req = json.loads(line.decode("utf-8"))
+                with self._lock:
+                    self.requests.append(req)
+                reply = self._behaviour(req, idx)
+                conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        self._srv.close()
+        with self._lock:
+            conns = list(self._conns)
+        for c in conns:
+            try:
+                c.close()
+            except OSError:
+                pass
+
+
+def _wait_until(predicate, timeout: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+class TestMonitorUIChannels:
+    def test_manual_check_does_not_block_status_or_snapshot(self, running_core_service):
+        """A long inspect on the UI client must not stall status polling or snapshots."""
+        server, kvm_map, (host, port) = running_core_service
+        kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
+        kvm.show("monitoring")
+
+        client = CoreServiceClient(host=host, port=port)
+        out: Dict[str, Any] = {}
+        th = threading.Thread(
+            target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=8.0)),
+            daemon=True,
+        )
+        th.start()
+        time.sleep(0.3)
+
+        t0 = time.monotonic()
+        st = client.get_status(timeout=2.0)
+        assert time.monotonic() - t0 < 1.0, "get_status waited behind the in-flight inspect"
+        assert st.get("status") in ("running", "ok")
+
+        snap = client.get_snapshot(device="DFU-01", timeout=3.0)
+        assert snap.get("status") == "ok", f"snapshot blocked or failed: {snap}"
+
+        kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
+        th.join(timeout=12.0)
+        assert out["res"].get("status") == "ok"
+        client.close()
+
+    def test_status_poll_skips_while_previous_request_in_flight(self):
+        """A new status poll is not started while the previous one has not come back."""
+        release = threading.Event()
+
+        def behaviour(req, idx):
+            release.wait(5.0)
+            return _envelope(req, CORE_STATUS_DATA)
+
+        core = _FakeCore(behaviour)
+        client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        results: List[Dict[str, Any]] = []
+        try:
+            assert client.start_status_poll(results.append) is True
+            time.sleep(0.2)
+            assert client.start_status_poll(results.append) is False
+            assert client.start_status_poll(results.append) is False
+            time.sleep(0.2)
+            assert len(core.requests) == 1, "overlapping status requests were sent"
+
+            release.set()
+            assert _wait_until(lambda: len(results) == 1), "poll callback never fired"
+            assert results[0].get("status") in ("running", "ok")
+
+            assert client.start_status_poll(results.append) is True
+            assert _wait_until(lambda: len(results) == 2)
+        finally:
+            release.set()
+            client.close()
+            core.close()
+
+    def test_mismatched_req_id_is_discarded_and_connection_reset(self):
+        """A reply whose req_id does not match is dropped and the next request reconnects."""
+
+        def behaviour(req, idx):
+            if idx == 0:
+                return _envelope(req, CORE_STATUS_DATA, req_id="someone-else-000")
+            return _envelope(req, CORE_STATUS_DATA)
+
+        core = _FakeCore(behaviour)
+        client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        try:
+            stale = client.get_status(timeout=2.0)
+            assert stale.get("status") != "running"
+            assert stale.get("error") == "req_id_mismatch"
+            assert "uptime_seconds" not in stale
+
+            fresh = client.get_status(timeout=2.0)
+            assert fresh.get("status") in ("running", "ok")
+            assert fresh.get("req_id") == core.requests[1]["req_id"]
+            assert core.connections == 2
+        finally:
+            client.close()
+            core.close()
+
+    def test_close_cancels_inflight_manual_check_without_blocking(self):
+        """Closing the UI while an inspect is pending returns at once and cancels that inspect."""
+        release = threading.Event()
+
+        def behaviour(req, idx):
+            release.wait(10.0)
+            return _envelope(req, {"kind": "waiting", "state": "monitoring", "reason": "monitoring",
+                                   "capacity": 4, "results": []})
+
+        core = _FakeCore(behaviour)
+        client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        out: Dict[str, Any] = {}
+        th = threading.Thread(
+            target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=30.0)),
+            daemon=True,
+        )
+        try:
+            th.start()
+            assert _wait_until(lambda: len(core.requests) == 1)
+
+            t0 = time.monotonic()
+            client.close()
+            assert time.monotonic() - t0 < 0.5, "close() waited on the in-flight request"
+
+            th.join(timeout=2.0)
+            assert not th.is_alive(), "cancelled inspect did not return"
+            assert out["res"].get("status") == "error"
+            assert out["res"].get("error") == "cancelled"
+        finally:
+            release.set()
+            core.close()
+
+    def test_set_target_does_not_wait_for_inflight_request(self):
+        """Switching Core address while an inspect is pending must not block the caller."""
+        release = threading.Event()
+
+        def behaviour(req, idx):
+            release.wait(10.0)
+            return _envelope(req, {"kind": "waiting", "state": "monitoring", "reason": "monitoring",
+                                   "capacity": 4, "results": []})
+
+        core = _FakeCore(behaviour)
+        other = _FakeCore(lambda req, idx: _envelope(req, CORE_STATUS_DATA))
+        client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        th = threading.Thread(target=lambda: client.manual_check(device="DFU-01", timeout_sec=30.0), daemon=True)
+        try:
+            th.start()
+            assert _wait_until(lambda: len(core.requests) == 1)
+
+            t0 = time.monotonic()
+            client.set_target("127.0.0.1", other.port)
+            assert time.monotonic() - t0 < 0.5, "set_target waited on the in-flight request"
+
+            assert client.get_status(timeout=2.0).get("status") in ("running", "ok")
+        finally:
+            release.set()
+            client.close()
+            th.join(timeout=2.0)
+            core.close()
+            other.close()
