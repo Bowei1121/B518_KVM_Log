@@ -92,7 +92,7 @@ def test_run_check_exception_is_internal_error_not_taken(server, monkeypatch):
 
 
 def test_template_rows_map_to_slot_results(server, monkeypatch):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass"), (2, "fail")]}))
+    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass", "SN1"), (2, "fail", "SN2")]}))
     res = run_check_cmd(server, {"device": "BT-01"})
     assert res["status"] == "error"  # capacity 2 != 4 configured channels
     assert res["error"] == "capacity_mismatch"
@@ -100,7 +100,8 @@ def test_template_rows_map_to_slot_results(server, monkeypatch):
 
 
 def test_template_rows_matching_channels_are_taken_per_slot(server, monkeypatch):
-    rows = [(1, "pass"), (2, "fail"), (3, "pass"), (4, "pass")]
+    # Same shape as auto_flow.run_check rows: (index, result, sn).
+    rows = [(1, "pass", "SN1"), (2, "fail", "SN2"), (3, "pass", "SN3"), (4, "pass", "SN4")]
     monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": rows}))
     res = run_check_cmd(server, {"device": "BT-01"})
     assert res["status"] == "ok"
@@ -132,7 +133,7 @@ def test_request_template_root_overrides_server_root(server, monkeypatch, tmp_pa
 
 def test_no_frame_yet_is_error_no_result(server, monkeypatch):
     calls = []
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass")]}, calls))
+    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass", "SN1")]}, calls))
     kvm = RealishKVM()
     kvm.frame = None
     res = run_check_cmd(server, {"device": "BT-01", "_kvm_client": kvm})

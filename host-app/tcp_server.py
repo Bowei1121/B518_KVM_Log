@@ -110,7 +110,8 @@ def _template_observation(r: Dict[str, Any]) -> Dict[str, Any]:
         return {**base, "kind": "waiting", "reason": "testing"}
     rows = r.get("rows") or []
     if r.get("ok") and rows:
-        results = [{"slot": index, "status": "PASS" if status == "pass" else "FAIL"} for index, status in rows]
+        # run_check rows are (index, result, sn); the SN is not part of check 1.0.
+        results = [{"slot": row[0], "status": "PASS" if row[1] == "pass" else "FAIL"} for row in rows]
         return {"kind": "taken", "state": "", "reason": "template_rows", "capacity": len(rows), "results": results}
     return {**base, "kind": "unknown", "reason": "template_not_matched"}
 
