@@ -480,3 +480,139 @@ def test_tcp_server_idle_eviction_and_reconnection() -> None:
     finally:
         server.stop()
         server.wait(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# In-use lease (ticket #19): a connection checked out by a command is never
+# idle-evicted; the idle clock starts when the command releases it.
+# ---------------------------------------------------------------------------
+
+def test_in_use_connection_survives_idle_eviction() -> None:
+    """A connection held past the idle limit by a running command is not evicted or closed."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.15)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        await asyncio.sleep(0.25)  # last_used_at is now older than idle_timeout
+
+        assert pool.get_connection_info("192.168.1.10")["in_use"] == 1
+        evicted = await pool.prune_idle_connections()
+        assert evicted == 0
+        assert pool.active_count() == 1
+        assert client.close_calls == 0
+        assert client.connected is True
+
+        await pool.release_connection("192.168.1.10")
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+def test_release_restarts_idle_clock_and_then_evicts() -> None:
+    """Release stamps last_used_at; the connection is evicted only after idle_timeout passes again."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.2)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        await asyncio.sleep(0.25)
+        await pool.release_connection("192.168.1.10")
+
+        assert pool.get_connection_info("192.168.1.10")["in_use"] == 0
+        assert await pool.prune_idle_connections() == 0
+        assert client.close_calls == 0
+
+        await asyncio.sleep(0.25)
+        assert await pool.prune_idle_connections() == 1
+        assert pool.active_count() == 0
+        assert client.close_calls == 1
+
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+def test_in_use_count_is_per_connection() -> None:
+    """Nested or concurrent holders are counted; the connection stays busy until the last release."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+        await pool.acquire_connection("192.168.1.10")
+        await pool.acquire_connection("192.168.1.10")
+        await pool.acquire_connection("192.168.1.20")
+        assert pool.get_connection_info("192.168.1.10")["in_use"] == 2
+        assert pool.get_connection_info("192.168.1.20")["in_use"] == 1
+
+        await pool.release_connection("192.168.1.10")
+        assert pool.get_connection_info("192.168.1.10")["in_use"] == 1
+        await pool.release_connection("192.168.1.10")
+        assert pool.get_connection_info("192.168.1.10")["in_use"] == 0
+
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+def test_tcp_command_holds_lease_for_whole_handler_run() -> None:
+    """A slow command over the socket keeps its KVM alive past the idle limit, then releases it."""
+    factory = MockClientFactory()
+    pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.15, heartbeat_interval=0.05)
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
+
+    async def slow_handler(req):
+        await asyncio.sleep(0.4)
+        return {"slept": True}
+
+    server.register_handler("slow_probe", slow_handler, device_bound=True)
+    server.start()
+
+    try:
+        host, port = server.server_address
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+
+        send_json(sock, {"req_id": "lease-1", "cmd": "slow_probe", "device": "DFU-02"})
+        resp = recv_json(sock, timeout=5.0)
+        assert resp["status"] == "ok"
+
+        client = factory.get_latest_client("192.168.1.30")
+        assert client is not None
+        assert client.close_calls == 0, "KVM was evicted while a command was still using it"
+        assert pool.get_connection_info("192.168.1.30")["in_use"] == 0
+
+        sock.close()
+    finally:
+        server.stop()
+        server.wait(timeout=2.0)
+
+
+def test_tcp_command_releases_lease_when_handler_raises() -> None:
+    """The exception path returns the connection to the pool, so it can go idle and be evicted."""
+    factory = MockClientFactory()
+    pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
+
+    def boom_handler(req):
+        raise RuntimeError("boom")
+
+    server.register_handler("boom_probe", boom_handler, device_bound=True)
+    server.start()
+
+    try:
+        host, port = server.server_address
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+
+        send_json(sock, {"req_id": "lease-err", "cmd": "boom_probe", "device": "DFU-02"})
+        resp = recv_json(sock)
+        assert resp["status"] == "error"
+        assert resp["error"] == "internal_error"
+
+        assert pool.get_connection_info("192.168.1.30")["in_use"] == 0
+
+        sock.close()
+    finally:
+        server.stop()
+        server.wait(timeout=2.0)
