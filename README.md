@@ -32,23 +32,27 @@ LabVIEW 與 Core 之間的協定為 TCP JSON 1.0：每行一筆 JSON、以 `req_
 - `DFU/DFU_<template_key>.png`
 - `FCT/FCT_<template_key>.png`
 - `BT/BT_<template_key>.png`
+- `COMMON/COMMON_<template_key>.png`：三站共用，目前只有 `log_solution_dock_icon`。
 - `_captures/jetkvm_frame.png`：原始擷取畫面，不能作為正式模板。
 
 請在「創建Pattern」視窗選擇設備與模板種類；程式會自動決定唯讀檔名及輸出位置。`host-app/FCT` 中的圖片僅保留為歷史參考，執行程式不會讀取它。
 
 各站使用的模板：
 
-- DFU：`window`、`input`、`button`、`checkbox_checked`、`checkbox_unchecked`、`dock_icon`。checkbox 只需兩種狀態模板，通道數由設備清單決定，不再需要每通道的錨點模板。
-- BT：`window`、`testing`、`pass`、`fail`、`start_all`、`dock_icon`。
-- FCT：`window`、`testing`、`pass`、`fail`、`dock_icon`。
+- DFU：`window`、`input`、`button`（OK）、`checkbox_checked`、`checkbox_unchecked`、`dock_icon`。checkbox 只需兩種狀態模板，通道數由設備清單決定，不再需要每通道的錨點模板。
+- BT：`window`、`start_all`、`dock_icon`。
+- FCT：`window`、`dock_icon`。目前 TCP 流程不使用，保留於模板目錄。
+- COMMON：`log_solution_dock_icon`。Log Solution 的 Dock 圖示，`monitor_start` 與 `check` 的可見性恢復共用。
+
+`testing`、`pass`、`fail` 結果模板已淘汰，結果判讀全部來自 Log Solution 的顯示契約。
 
 各站支援的 TCP 指令：
 
-- DFU：`input`（`items[{slot, sn}]`，通道 1..N，依 Log Solution 狀態拒絕忙碌）與 `check`。
-- BT：`button`（`action: start_all`）與 `check`。`check` 仍為模板判讀。
-- FCT：`check`。`input` 與 `button` 不支援，回 `unsupported_command`。
+- DFU：`monitor_start`、`input`（`items[{slot, sn}]`，通道 1..N，依 Log Solution 狀態拒絕忙碌）、`start_test`（點 OK）與 `check`。
+- BT：`monitor_start`、`start_test`（點 Start All）與 `check`。
+- FCT：`monitor_start` 與 `check`。`input`、`start_test` 不支援，回 `unsupported_command`。
 
-DFU 的 `check` 讀取 Log Solution 顯示契約 1.1 的畫面，不再依賴模板。
+三站的 `check` 都讀取 Log Solution 顯示契約 1.1 的畫面，不再依賴模板。`button` 已移除，改由 `start_test` 開始測試。
 
 ## 匹配診斷
 
