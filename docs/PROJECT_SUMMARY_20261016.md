@@ -54,3 +54,12 @@
 - A9：`start_test`（DFU=OK、BT=Start All）；FCT 無需啟動。Log Solution 設計：開始監控前後 ±30 秒內產生的檔案都算同一輪；已派子代理唯讀查證 Log Solution 原始碼。
 - A10：Log Solution 置於畫面最右側、ATE 測試程式在左側，盡量不遮擋；本輪監控完成後會回到最上層。
 - A11：三站 `check` 統一走 Log Solution 判讀，淘汰模板判讀結果程式與 `testing`／`pass`／`fail` 模板。
+
+## Log Solution 原始碼查證（子代理唯讀；標記狀態與 30 秒門檻主線已核對）
+
+- **沒有對稱的 ±30 秒窗口。** 30 秒是寫死的下限（監控開始 − 30 秒），比對檔名或內容的時間戳，不看 mtime；主要防護是開始監控時的檔案快照（baseline），既有檔案要有變動才算。Atlas（DFU／FCT 共用）進行中的 `records.csv` 沒有時間限制；最終歸檔資料夾名稱時間戳須 ≥ 開始 − 30 秒。
+- **FCT 先開測後監控的風險：** 開始監控後 30 秒內（start deadline）該通道 `records.csv` 沒變動就鎖成 `NOTEST`，之後結果被忽略；歸檔資料夾時間戳若是測試開始時間且早於監控 30 秒以上，最終結果永遠不被接受。歸檔時間戳是開始還是結束時間未確認。
+- **人工停止監控後標記變成 `standby`**（`kvm_display_contract.py` `state_for_round_snapshot`），非終局格設為 `STOPPED`。橋接 RoundFrameGate 看到 standby 會解除 armed、回 waiting，所以**含 `STOPPED` 的輪次永遠不會被 `check` 取用**，與 10-15 A22 的處置設計衝突。
+- 完成後標記停在 `complete`，直到下一次開始監控才直接進 `monitoring`。快捷鍵是全域、只能開始不能切換；監控中或待確認時按下會被忽略。
+- 視窗在右上角，**沒有設定最上層**；只在單格出現 PASS／FAIL／NOTEST 時拉到前景，`TIMEOUT`、`STOPPED` 與整輪完成時不會。監控中可能被 ATE 視窗蓋住。
+- 預期通道數來自 Log Solution 機台 profile（預設 DFU 7、FCT 6、BT 4），須與橋接 `devices.json` 通道數一致，否則 `capacity_mismatch`。
