@@ -51,6 +51,13 @@ try:
 except ImportError:
     from .monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC  # type: ignore[import-not-found,no-redef]
 
+try:
+    from bt_flow import BtStartError, run_start_all
+    from dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok
+except ImportError:
+    from .bt_flow import BtStartError, run_start_all  # type: ignore[import-not-found,no-redef]
+    from .dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
 
 PROTOCOL_VERSION = "1.0"
@@ -80,6 +87,16 @@ ENVELOPE_KEYS = frozenset({
 ERROR_CODE_MAP = {
     "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
+}
+# Station-limited commands: the operation each station runs. A station without an entry is refused
+# with unsupported_command during request validation, before any HID.
+STATION_OPERATIONS: Dict[str, Dict[str, Callable[..., Any]]] = {
+    "input": {"DFU": run_dfu_input},
+    "start_test": {"DFU": run_dfu_ok, "BT": run_start_all},
+}
+UNSUPPORTED_STATION_MESSAGES = {
+    "input": "'input' is only supported for DFU devices",
+    "start_test": "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in",
 }
 DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
@@ -488,9 +505,6 @@ class TcpJsonServer:
 
     async def _handle_start_test(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
-        from bt_flow import BtStartError, run_start_all
-        from dfu_flow import DfuError, run_dfu_ok
-
         kvm = req["_kvm_client"]
         entry = req["_device_entry"]
         refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
@@ -498,14 +512,10 @@ class TcpJsonServer:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
 
-        template_root = self._template_root()
+        start = STATION_OPERATIONS["start_test"][entry.station]
         try:
-            if entry.station == "DFU":
-                result = await run_dfu_ok(kvm, template_root=template_root,
-                                          log=logger.info, diagnostics_key=entry.device_id)
-            else:
-                result = await run_start_all(kvm, template_root=template_root,
-                                             log=logger.info, diagnostics_key=entry.device_id)
+            result = await start(kvm, template_root=self._template_root(),
+                                 log=logger.info, diagnostics_key=entry.device_id)
         except (BtStartError, DfuError) as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
         return {"status": "ok", "data": result}
@@ -527,8 +537,6 @@ class TcpJsonServer:
 
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
-        from dfu_flow import DfuError, run_dfu_input
-
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
         refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
@@ -536,10 +544,10 @@ class TcpJsonServer:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
 
-        template_root = self._template_root()
+        enter = STATION_OPERATIONS["input"][entry.station]
         try:
-            result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
-                                         log=logger.info, diagnostics_key=entry.device_id)
+            result = await enter(kvm, entry.channels, req.get("items"), template_root=self._template_root(),
+                                 log=logger.info, diagnostics_key=entry.device_id)
         except DfuError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
@@ -689,14 +697,13 @@ class TcpJsonServer:
             return "missing_device", f"'{cmd}' requires a 'device' ID"
         if self.device_registry.get(device) is None:
             return "unknown_device", f"device '{device}' is not configured"
-        if cmd == "input" and self.device_registry.get(device).station != "DFU":
-            return "unsupported_command", f"'input' is only supported for DFU devices"
-        if cmd == "start_test" and self.device_registry.get(device).station == "FCT":
-            return "unsupported_command", "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in"
+        entry = self.device_registry.get(device)
+        operations = STATION_OPERATIONS.get(cmd)
+        if operations is not None and entry.station not in operations:
+            return "unsupported_command", UNSUPPORTED_STATION_MESSAGES[cmd]
         if cmd == "input":
-            from dfu_flow import DfuError, parse_items
             try:
-                parse_items(req.get("items"), self.device_registry.get(device).channels)
+                parse_items(req.get("items"), entry.channels)
             except DfuError as exc:
                 return exc.code, str(exc)
         if cmd == "snapshot":
