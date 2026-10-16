@@ -52,7 +52,7 @@ PROTOCOL_VERSION = "1.0"
 CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
-INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution or template reading
+INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
@@ -89,7 +89,7 @@ def _unknown(reason: str) -> Dict[str, Any]:
 def _round_observation(decision: Any) -> Dict[str, Any]:
     """Map a round-gate decision onto the check 1.0 data shape."""
     if decision.kind == "frozen" or decision.reason == "frame_frozen":
-        return {"error": "frame_frozen", "message": "DFU round frame stream is frozen"}
+        return {"error": "frame_frozen", "message": "Log Solution frame stream is frozen"}
     if decision.reason == "no_frame":
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
     return {
@@ -190,7 +190,7 @@ class TcpJsonServer:
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
-        self._dfu_gates: Dict[str, Any] = {}
+        self._round_gates: Dict[str, Any] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         # Frame readings run on worker threads so the event loop keeps serving requests.
         self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
@@ -404,40 +404,20 @@ class TcpJsonServer:
         if previous is not None and not previous.done():
             return _unknown("inspection_busy")
 
-        if entry.station == "DFU":
-            from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-            if read_only:
-                # Gate-less reading: never arms, takes or otherwise touches the round.
-                def job():
-                    return _inspect_round(kvm, stability)
-            else:
-                gate = self._dfu_gates.get(entry.device_id)
-                if gate is None:
-                    gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
-                    self._dfu_gates[entry.device_id] = gate
-
-                def job():
-                    return observe_latest_round_frame(kvm, gate)
+        # Every station reads the Log Solution display contract; the station only affects operations.
+        from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
+        if read_only:
+            # Gate-less reading: never arms, takes or otherwise touches the round.
+            def job():
+                return _inspect_round(kvm, stability)
         else:
-            # BT / FCT: template catalog until their Log Solution contract lands.
-            frame_val = getattr(kvm, "frame", None)
-            if not hasattr(frame_val, "shape"):
-                return {"error": "no_frame", "message": "No frame received from KVM yet"}
-            template_root = req.get("template_root") or self.template_root
-            if not template_root:
-                from template_catalog import TemplateCatalog
-                template_root = TemplateCatalog.default_root()
+            gate = self._round_gates.get(entry.device_id)
+            if gate is None:
+                gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
+                self._round_gates[entry.device_id] = gate
 
             def job():
-                from auto_flow import run_check
-                return asyncio.run(run_check(
-                    kvm,
-                    device=entry.station,
-                    template_root=template_root,
-                    freeze_guard=self.freeze_guard,
-                    device_id=entry.device_id,
-                    stream_id=extract_stream_id(kvm),
-                ))
+                return observe_latest_round_frame(kvm, gate)
 
         future = self._inspector.submit(job)
         self._inspections[flight_key] = future
@@ -451,9 +431,7 @@ class TcpJsonServer:
             logger.exception("Inspection error for %s", entry.device_id)
             return {"error": "internal_error", "message": f"inspection error: {exc}"}
 
-        if entry.station == "DFU":
-            return raw if read_only else _round_observation(raw)
-        return _template_observation(raw)
+        return raw if read_only else _round_observation(raw)
 
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
         """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
@@ -472,7 +450,7 @@ class TcpJsonServer:
         if observation.state == MarkerState.STANDBY:
             return None
         if observation.state == MarkerState.COMPLETE:
-            gate = self._dfu_gates.get(entry.device_id)
+            gate = self._round_gates.get(entry.device_id)
             if gate is not None and gate.taken:
                 return None
             return "log_solution_busy: round result not yet taken"
