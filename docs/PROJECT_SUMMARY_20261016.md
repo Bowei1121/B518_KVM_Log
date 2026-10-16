@@ -30,3 +30,10 @@
 ## 本日
 
 - 使用者要求討論前一日留待後續、尚未決定的部分。
+
+## 第 6～8 項查證（子代理唯讀，對 PR #16 `1a7e8c8`；關鍵點主線已核對）
+
+- **6 凍結檢查 vs 重連：仍存在。** 凍結檢查狀態不記 `stream_id`，從未 reset；重連後新串流 PTS 從低值開始會被判 `frame_frozen`，直到超過舊值為止（實測 PTS 100→1 立即失敗）。
+- **7 連線池使用期：仍存在。** `last_used_at` 只在取得連線時更新，heartbeat 不更新；`check` 長輪詢超過 600 秒且無其他流量時，連線會被淘汰關閉，接著多半誤報 `frame_frozen`（實測 held client 被 close）。
+- **8 Monitor UI 通訊排程：仍存在，設定頁讓它更嚴重。** 所有功能共用一條 socket＋一把鎖；長時間 `inspect` 期間狀態、快照、串流、設定頁全部卡住；每 1.5 秒新開狀態執行緒會堆積；關閉視窗會卡在鎖上。
+- **新發現：PR #16 的 FCT／BT `check` 永遠拿不到 taken。** `run_check` 回傳 3 欄（序號、結果、SN），`_template_observation` 以 2 欄拆解，看到任何 pass／fail 標記即 `ValueError` → `internal_error`；測試假資料用 2 欄所以沒抓到。另：同一格可能 pass／fail 重複計數、無兩張畫面穩定確認、無 already_taken。
