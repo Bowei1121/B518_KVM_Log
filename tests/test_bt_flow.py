@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-from auto_flow import run_check, run_flow, run_focus
+from auto_flow import run_flow, run_focus
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -52,23 +52,6 @@ class BtFlowTests(unittest.TestCase):
             result = asyncio.run(run_flow(kvm, "BT", template_root=Path(temp), mode="input", log=lambda _msg: None))
             self.assertFalse(result["ok"])
             self.assertEqual(kvm.clicks, [])
-
-    def test_check_does_not_send_hid_and_persists_diagnostics(self):
-        with tempfile.TemporaryDirectory() as temp:
-            catalog = TemplateCatalog(Path(temp) / "template")
-            rng = np.random.RandomState(24)
-            frame = rng.randint(0, 255, (180, 260, 3), dtype=np.uint8)
-            catalog.save_crop(frame, (15, 20, 125, 140), "BT", "window")
-            catalog.save_crop(frame, (40, 50, 75, 80), "BT", "testing")
-            kvm = FakeKvm(frame)
-
-            result = asyncio.run(run_check(kvm, "BT", template_root=catalog.root, threshold=0.8))
-
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["testing"])
-            self.assertEqual(kvm.clicks, [])
-            summary = MatchDiagnostics.load(catalog.root, "BT")
-            self.assertEqual([record["key"] for record in summary["records"]], ["window", "testing"])
 
     def test_fct_focus_clicks_dock_and_persists_diagnostics(self):
         with tempfile.TemporaryDirectory() as temp:

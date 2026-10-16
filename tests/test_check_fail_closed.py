@@ -8,7 +8,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-import auto_flow
 import round_frame_consumer
 from round_frame_consumer import TakeDecision
 from protocol_helpers import make_registry
@@ -47,20 +46,9 @@ def run_check_cmd(server, req):
     return asyncio.run(server._handle_check(req))
 
 
-def recording_run_check(calls):
-    async def _run_check(kvm, device, *args, **kw):
-        calls.append(device)
-        return {"ok": True, "rows": [(1, "pass", "SN1"), (2, "pass", "SN2"), (3, "pass", "SN3"), (4, "pass", "SN4")]}
-
-    return _run_check
-
-
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_check_never_reads_template_results(server, monkeypatch, device):
-    calls = []
-    monkeypatch.setattr(auto_flow, "run_check", recording_run_check(calls))
+def test_check_without_log_solution_frame_is_never_taken_from_templates(server, device):
     res = run_check_cmd(server, {"device": device})
-    assert calls == []
     assert res["data"]["kind"] != "taken"
     assert res["data"]["results"] == []
 
