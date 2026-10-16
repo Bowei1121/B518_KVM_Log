@@ -79,14 +79,32 @@ def make_pool() -> KVMConnectionPool:
     return KVMConnectionPool(client_factory=lambda host, password="": FakeKVM())
 
 
-class LogSolutionKVM:
-    """KVM stub whose latest_frame() is a synthetic Log Solution screen (contract 1.1).
+DOCK_HEIGHT = 48
+DOCK_COLOR = (150, 150, 150)
+# x, y, w, h of the Log Solution Dock icon inside the Dock strip (strip-relative).
+DOCK_ICON_BOX = (40, 6, 36, 36)
 
-    Each latest_frame() call advances the presentation timestamp unless frozen() was called.
+
+class LogSolutionKVM:
+    """KVM stub whose latest_frame() is a synthetic ATE screen with a Log Solution window and Dock strip.
+
+    The Log Solution window (contract 1.1) sits at the top; the Dock strip below carries the
+    Log Solution Dock icon as seeded noise (80-255), so template matching is exact and the icon
+    cannot be mistaken for a locator square. Each latest_frame() call advances the presentation
+    timestamp unless freeze() was called.
+
+    Test switches:
+    - cover(): the window is behind the ATE window (not drawn). A Dock click brings it back only
+      when restore_on_dock is set; the state is kept.
+    - close_window(): the window is not running. A Dock click reopens it in standby when restore_on_dock is set.
+    - dock_visible / shortcut_enabled: hide the Dock icon, or make Cmd+Shift+M do nothing.
+    - state_on_dock: state the window shows after a restoring Dock click, when set.
+    click() and press_command_shift_m() are recorded in ``events`` as ("click", x, y) and ("key", name).
     """
 
     def __init__(self, state="standby", statuses=()):
         import threading
+        import numpy as np
         self._lock = threading.Lock()
         self._state = None
         self._statuses = []
@@ -94,6 +112,14 @@ class LogSolutionKVM:
         self._seq = 0
         self._pts = 100.0
         self._frozen = False
+        self._hidden = False
+        self._dock_icon = np.random.RandomState(23).randint(
+            80, 256, (DOCK_ICON_BOX[3], DOCK_ICON_BOX[2], 3), dtype=np.uint8)
+        self.events = []
+        self.dock_visible = True
+        self.shortcut_enabled = True
+        self.restore_on_dock = False
+        self.state_on_dock = None
         self.connected = False
 
     def show(self, state, statuses=()):
@@ -112,19 +138,65 @@ class LogSolutionKVM:
         with self._lock:
             self._frozen = True
 
+    def cover(self):
+        with self._lock:
+            self._hidden = True
+
+    def close_window(self):
+        with self._lock:
+            self._hidden = True
+            self._state = None
+
+    def dock_icon_box(self):
+        """Absolute (x, y, w, h) of the Dock icon in latest_frame() coordinates."""
+        x, y, w, h = DOCK_ICON_BOX
+        window_height = render_log_solution(None, []).shape[0]
+        return x, y + window_height, w, h
+
     async def connect(self) -> None:
         self.connected = True
 
     async def close(self) -> None:
         self.connected = False
 
+    async def click(self, x, y):
+        with self._lock:
+            self.events.append(("click", x, y))
+            if not (self._hidden and self.restore_on_dock and self.dock_visible):
+                return
+            x0, y0, w, h = self.dock_icon_box()
+            if not (x0 <= x < x0 + w and y0 <= y < y0 + h):
+                return
+            self._hidden = False
+            if self.state_on_dock is not None:
+                self._set_state_locked(self.state_on_dock)
+            elif self._state is None:
+                self._set_state_locked("standby")
+
+    async def press_command_shift_m(self):
+        with self._lock:
+            self.events.append(("key", "cmd+shift+m"))
+            if self.shortcut_enabled and not self._hidden and self._state in ("standby", "complete"):
+                self._set_state_locked("monitoring")
+
+    def _set_state_locked(self, state):
+        self._state = state
+        if state in ("standby", "monitoring", "review"):
+            self._statuses = ["WAITING"] * 4
+
     def latest_frame(self):
         import time as _time
+        import numpy as np
         with self._lock:
             self._seq += 1
             if not self._frozen:
                 self._pts += 0.033
-            frame = render_log_solution(self._state, self._statuses)
+            window = render_log_solution(None if self._hidden else self._state, self._statuses)
+            strip = np.full((DOCK_HEIGHT, window.shape[1], 3), DOCK_COLOR, dtype=np.uint8)
+            if self.dock_visible:
+                x, y, w, h = DOCK_ICON_BOX
+                strip[y:y + h, x:x + w] = self._dock_icon
+            frame = np.vstack([window, strip])
             return (frame, self._seq, _time.monotonic(), "synthetic-stream", self._pts)
 
 
