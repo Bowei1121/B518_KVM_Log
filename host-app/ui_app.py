@@ -17,12 +17,10 @@ import logging
 import os
 from pathlib import Path
 import queue
-import socket
 import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
-import uuid
 
 # DPI policy for Windows
 try:
@@ -63,6 +61,7 @@ _HOST_APP_DIR = Path(__file__).resolve().parent
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
+from core_channel import CoreChannel, channel_name_for
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -99,125 +98,6 @@ def _flatten(res: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-def _hard_close(sock: Optional[socket.socket]) -> None:
-    """Close a socket from any thread; shutdown wakes a recv() blocked on it."""
-    if sock is None:
-        return
-    try:
-        sock.shutdown(socket.SHUT_RDWR)
-    except Exception:
-        pass
-    try:
-        sock.close()
-    except Exception:
-        pass
-
-
-def _read_line(sock: socket.socket) -> bytes:
-    buf = bytearray()
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("Core Service closed connection")
-        buf.extend(chunk)
-    return bytes(buf.split(b"\n", 1)[0])
-
-
-def _client_error(req_id: str, error: str, message: str) -> Dict[str, Any]:
-    return {"req_id": req_id, "status": "error", "error": error, "message": message}
-
-
-class _CoreChannel:
-    """One Core socket; requests on it run strictly in order (ADR-0006).
-
-    The lock serializes request/reply on this socket only. abort() is lock-free so
-    closing the window or switching Core never waits behind an in-flight request;
-    it bumps a generation counter and closes the socket, which cancels that request.
-    """
-
-    def __init__(self, name: str, host: str, port: int) -> None:
-        self.name = name
-        self.host = host
-        self.port = int(port)
-        self._lock = threading.Lock()
-        self._sock: Optional[socket.socket] = None
-        self._gen = 0
-
-    def is_connected(self) -> bool:
-        return self._sock is not None
-
-    def set_target(self, host: str, port: int) -> None:
-        if self.host != host or self.port != int(port):
-            self.host = host
-            self.port = int(port)
-            self.abort()
-
-    def abort(self) -> None:
-        """Drop the socket and cancel any in-flight request. Never waits on the lock."""
-        self._gen += 1
-        sock, self._sock = self._sock, None
-        _hard_close(sock)
-
-    def connect(self, timeout: float = 2.0) -> bool:
-        with self._lock:
-            if self._sock is not None:
-                return True
-            try:
-                s = socket.create_connection((self.host, self.port), timeout=timeout)
-            except Exception:
-                return False
-            s.settimeout(timeout)
-            self._sock = s
-            return True
-
-    def _drop_locked(self, sock: socket.socket) -> None:
-        if self._sock is sock:
-            self._sock = None
-        _hard_close(sock)
-
-    def request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float) -> Dict[str, Any]:
-        req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
-        if payload:
-            req.update(payload)
-        data = (json.dumps(req) + "\n").encode("utf-8")
-
-        with self._lock:
-            gen = self._gen
-            sock = self._sock
-            if sock is None:
-                try:
-                    sock = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
-                except Exception as exc:
-                    return _client_error(
-                        req_id, "connection_failed",
-                        f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
-                    )
-                if gen != self._gen:
-                    _hard_close(sock)
-                    return _client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
-                self._sock = sock
-
-            try:
-                sock.settimeout(timeout)
-                sock.sendall(data)
-                reply = json.loads(_read_line(sock).decode("utf-8"))
-            except Exception as exc:
-                self._drop_locked(sock)
-                if gen != self._gen:
-                    return _client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
-                return _client_error(req_id, "communication_error", f"Communication error with Core Service: {exc}")
-
-            if not isinstance(reply, dict) or reply.get("req_id") != req_id:
-                # Stale or foreign reply: never hand it to the UI; start clean on the next request.
-                self._drop_locked(sock)
-                return _client_error(
-                    req_id, "req_id_mismatch",
-                    f"Reply req_id did not match request {req_id}; connection reset",
-                )
-            return reply
-
-
 class CoreServiceClient:
     """Monitor UI client to the Core Service.
 
@@ -228,23 +108,20 @@ class CoreServiceClient:
       - inspect: inspect (manual check, may wait up to timeout_sec + 4 s)
     """
 
-    _CHANNEL_BY_CMD = {"inspect": "inspect", "snapshot": "stream"}
-
     def __init__(self, host: str = "127.0.0.1", port: int = 5000) -> None:
         self.host = host
         self.port = int(port)
-        self._status = _CoreChannel("status", host, self.port)
-        self._stream = _CoreChannel("stream", host, self.port)
-        self._inspect = _CoreChannel("inspect", host, self.port)
+        self._status = CoreChannel("status", host, self.port)
+        self._stream = CoreChannel("stream", host, self.port)
+        self._inspect = CoreChannel("inspect", host, self.port)
         self._poll_lock = threading.Lock()
         self._poll_inflight = False
 
-    def _channels(self) -> Tuple[_CoreChannel, ...]:
+    def _channels(self) -> Tuple[CoreChannel, ...]:
         return (self._status, self._stream, self._inspect)
 
-    def _channel_for(self, cmd: str) -> _CoreChannel:
-        name = self._CHANNEL_BY_CMD.get(cmd, "status")
-        return {"status": self._status, "stream": self._stream, "inspect": self._inspect}[name]
+    def _channel_for(self, cmd: str) -> CoreChannel:
+        return {"status": self._status, "stream": self._stream, "inspect": self._inspect}[channel_name_for(cmd)]
 
     def set_target(self, host: str, port: int) -> None:
         """Update target host and port. Non-blocking: in-flight requests are cancelled."""
@@ -265,10 +142,6 @@ class CoreServiceClient:
         """Drop every Core connection and cancel in-flight requests. Non-blocking."""
         for ch in self._channels():
             ch.abort()
-
-    def close(self) -> None:
-        """Alias of disconnect() for window shutdown. Non-blocking."""
-        self.disconnect()
 
     def send_request(
         self,

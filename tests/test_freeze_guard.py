@@ -675,6 +675,79 @@ class TestStreamReconnectResetsFreezeState:
         asyncio.run(_run())
 
 
+class _ScriptedKVM:
+    """Returns one (stream_id, pts) reading per latest_frame() call; repeats the last reading."""
+
+    def __init__(self, readings):
+        self._readings = list(readings)
+        self._current = self._readings[0]
+
+    def latest_frame(self):
+        if self._readings:
+            self._current = self._readings.pop(0)
+        stream_id, pts = self._current
+        return (None, 1, time.monotonic(), stream_id, pts)
+
+
+# Old stream runs to PTS 100; the reconnected stream's first frame has no PTS, then restarts low.
+RECONNECT_WITHOUT_FIRST_PTS = [
+    ("stream-old", 100.0),
+    ("stream-new", None),
+    ("stream-new", None),
+    ("stream-new", 1.0),
+    ("stream-new", 1.033),
+    ("stream-new", 1.066),
+]
+
+
+class TestReconnectWithoutFirstPTS:
+    def test_async_reconnect_with_missing_first_pts_is_not_frozen(self):
+        async def _run():
+            guard = FrameFreezeGuard(freeze_threshold=1.0)
+            kvm = _ScriptedKVM(RECONNECT_WITHOUT_FIRST_PTS)
+            is_live, err = await guard.verify_liveness(
+                kvm, device_id="BT-01", threshold_window=1.0, poll_interval=0.001)
+            assert is_live is True, err
+
+        asyncio.run(_run())
+
+    def test_sync_reconnect_with_missing_first_pts_is_not_frozen(self):
+        guard = FrameFreezeGuard(freeze_threshold=1.0)
+        kvm = _ScriptedKVM(RECONNECT_WITHOUT_FIRST_PTS)
+        is_live, err = guard.verify_liveness_sync(
+            kvm, device_id="BT-01", threshold_window=1.0, poll_interval=0.001)
+        assert is_live is True, err
+
+
+class TestCallerSuppliedStreamID:
+    def test_caller_stream_id_is_recorded_as_device_baseline(self):
+        guard = FrameFreezeGuard(freeze_threshold=0.1)
+        kvm = MockKVMClient(initial_pts=1.0, stream_id="stream-new")
+
+        is_live, err = guard.verify_liveness_sync(
+            kvm, device_id="BT-01", threshold_window=0.1, poll_interval=0.02, stream_id="stream-new")
+
+        assert is_live is False and err["error"] == "frame_frozen"
+        assert guard.get_state("BT-01").stream_id == "stream-new"
+
+
+class TestTemplatePathFreeze:
+    def test_template_reading_reports_frame_frozen_on_static_pts(self, tmp_path):
+        import numpy as np
+
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        kvm = MockKVMClient(initial_pts=100.0, stream_id="mock-stream-01", frame_data=frame)
+        server = TcpJsonServer(
+            device_registry=make_registry(),
+            freeze_guard=FrameFreezeGuard(freeze_threshold=0.1),
+        )
+        entry = make_registry().get("BT-01")
+
+        resp = asyncio.run(server._observe_check(kvm, entry, {"template_root": str(tmp_path)}))
+
+        assert resp.get("error") == "frame_frozen", resp
+
+
 class TestStreamReconnectOverTheWire:
     def test_reconnected_stream_does_not_report_frame_frozen(self, freeze_rig):
         server, kvms, address = freeze_rig

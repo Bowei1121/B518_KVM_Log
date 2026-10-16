@@ -441,7 +441,7 @@ class TestMonitorUIChannels:
         kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
         th.join(timeout=12.0)
         assert out["res"].get("status") == "ok"
-        client.close()
+        client.disconnect()
 
     def test_status_poll_skips_while_previous_request_in_flight(self):
         """A new status poll is not started while the previous one has not come back."""
@@ -470,7 +470,7 @@ class TestMonitorUIChannels:
             assert _wait_until(lambda: len(results) == 2)
         finally:
             release.set()
-            client.close()
+            client.disconnect()
             core.close()
 
     def test_mismatched_req_id_is_discarded_and_connection_reset(self):
@@ -494,7 +494,7 @@ class TestMonitorUIChannels:
             assert fresh.get("req_id") == core.requests[1]["req_id"]
             assert core.connections == 2
         finally:
-            client.close()
+            client.disconnect()
             core.close()
 
     def test_close_cancels_inflight_manual_check_without_blocking(self):
@@ -518,7 +518,7 @@ class TestMonitorUIChannels:
             assert _wait_until(lambda: len(core.requests) == 1)
 
             t0 = time.monotonic()
-            client.close()
+            client.disconnect()
             assert time.monotonic() - t0 < 0.5, "close() waited on the in-flight request"
 
             th.join(timeout=2.0)
@@ -553,7 +553,7 @@ class TestMonitorUIChannels:
             assert client.get_status(timeout=2.0).get("status") in ("running", "ok")
         finally:
             release.set()
-            client.close()
+            client.disconnect()
             th.join(timeout=2.0)
             core.close()
             other.close()

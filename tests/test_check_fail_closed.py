@@ -18,7 +18,7 @@ from tcp_server import TcpJsonServer
 class LiveGuard:
     """Freeze guard stub: stream is always live."""
 
-    async def verify_liveness(self, kvm, device_id=None, threshold_window=None, poll_interval=None):
+    async def verify_liveness(self, kvm, device_id=None, threshold_window=None, poll_interval=None, stream_id=None):
         return True, None
 
 
