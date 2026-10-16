@@ -99,55 +99,176 @@ def _flatten(res: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-class CoreServiceClient:
-    """Thread-safe TCP JSON client that interacts with the headless Core Service."""
+def _hard_close(sock: Optional[socket.socket]) -> None:
+    """Close a socket from any thread; shutdown wakes a recv() blocked on it."""
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except Exception:
+        pass
+    try:
+        sock.close()
+    except Exception:
+        pass
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+
+def _read_line(sock: socket.socket) -> bytes:
+    buf = bytearray()
+    while b"\n" not in buf:
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise ConnectionError("Core Service closed connection")
+        buf.extend(chunk)
+    return bytes(buf.split(b"\n", 1)[0])
+
+
+def _client_error(req_id: str, error: str, message: str) -> Dict[str, Any]:
+    return {"req_id": req_id, "status": "error", "error": error, "message": message}
+
+
+class _CoreChannel:
+    """One Core socket; requests on it run strictly in order (ADR-0006).
+
+    The lock serializes request/reply on this socket only. abort() is lock-free so
+    closing the window or switching Core never waits behind an in-flight request;
+    it bumps a generation counter and closes the socket, which cancels that request.
+    """
+
+    def __init__(self, name: str, host: str, port: int) -> None:
+        self.name = name
         self.host = host
         self.port = int(port)
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
-
-    def set_target(self, host: str, port: int) -> None:
-        """Update target host and port."""
-        with self._lock:
-            p = int(port)
-            if self.host != host or self.port != p:
-                self._disconnect_locked()
-                self.host = host
-                self.port = p
+        self._gen = 0
 
     def is_connected(self) -> bool:
-        """Check if socket appears connected."""
-        with self._lock:
-            return self._sock is not None
+        return self._sock is not None
+
+    def set_target(self, host: str, port: int) -> None:
+        if self.host != host or self.port != int(port):
+            self.host = host
+            self.port = int(port)
+            self.abort()
+
+    def abort(self) -> None:
+        """Drop the socket and cancel any in-flight request. Never waits on the lock."""
+        self._gen += 1
+        sock, self._sock = self._sock, None
+        _hard_close(sock)
 
     def connect(self, timeout: float = 2.0) -> bool:
-        """Explicitly attempt to establish a TCP connection."""
         with self._lock:
             if self._sock is not None:
                 return True
             try:
                 s = socket.create_connection((self.host, self.port), timeout=timeout)
-                s.settimeout(timeout)
-                self._sock = s
-                return True
             except Exception:
-                self._sock = None
                 return False
+            s.settimeout(timeout)
+            self._sock = s
+            return True
 
-    def _disconnect_locked(self) -> None:
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
+    def _drop_locked(self, sock: socket.socket) -> None:
+        if self._sock is sock:
             self._sock = None
+        _hard_close(sock)
+
+    def request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float) -> Dict[str, Any]:
+        req_id = f"ui-{uuid.uuid4().hex[:8]}"
+        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
+        if payload:
+            req.update(payload)
+        data = (json.dumps(req) + "\n").encode("utf-8")
+
+        with self._lock:
+            gen = self._gen
+            sock = self._sock
+            if sock is None:
+                try:
+                    sock = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
+                except Exception as exc:
+                    return _client_error(
+                        req_id, "connection_failed",
+                        f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
+                    )
+                if gen != self._gen:
+                    _hard_close(sock)
+                    return _client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
+                self._sock = sock
+
+            try:
+                sock.settimeout(timeout)
+                sock.sendall(data)
+                reply = json.loads(_read_line(sock).decode("utf-8"))
+            except Exception as exc:
+                self._drop_locked(sock)
+                if gen != self._gen:
+                    return _client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
+                return _client_error(req_id, "communication_error", f"Communication error with Core Service: {exc}")
+
+            if not isinstance(reply, dict) or reply.get("req_id") != req_id:
+                # Stale or foreign reply: never hand it to the UI; start clean on the next request.
+                self._drop_locked(sock)
+                return _client_error(
+                    req_id, "req_id_mismatch",
+                    f"Reply req_id did not match request {req_id}; connection reset",
+                )
+            return reply
+
+
+class CoreServiceClient:
+    """Monitor UI client to the Core Service.
+
+    Three independent Core connections, one per concern, so a long inspect cannot
+    stall status polling, snapshots/stream, or the settings page:
+      - status:  core_status / ping (status polling, settings "test connection", restart check)
+      - stream:  snapshot (live stream and snapshot button)
+      - inspect: inspect (manual check, may wait up to timeout_sec + 4 s)
+    """
+
+    _CHANNEL_BY_CMD = {"inspect": "inspect", "snapshot": "stream"}
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 5000) -> None:
+        self.host = host
+        self.port = int(port)
+        self._status = _CoreChannel("status", host, self.port)
+        self._stream = _CoreChannel("stream", host, self.port)
+        self._inspect = _CoreChannel("inspect", host, self.port)
+        self._poll_lock = threading.Lock()
+        self._poll_inflight = False
+
+    def _channels(self) -> Tuple[_CoreChannel, ...]:
+        return (self._status, self._stream, self._inspect)
+
+    def _channel_for(self, cmd: str) -> _CoreChannel:
+        name = self._CHANNEL_BY_CMD.get(cmd, "status")
+        return {"status": self._status, "stream": self._stream, "inspect": self._inspect}[name]
+
+    def set_target(self, host: str, port: int) -> None:
+        """Update target host and port. Non-blocking: in-flight requests are cancelled."""
+        self.host = host
+        self.port = int(port)
+        for ch in self._channels():
+            ch.set_target(host, port)
+
+    def is_connected(self) -> bool:
+        """Check if the status connection appears connected."""
+        return self._status.is_connected()
+
+    def connect(self, timeout: float = 2.0) -> bool:
+        """Explicitly open the status connection."""
+        return self._status.connect(timeout=timeout)
 
     def disconnect(self) -> None:
-        """Gracefully disconnect from the Core Service."""
-        with self._lock:
-            self._disconnect_locked()
+        """Drop every Core connection and cancel in-flight requests. Non-blocking."""
+        for ch in self._channels():
+            ch.abort()
+
+    def close(self) -> None:
+        """Alias of disconnect() for window shutdown. Non-blocking."""
+        self.disconnect()
 
     def send_request(
         self,
@@ -155,49 +276,31 @@ class CoreServiceClient:
         payload: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """Send a newline-delimited JSON command and read the parsed JSON reply."""
-        req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
-        if payload:
-            req.update(payload)
+        """Send a newline-delimited JSON command on its channel and return the matched reply."""
+        return self._channel_for(cmd).request(cmd, payload, timeout)
 
-        data = (json.dumps(req) + "\n").encode("utf-8")
+    def start_status_poll(self, callback: Any, timeout: float = 2.0) -> bool:
+        """Poll core_status on a worker thread unless the previous poll is still in flight.
 
-        with self._lock:
-            # Reconnect if not currently connected
-            if self._sock is None:
-                try:
-                    s = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
-                    self._sock = s
-                except Exception as exc:
-                    return {
-                        "req_id": req_id,
-                        "status": "error",
-                        "error": "connection_failed",
-                        "message": f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
-                    }
+        Returns False (and sends nothing) when skipped. At most one poll thread exists at a time.
+        """
+        with self._poll_lock:
+            if self._poll_inflight:
+                return False
+            self._poll_inflight = True
 
+        def worker() -> None:
             try:
-                self._sock.settimeout(timeout)
-                self._sock.sendall(data)
-
-                buf = bytearray()
-                while b"\n" not in buf:
-                    chunk = self._sock.recv(65536)
-                    if not chunk:
-                        raise ConnectionError("Core Service closed connection")
-                    buf.extend(chunk)
-
-                line = buf.split(b"\n")[0]
-                return json.loads(line.decode("utf-8"))
+                res = self.get_status(timeout=timeout)
             except Exception as exc:
-                self._disconnect_locked()
-                return {
-                    "req_id": req_id,
-                    "status": "error",
-                    "error": "communication_error",
-                    "message": f"Communication error with Core Service: {exc}",
-                }
+                res = {"status": "error", "message": str(exc)}
+            finally:
+                with self._poll_lock:
+                    self._poll_inflight = False
+            callback(res)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
 
     def ping(self, timeout: float = 2.0) -> bool:
         """Send a ping check."""
@@ -668,17 +771,9 @@ class AtlasUI(_BaseTk):
         """Background thread query for status to keep UI completely responsive."""
         if self._is_closing:
             return
-
-        def worker() -> None:
-            try:
-                res = self.client.get_status(timeout=2.0)
-                self._ui_queue.put(lambda: self._update_status_ui(res))
-            except Exception as exc:
-                self._ui_queue.put(lambda: self._update_status_ui({"status": "error", "message": str(exc)}))
-
-        threading.Thread(target=worker, daemon=True).start()
-        if not self._is_closing:
-            self.after(1500, self._poll_status)
+        # Skipped (no new thread, no new request) while the previous poll is still unanswered.
+        self.client.start_status_poll(lambda res: self._ui_queue.put(lambda: self._update_status_ui(res)))
+        self.after(1500, self._poll_status)
 
     def _update_status_ui(self, status_res: Dict[str, Any]) -> None:
         if status_res.get("status") in ("running", "ok"):
@@ -852,8 +947,10 @@ class AtlasUI(_BaseTk):
             self._streaming_active = True
             self.btn_live_stream.config(text="⏹ 停止串流")
             self._append_log("開始即時串流監控 (頻率: ~3 fps)...")
-            self._stream_thread = threading.Thread(target=self._stream_worker, daemon=True)
-            self._stream_thread.start()
+            # A still-running loop picks the flag back up; never stack a second one.
+            if self._stream_thread is None or not self._stream_thread.is_alive():
+                self._stream_thread = threading.Thread(target=self._stream_worker, daemon=True)
+                self._stream_thread.start()
 
     def _stream_worker(self) -> None:
         """Periodic snapshot requester loop."""
