@@ -18,8 +18,27 @@ class TemplateCatalogTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_devices_and_all_keys_have_canonical_paths(self):
+    def test_shared_log_solution_dock_icon_is_one_file_for_every_station(self):
+        self.assertIn("COMMON", self.catalog.devices())
+        self.assertEqual(self.catalog.keys("COMMON"), ("log_solution_dock_icon",))
+        self.assertEqual(
+            self.catalog.path("COMMON", "log_solution_dock_icon"),
+            self.root / "COMMON" / "COMMON_log_solution_dock_icon.png",
+        )
         for device in ("DFU", "FCT", "BT"):
+            self.assertNotIn("log_solution_dock_icon", self.catalog.keys(device))
+            self.assertFalse(any(key.startswith("log_") for key in self.catalog.keys(device)))
+
+    def test_shared_dock_icon_can_be_created_and_read_back(self):
+        image = np.zeros((40, 40, 3), dtype=np.uint8)
+        image[:, :] = (200, 30, 90)
+        target = self.catalog.save_crop(image, (0, 0, 36, 36), "COMMON", "log_solution_dock_icon")
+        self.assertEqual(target.parent, self.root / "COMMON")
+        self.assertTrue(target.exists())
+        self.assertEqual(self.catalog.path("COMMON", "log_solution_dock_icon"), target)
+
+    def test_devices_and_all_keys_have_canonical_paths(self):
+        for device in ("DFU", "FCT", "BT", "COMMON"):
             for key in self.catalog.keys(device):
                 self.assertEqual(
                     self.catalog.path(device, key),

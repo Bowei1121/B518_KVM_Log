@@ -44,6 +44,10 @@ _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
         TemplateSpec("start_all", "Start All"),
         TemplateSpec("dock_icon", "Dock Icon"),
     ),
+    # Templates shared by every station live in their own folder; the Log Solution Dock icon is the same program on all stations.
+    "COMMON": (
+        TemplateSpec("log_solution_dock_icon", "Log Solution Dock 圖示"),
+    ),
 }
 
 
