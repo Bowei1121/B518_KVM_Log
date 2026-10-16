@@ -45,7 +45,18 @@
 - 設備 ID 格式為 `<站別>-<兩位數>`，前綴必須等於站別。
 - 測試通道數為正整數，須與該設備 Log Solution 的 Slot 數一致。
 
-## 4. 啟動與重啟
+## 4. ATE 與 Log Solution 現場設定
+
+橋接以 ATE 畫面與 Log Solution 畫面的位置判讀與操作，以下設定須在每台 ATE 電腦完成。
+
+- **ATE 視窗**：DFU、FCT、BT 的 ATE 測試程式視窗不可最大化，且不可遮住畫面右側。Log Solution 位於右側，被遮住時 `check` 會點 Dock 恢復；仍看不到則回 `log_solution_not_visible`。
+- **Log Solution 保持開啟**：若已關閉，`monitor_start` 的 Dock 點擊會讓 macOS 重新開啟，開啟後為 Standby，流程可繼續。
+- **通道數一致**：每站 Log Solution profile 的通道數（Slot 數）必須等於 `devices.json` 的 `channels`。不一致時 `check` 回 `capacity_mismatch`，不交付結果。
+- **共用 Dock 模板**：在「創建 Pattern」建立 COMMON 的 `log_solution_dock_icon`，檔案為 `~/Documents/template/COMMON/COMMON_log_solution_dock_icon.png`。三站共用，缺檔時 `monitor_start` 回 `hid_failed`。
+- **FCT 推入前發訊號**：治具推入不由 LabVIEW 控制。設備須在推入前發訊號給 LabVIEW，LabVIEW 先呼叫 `monitor_start`，再呼叫 `check`。Log Solution FCT profile 的 start 期限需涵蓋「訊號到首次寫檔」的時間，建議先設 120 秒。
+- **Log Solution 1.2**：本橋接不依賴 1.2。1.2 的修改建議（人工停止顯示 Complete、視窗前景時機）見 [LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md](LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md)，由 Log Solution 開發者自行開票。1.1 下人工停止的輪次會回 `round_lost`，LabVIEW 應暫停並人工處理，不得判 FAIL。
+
+## 5. 啟動與重啟
 
 Core Service 在上位機上以前景或背景方式執行：
 
@@ -59,7 +70,7 @@ python host-app/core_daemon.py restart --port 5000
 - `start` 與 `restart` 啟動的子行程不會傳遞 `--devices-file`，只會使用環境變數或預設位置。若要指定其他清單位置，請改用 `run` 或設定環境變數。
 - Core 缺檔或清單有誤時拒絕啟動，錯誤會寫入 log 與終端機。
 
-## 5. 上線前檢查清單
+## 6. 上線前檢查清單
 
 1. 設備清單儲存成功，設定頁沒有錯誤列。
 2. Core 啟動成功（`status` 回報 running）。
@@ -68,15 +79,20 @@ python host-app/core_daemon.py restart --port 5000
 5. 逐台以 Monitor UI 的快照與手動檢查確認畫面可讀。
 6. 依 `docs/LOAD_TEST.md` 執行 30 分鐘錄影重播壓測，報告全部通過。
 7. LabVIEW 端已依 `docs/PROTOCOL.md` 改版（spec #13，人工）。
+8. 每台 ATE 視窗未最大化，且未遮住畫面右側（見第 4 節）。
+9. `~/Documents/template/COMMON/COMMON_log_solution_dock_icon.png` 存在。
+10. 每站 Log Solution profile 通道數與 `devices.json` 的 `channels` 一致。
+11. 逐站依 `docs/PROTOCOL.md` 第 4.1 節順序實測：`monitor_start` 成功、`start_test` 點擊正確、`check` 取得 `taken`（或 `paused`）。
 
-## 6. 防火牆與連線
+## 7. 防火牆與連線
 
 - 上位機需允許入站 TCP 5000（或所用埠）給 LabVIEW 所在的電腦。
 - 上位機需能對九台 KVM 的 80 埠發起 TCP 連線（設定頁測試與 Core 連線都需要）。
 
-## 7. 未驗證與待現場確認
+## 8. 未驗證與待現場確認
 
 - JetKVM 靜態 IP 設定選項（見第 2 節）。
+- FCT 推入前訊號到首次寫檔的實際時間，決定 Log Solution FCT start 期限（見第 4 節）。
 - 人員按停止監控後，Log Solution header 的狀態（見 `docs/PROTOCOL.md` 第 10 節）。
 - 九台同時運作的 CPU、記憶體與回覆延遲，需以混合真機的錄影重播壓測實測（見 `docs/LOAD_TEST.md`）。
 - LabVIEW 端 type definition 與 VI 改版（spec #13，人工）。
