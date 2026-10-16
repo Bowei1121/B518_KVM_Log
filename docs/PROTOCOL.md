@@ -198,6 +198,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 - 連續 60 秒判讀為「找不到 Log Solution」（`kind = unknown`，`reason` 為定位失敗類：`locators_missing_or_ambiguous`、`locator_orientation_or_contrast_invalid`）：Core 點一次 Log Solution 的 Dock 圖示，等 5 秒後重新判讀。
 - 同一請求最多點 3 次，仍看不到回 `error = "log_solution_not_visible"`。
 - 本輪在串流上已見過 Monitoring，之後判讀到 Standby：立即回 `error = "round_lost"`。本輪結果已無法取得，LabVIEW 應暫停並通知人員。
+- 人工停止監控：Log Solution 1.2 下顯示 Complete（`results` 含 `STOPPED`），依一般流程回 `taken` 正常交付；1.1 下顯示 Standby，因此落入 `round_lost`。
 - 以上兩者與其他錯誤一樣是 `status = "error"`，`data.kind` 為 `unknown`。`data` 其餘欄位可能保留最後一次觀察值，LabVIEW 只依 `error` 判斷。
 - `inspect` 為唯讀，不點 Dock。
 
@@ -487,7 +488,7 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 
 ### 仍待辦
 
-- **STOPPED 的 header 狀態**：人員按停止監控後，Log Solution header 會變成哪一種，待現場確認。若維持 monitoring，STOPPED 結果需另外處理才能觸發 taken。
+- **人工停止後的 header 實際標記（現場確認）**：規定行為見 5.4——Log Solution 1.2 下人工停止顯示 Complete（`results` 含 `STOPPED`），`check` 正常回 `taken` 交付；1.1 下人工停止顯示 Standby，`check` 回 `round_lost`。待現場確認的只是實機 header 是否確實如此標記，不改變上述規定。
 - **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
 - **FCT 推入前訊號的現場時序**：訊號到首次寫檔的實際時間，決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
 - **Log Solution 1.2**：人工停止顯示 Complete、視窗前景時機等修改，依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 由 Log Solution 開發者開票。本橋接不依賴 1.2；1.1 下人工停止的輪次回 `round_lost`。
