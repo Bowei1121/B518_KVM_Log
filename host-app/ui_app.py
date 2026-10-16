@@ -76,12 +76,28 @@ try:
 except Exception:
     StreamerWindow = None  # type: ignore[assignment,misc]
 
+try:
+    from device_settings_window import DeviceSettingsWindow
+except Exception:
+    DeviceSettingsWindow = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger("MonitorUI")
 
 
 # ==============================================================================
 # CoreServiceClient: Thread-Safe TCP Client to Core Service
 # ==============================================================================
+
+def _flatten(res: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge a 1.0 reply's ``data`` into the top level so UI code reads one dict."""
+    if not isinstance(res.get("data"), dict):
+        return res
+    merged = dict(res["data"])
+    for key in ("status", "error", "message", "elapsed_sec", "req_id", "device"):
+        if key in res:
+            merged[key] = res[key]
+    return merged
+
 
 class CoreServiceClient:
     """Thread-safe TCP JSON client that interacts with the headless Core Service."""
@@ -141,7 +157,7 @@ class CoreServiceClient:
     ) -> Dict[str, Any]:
         """Send a newline-delimited JSON command and read the parsed JSON reply."""
         req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        req: Dict[str, Any] = {"req_id": req_id, "cmd": cmd}
+        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
         if payload:
             req.update(payload)
 
@@ -190,69 +206,50 @@ class CoreServiceClient:
 
     def get_status(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query real-time Core Service status."""
-        res = self.send_request("status", timeout=timeout)
-        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
-            merged = dict(res["data"])
-            merged["req_id"] = res.get("req_id")
-            if "status" not in merged:
-                merged["status"] = "running"
-            return merged
-        return res
+        return self._core_status(timeout, default_status="running")
 
     def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query configured stations status."""
-        res = self.send_request("stations", timeout=timeout)
+        return self._core_status(timeout, default_status="ok")
+
+    def _core_status(self, timeout: float, default_status: str) -> Dict[str, Any]:
+        """core_status reply flattened; default_status fills "status" when the Core omits it."""
+        res = self.send_request("core_status", timeout=timeout)
         if res.get("status") == "ok" and isinstance(res.get("data"), dict):
             merged = dict(res["data"])
             merged["req_id"] = res.get("req_id")
             if "status" not in merged:
-                merged["status"] = "ok"
+                merged["status"] = default_status
             return merged
         return res
 
     def get_snapshot(
         self,
-        kvm_ip: Optional[str] = None,
-        station: Optional[str] = None,
-        device: Optional[str] = None,
-        save_path: Optional[Union[str, Path]] = None,
+        device: str,
         format: str = "jpeg",
         quality: int = 80,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        """Request a snapshot image without acquiring device locks."""
+        """Request a snapshot image of a device by its device ID (read-only, no lock)."""
         payload: Dict[str, Any] = {
+            "device": device,
             "format": format,
             "quality": quality,
-            "read_only": True,
-            "no_lock": True,
         }
-        if kvm_ip:
-            payload["kvm_ip"] = kvm_ip
-        if station:
-            payload["station"] = station
-        if device:
-            payload["device"] = device
-        if save_path:
-            payload["save_path"] = str(save_path)
-        return self.send_request("snapshot", payload, timeout=timeout)
+        return _flatten(self.send_request("snapshot", payload, timeout=timeout))
 
     def manual_check(
         self,
-        station: str,
         device: str,
-        kvm_ip: Optional[str] = None,
         timeout_sec: float = 5.0,
     ) -> Dict[str, Any]:
         """Trigger a manual visual check command through Core Service."""
         payload: Dict[str, Any] = {
-            "station": station,
             "device": device,
             "timeout_sec": timeout_sec,
         }
-        if kvm_ip:
-            payload["kvm_ip"] = kvm_ip
-        return self.send_request("check", payload, timeout=timeout_sec + 4.0)
+        # inspect is the Monitor UI's read-only check: no device lock, never consumes the round.
+        return _flatten(self.send_request("inspect", payload, timeout=timeout_sec + 4.0))
 
 
 _BaseToplevel: Any = tk.Toplevel if _TK_OK else object
@@ -390,11 +387,9 @@ class AtlasUI(_BaseTk):
         self._streamer_window: Optional[StreamerWindow] = None
 
         # Stations cache
-        self._stations: List[Dict[str, Any]] = [
-            {"station": "DFU", "device": "1", "kvm_ip": "192.168.132.70", "status": "DISCONNECTED"},
-            {"station": "FCT", "device": "1", "kvm_ip": "192.168.132.71", "status": "DISCONNECTED"},
-            {"station": "BT", "device": "1", "kvm_ip": "192.168.132.72", "status": "DISCONNECTED"},
-        ]
+        # Device list as reported by Core Service's core_status; empty until connected.
+        self._stations: List[Dict[str, Any]] = []
+        self._rendered_device_ids: List[str] = []
         self._station_widgets: Dict[str, Dict[str, Any]] = {}
 
         # Polling
@@ -432,6 +427,11 @@ class AtlasUI(_BaseTk):
             top_frame, text="重新連線", font=self.f_btn, command=self.on_toggle_connect
         )
         self.btn_connect.pack(side="left", padx=6)
+
+        self.btn_device_settings = tk.Button(
+            top_frame, text="⚙ 設備設定", font=self.f_btn, command=self.on_open_device_settings
+        )
+        self.btn_device_settings.pack(side="left", padx=6)
 
         self.lbl_core_status = tk.Label(
             top_frame, text="● 未連線", font=self.f_bold, fg="gray"
@@ -497,30 +497,21 @@ class AtlasUI(_BaseTk):
         # Target selection
         row_target = tk.Frame(ctrl_frame)
         row_target.pack(fill="x", pady=4)
-        tk.Label(row_target, text="目標機台:", font=self.f_label).pack(side="left")
-        self.var_sel_station = tk.StringVar(value="DFU")
-        self.combo_station = ttk.Combobox(
+        tk.Label(row_target, text="設備 ID:", font=self.f_label).pack(side="left")
+        self.var_sel_device = tk.StringVar(value="")
+        self.combo_device = ttk.Combobox(
             row_target,
-            textvariable=self.var_sel_station,
-            values=["DFU", "FCT", "BT"],
+            textvariable=self.var_sel_device,
+            values=[],
             state="readonly",
-            width=6,
+            width=10,
         )
-        self.combo_station.pack(side="left", padx=4)
-        self.combo_station.bind("<<ComboboxSelected>>", self._on_station_selected)
+        self.combo_device.pack(side="left", padx=4)
+        self.combo_device.bind("<<ComboboxSelected>>", self._on_device_selected)
 
-        tk.Label(row_target, text="編號:", font=self.f_label).pack(side="left", padx=(8, 0))
-        self.var_sel_device = tk.StringVar(value="1")
-        self.e_sel_device = tk.Entry(row_target, textvariable=self.var_sel_device, width=4, justify="center", font=self.f_entry)
-        self.e_sel_device.pack(side="left", padx=4)
-
-        # Target KVM IP
-        row_ip = tk.Frame(ctrl_frame)
-        row_ip.pack(fill="x", pady=4)
-        tk.Label(row_ip, text="KVM IP:", font=self.f_label).pack(side="left")
-        self.var_sel_kvm_ip = tk.StringVar(value="192.168.132.70")
-        self.e_sel_kvm_ip = tk.Entry(row_ip, textvariable=self.var_sel_kvm_ip, width=16, font=self.f_entry)
-        self.e_sel_kvm_ip.pack(side="left", padx=4)
+        tk.Label(row_target, text="站別:", font=self.f_label).pack(side="left", padx=(8, 0))
+        self.var_sel_station = tk.StringVar(value="")
+        tk.Label(row_target, textvariable=self.var_sel_station, font=self.f_mono, width=6, anchor="w").pack(side="left", padx=4)
 
         # Manual Check button
         check_box = tk.LabelFrame(ctrl_frame, text="手動檢查 (Check)", font=self.f_label, padx=6, pady=4)
@@ -600,9 +591,8 @@ class AtlasUI(_BaseTk):
 
         for idx, st in enumerate(self._stations):
             st_name = st.get("station", "UNKNOWN")
-            dev_id = str(st.get("device", "1"))
-            ip = str(st.get("kvm_ip", ""))
-            status = st.get("status", "DISCONNECTED").upper()
+            dev_id = str(st.get("device", ""))
+            status = str(st.get("status", "DISCONNECTED")).upper()
 
             card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4)
             card.pack(side="left", fill="both", expand=True, padx=4)
@@ -624,23 +614,23 @@ class AtlasUI(_BaseTk):
             lbl_badge.pack(side="right")
             self._apply_badge_style(lbl_badge, status)
 
-            # Body info
-            lbl_ip = tk.Label(card, text=f"IP: {ip}", font=self.f_mono, fg="#555")
-            lbl_ip.pack(anchor="w", pady=(2, 4))
+            # Body info: the device ID is the only address the operator sees or types.
+            lbl_dev = tk.Label(card, text=f"設備: {dev_id}", font=self.f_mono, fg="#555")
+            lbl_dev.pack(anchor="w", pady=(2, 4))
 
             # Select button
             btn_sel = tk.Button(
                 card,
                 text="選定觀測",
                 font=("Arial", 9),
-                command=lambda s=st_name, d=dev_id, k=ip: self._select_station(s, d, k),
+                command=lambda d=dev_id: self._select_device(d),
             )
             btn_sel.pack(fill="x")
 
-            self._station_widgets[st_name] = {
+            self._station_widgets[dev_id] = {
                 "card": card,
                 "badge": lbl_badge,
-                "ip": lbl_ip,
+                "device": lbl_dev,
             }
 
     @staticmethod
@@ -655,21 +645,21 @@ class AtlasUI(_BaseTk):
         else:
             label.config(text="DISCONNECTED", bg="#9e9e9e", fg="white")
 
-    def _select_station(self, station: str, device: str, kvm_ip: str) -> None:
-        self.var_sel_station.set(station)
+    def _station_of(self, device: str) -> str:
+        for st in self._stations:
+            if str(st.get("device", "")) == device:
+                return str(st.get("station", ""))
+        return ""
+
+    def _select_device(self, device: str) -> None:
         self.var_sel_device.set(device)
-        self.var_sel_kvm_ip.set(kvm_ip)
-        self._append_log(f"已選定觀測機台: {station} (機台 {device}, IP: {kvm_ip})")
-        # Trigger immediate snapshot for newly selected station
+        self.var_sel_station.set(self._station_of(device))
+        self._append_log(f"已選定觀測設備: {device} (站別 {self.var_sel_station.get()})")
+        # Trigger immediate snapshot for newly selected device
         self.on_capture_snapshot()
 
-    def _on_station_selected(self, _event: Any = None) -> None:
-        st_name = self.var_sel_station.get()
-        for st in self._stations:
-            if st.get("station") == st_name:
-                self.var_sel_device.set(str(st.get("device", "1")))
-                self.var_sel_kvm_ip.set(str(st.get("kvm_ip", "")))
-                break
+    def _on_device_selected(self, _event: Any = None) -> None:
+        self.var_sel_station.set(self._station_of(self.var_sel_device.get()))
 
     # --------------------------------------------------------------------------
     # Status Polling & Health Heartbeat
@@ -704,12 +694,17 @@ class AtlasUI(_BaseTk):
             stations = status_res.get("stations")
             if stations and isinstance(stations, list):
                 self._stations = stations
+                device_ids = [str(st.get("device", "")) for st in stations]
+                if device_ids != self._rendered_device_ids:
+                    self._rendered_device_ids = device_ids
+                    self._render_station_cards()
+                self.combo_device.config(values=device_ids)
+                if self.var_sel_device.get() not in device_ids and device_ids:
+                    self._select_device(device_ids[0])
                 for st in stations:
-                    st_name = st.get("station")
-                    status = st.get("status", "DISCONNECTED")
-                    w = self._station_widgets.get(st_name)
+                    w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
-                        self._apply_badge_style(w["badge"], status)
+                        self._apply_badge_style(w["badge"], st.get("status", "DISCONNECTED"))
         else:
             err = status_res.get("message") or status_res.get("error") or "連線中斷"
             self.lbl_core_status.config(text="○ 服務未連線", fg="#c62828")
@@ -746,6 +741,31 @@ class AtlasUI(_BaseTk):
     # --------------------------------------------------------------------------
     # Snapshot & Live Stream Handling
     # --------------------------------------------------------------------------
+    def on_open_device_settings(self) -> None:
+        """Open the device list settings page (works without a running Core Service)."""
+        if DeviceSettingsWindow is None:
+            self._append_log("設備設定頁模組不可用。")
+            return
+        existing = getattr(self, "_settings_window", None)
+        if existing is not None:
+            try:
+                existing.lift()
+                return
+            except tk.TclError:
+                self._settings_window = None
+        self._settings_window = DeviceSettingsWindow(self, client=self.client, restart_core=self._restart_core_daemon)
+
+    def _restart_core_daemon(self) -> Dict[str, Any]:
+        """Stop and start Core Service on this machine; the settings page checks for busy devices first."""
+        from core_daemon import restart_core_daemon
+
+        try:
+            res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=10.0)
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+        ok = res.get("status") in ("running", "ok")
+        return {"status": "ok" if ok else "error", "message": res.get("message", res)}
+
     def on_toggle_connect(self) -> None:
         """Parse core service address and reconnect."""
         addr_text = self.e_core_addr.get().strip()
@@ -765,13 +785,14 @@ class AtlasUI(_BaseTk):
 
     def on_capture_snapshot(self) -> None:
         """Request a single snapshot frame from Core Service."""
-        kvm_ip = self.var_sel_kvm_ip.get().strip()
-        station = self.var_sel_station.get().strip()
         device = self.var_sel_device.get().strip()
-        self._append_log(f"向 Core Service 請求快照 ({station}:{device}, IP: {kvm_ip})...")
+        if not device:
+            self._append_log("尚未選定設備，無法擷取快照。")
+            return
+        self._append_log(f"向 Core Service 請求快照 (設備 {device})...")
 
         def worker() -> None:
-            res = self.client.get_snapshot(kvm_ip=kvm_ip, station=station, device=device)
+            res = self.client.get_snapshot(device=device)
             self._ui_queue.put(lambda: self._display_snapshot_result(res))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -781,8 +802,6 @@ class AtlasUI(_BaseTk):
             b64_data = res.get("image_base64", "")
             w = res.get("width", 0)
             h = res.get("height", 0)
-            pts = res.get("pts")
-            pts_str = f"PTS: {pts:.4f}" if pts is not None else "PTS: n/a"
 
             if b64_data:
                 try:
@@ -791,9 +810,9 @@ class AtlasUI(_BaseTk):
                     self._latest_pil_image = pil_img
                     self._render_image_on_canvas(pil_img)
                     self.lbl_preview_info.config(
-                        text=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"
+                        text=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"
                     )
-                    self._append_log(f"快照接收成功 ({w}x{h}, {pts_str})")
+                    self._append_log(f"快照接收成功 ({w}x{h})")
                 except Exception as exc:
                     self._append_log(f"解碼快照影像失敗: {exc}")
             else:
@@ -839,13 +858,12 @@ class AtlasUI(_BaseTk):
     def _stream_worker(self) -> None:
         """Periodic snapshot requester loop."""
         while self._streaming_active and not self._is_closing:
-            kvm_ip = self.var_sel_kvm_ip.get().strip()
-            station = self.var_sel_station.get().strip()
             device = self.var_sel_device.get().strip()
+            if not device:
+                time.sleep(0.5)
+                continue
 
             res = self.client.get_snapshot(
-                kvm_ip=kvm_ip,
-                station=station,
                 device=device,
                 quality=65,
                 timeout=3.0,
@@ -859,10 +877,8 @@ class AtlasUI(_BaseTk):
                         self._latest_pil_image = pil_img
                         w = res.get("width", pil_img.width)
                         h = res.get("height", pil_img.height)
-                        pts = res.get("pts")
-                        pts_str = f"PTS: {pts:.4f}" if pts is not None else "PTS: n/a"
 
-                        def update_ui(img=pil_img, info=f"解析度: {w}x{h} | {pts_str} | 時間: {time.strftime('%H:%M:%S')}"):
+                        def update_ui(img=pil_img, info=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"):
                             self._render_image_on_canvas(img)
                             self.lbl_preview_info.config(text=info)
 
@@ -898,7 +914,7 @@ class AtlasUI(_BaseTk):
             frame_getter=frame_getter,
             input_sender=None,  # Readonly monitoring
             fps=15,
-            title=f"KVM Streamer - {self.var_sel_station.get()}:{self.var_sel_device.get()}",
+            title=f"KVM Streamer - {self.var_sel_device.get()}",
             on_close=on_close,
         )
         self._append_log("已開啟獨立串流視窗。")
@@ -908,23 +924,22 @@ class AtlasUI(_BaseTk):
     # --------------------------------------------------------------------------
     def on_run_manual_check(self) -> None:
         """Trigger a manual check command over TCP."""
-        station = self.var_sel_station.get().strip().upper()
         device = self.var_sel_device.get().strip()
-        kvm_ip = self.var_sel_kvm_ip.get().strip()
+        if not device:
+            self._append_log("尚未選定設備，無法執行手動檢查。")
+            return
         try:
             timeout_sec = float(self.var_timeout.get().strip())
         except ValueError:
             timeout_sec = 5.0
 
-        self._append_log(f"手動送出 check 指令: Station={station}, Device={device}, KVM={kvm_ip}, Timeout={timeout_sec}s...")
+        self._append_log(f"手動送出 check 指令: Device={device}, Timeout={timeout_sec}s...")
         self.btn_run_check.config(state="disabled", text="⏳ 檢查執行中...")
         self.lbl_check_result.config(text="診斷結果: 執行中...", fg="blue")
 
         def worker() -> None:
             res = self.client.manual_check(
-                station=station,
                 device=device,
-                kvm_ip=kvm_ip,
                 timeout_sec=timeout_sec,
             )
             self._ui_queue.put(lambda: self._display_check_result(res))
@@ -934,21 +949,26 @@ class AtlasUI(_BaseTk):
     def _display_check_result(self, res: Dict[str, Any]) -> None:
         self.btn_run_check.config(state="normal", text="⚡ 執行手動診斷檢查")
         status = res.get("status", "error")
-        result_val = res.get("result", "NONE")
+        kind = res.get("kind", "")
         elapsed = res.get("elapsed_sec", 0.0)
+        results = res.get("results") or []
 
-        if status == "ok":
-            color = "#2e7d32" if result_val == "PASS" else "#c62828"
-            self.lbl_check_result.config(
-                text=f"診斷結果: {result_val} (耗時: {elapsed}s)", fg=color
-            )
-            self._append_log(f"診斷檢查成功: {result_val} (耗時 {elapsed}s)")
-        elif status == "busy":
-            self.lbl_check_result.config(text="診斷結果: BUSY (設備忙碌中/LabVIEW測試中)", fg="#e65100")
-            self._append_log("診斷檢查拒絕: 設備當前處於 BUSY 狀態 (LabVIEW 正在測試)。")
+        if status == "ok" and kind == "taken":
+            counts: Dict[str, int] = {}
+            for row in results:
+                counts[row.get("status", "?")] = counts.get(row.get("status", "?"), 0) + 1
+            summary = " / ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "無結果"
+            self.lbl_check_result.config(text=f"診斷結果: {summary} (耗時: {elapsed}s)", fg="#2e7d32")
+            self._append_log(f"診斷檢查取得結果: {summary} (耗時 {elapsed}s)")
+        elif status == "ok":
+            self.lbl_check_result.config(text=f"診斷結果: {kind} / {res.get('reason', '')}", fg="#555")
+            self._append_log(f"診斷檢查回覆: kind={kind} reason={res.get('reason', '')}")
         elif status == "timeout":
             self.lbl_check_result.config(text=f"診斷結果: TIMEOUT (耗時 {elapsed}s)", fg="#d84315")
-            self._append_log(f"診斷檢查逾時: {elapsed}s 未命中條件。")
+            self._append_log(f"診斷檢查逾時: {elapsed}s 未取得結果。")
+        elif res.get("error") == "device_busy":
+            self.lbl_check_result.config(text="診斷結果: BUSY (設備忙碌中/LabVIEW測試中)", fg="#e65100")
+            self._append_log("診斷檢查拒絕: 設備當前處於 BUSY 狀態 (LabVIEW 正在測試)。")
         else:
             err = res.get("message") or res.get("error") or "未知錯誤"
             self.lbl_check_result.config(text=f"診斷錯誤: {err}", fg="#b71c1c")

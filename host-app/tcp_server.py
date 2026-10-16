@@ -18,8 +18,13 @@ import signal
 import socket
 import threading
 import time
-import uuid
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
+
+try:
+    from device_registry import DeviceRegistryError
+except ImportError:
+    from .device_registry import DeviceRegistryError  # type: ignore[import-not-found,no-redef]
 
 try:
     from device_lock import DeviceLockManager
@@ -36,14 +41,119 @@ try:
 except ImportError:
     from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
 
+try:
+    from device_registry import DeviceRegistry
+except ImportError:
+    from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
 
+PROTOCOL_VERSION = "1.0"
+CORE_VERSION = "2.0.0"
+CHECK_MAX_TIMEOUT_SEC = 3600
+CHECK_POLL_INTERVAL_SEC = 0.5
+INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution or template reading
+COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
+NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
+# Extra fields allowed per command.
+COMMAND_FIELDS: Dict[str, frozenset] = {
+    "ping": frozenset(),
+    "status": frozenset(),
+    "core_status": frozenset(),
+    "shutdown": frozenset(),
+    "snapshot": frozenset({"format", "quality"}),
+    "check": frozenset({"timeout_sec"}),
+}
+ENVELOPE_KEYS = frozenset({
+    "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
+})
+ERROR_CODE_MAP = {
+    "kvm_connection_failed": "kvm_connect_failed",
+    "missing_kvm": "kvm_connect_failed",
+}
+DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
+    "ping": {"pong": False, "core_version": ""},
+    "status": {"core_uptime_sec": 0, "devices": []},
+    "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
+    "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+    "input": {"entered": []},
+    "button": {"action": ""},
+    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+}
 
-DEFAULT_STATIONS = [
-    {"station": "DFU", "device": "1", "kvm_ip": "192.168.132.70"},
-    {"station": "FCT", "device": "1", "kvm_ip": "192.168.132.71"},
-    {"station": "BT", "device": "1", "kvm_ip": "192.168.132.72"},
-]
+
+def _unknown(reason: str) -> Dict[str, Any]:
+    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
+
+
+def _round_observation(decision: Any) -> Dict[str, Any]:
+    """Map a round-gate decision onto the check 1.0 data shape."""
+    if decision.kind == "frozen" or decision.reason == "frame_frozen":
+        return {"error": "frame_frozen", "message": "DFU round frame stream is frozen"}
+    if decision.reason == "no_frame":
+        return {"error": "no_frame", "message": "No frame received from KVM yet"}
+    return {
+        "kind": decision.kind,
+        "state": decision.state.value if decision.state is not None else "",
+        "reason": decision.reason,
+        "capacity": int(decision.capacity),
+        "results": [{"slot": slot, "status": status} for slot, status in decision.results],
+    }
+
+
+def _template_observation(r: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a template-catalog reading onto the check 1.0 data shape."""
+    if r.get("error") == "frame_frozen":
+        return {"error": "frame_frozen", "message": r.get("message", "Frame presentation timestamp is static / frozen")}
+    base = {"state": "", "capacity": 0, "results": []}
+    if r.get("ok") and r.get("testing"):
+        return {**base, "kind": "waiting", "reason": "testing"}
+    rows = r.get("rows") or []
+    if r.get("ok") and rows:
+        # run_check rows are (index, result, sn); the SN is not part of check 1.0.
+        results = [{"slot": row[0], "status": "PASS" if row[1] == "pass" else "FAIL"} for row in rows]
+        return {"kind": "taken", "state": "", "reason": "template_rows", "capacity": len(rows), "results": results}
+    return {**base, "kind": "unknown", "reason": "template_not_matched"}
+
+
+def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read-only reading of the Log Solution screen. Runs on a worker thread.
+
+    Reports what the screen shows now. A complete round is reported as taken only after two
+    equal complete readings, and nothing here arms or consumes the device's round gate.
+    """
+    from round_frame_consumer import MarkerState, inspect_app_frame
+
+    if hasattr(kvm, "latest_frame"):
+        snapshot = kvm.latest_frame()
+        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+    else:
+        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    if frame is None:
+        return {"error": "no_frame", "message": "No frame received from KVM yet"}
+    obs = inspect_app_frame(frame, received_at, now=time.monotonic())
+    if not obs.reliable:
+        return _unknown(obs.reason)
+    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
+    if obs.state == MarkerState.REVIEW:
+        return {**base, "kind": "paused", "reason": "confirmation_required", "results": []}
+    if obs.state != MarkerState.COMPLETE:
+        return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
+    if not obs.results_complete:
+        if stability is not None:
+            stability.update(sig=None, count=0)
+        return {**base, "kind": "waiting", "reason": "incomplete_or_nonterminal_results", "results": []}
+    signature = (obs.capacity, obs.statuses)
+    if stability is None:
+        return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
+    if stability["sig"] == signature:
+        stability["count"] += 1
+    else:
+        stability.update(sig=signature, count=1)
+    results = [{"slot": slot, "status": status} for slot, status in enumerate(obs.statuses, 1)]
+    if stability["count"] >= 2:
+        return {**base, "kind": "taken", "reason": "reliable_complete", "results": results}
+    return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
 
 
 class TcpJsonServer:
@@ -56,8 +166,9 @@ class TcpJsonServer:
         lock_manager: Optional[DeviceLockManager] = None,
         kvm_pool: Optional[KVMConnectionPool] = None,
         freeze_guard: Optional[FrameFreezeGuard] = None,
-        stations_config: Optional[list[Dict[str, Any]]] = None,
+        device_registry: Optional[DeviceRegistry] = None,
         template_root: Optional[str | Path] = None,
+        inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
     ) -> None:
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
@@ -67,10 +178,8 @@ class TcpJsonServer:
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
         self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
         self.freeze_guard = freeze_guard if freeze_guard is not None else FrameFreezeGuard()
-        self.stations_config: list[Dict[str, Any]] = (
-            [dict(s) for s in stations_config]
-            if stations_config is not None
-            else [dict(s) for s in DEFAULT_STATIONS]
+        self.device_registry: DeviceRegistry = (
+            device_registry if device_registry is not None else DeviceRegistry([])
         )
 
         self._server: Optional[asyncio.Server] = None
@@ -81,6 +190,13 @@ class TcpJsonServer:
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
+        self._dfu_gates: Dict[str, Any] = {}
+        self.inspection_timeout_sec = float(inspection_timeout_sec)
+        # Frame readings run on worker threads so the event loop keeps serving requests.
+        self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
+        self._inspections: Dict[str, Future] = {}
+        self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
+        self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
 
         self._start_time: float = 0.0
         self._is_running = False
@@ -96,24 +212,41 @@ class TcpJsonServer:
         self,
         cmd: str,
         handler: Callable[[Dict[str, Any]], Any],
+        fields: Optional[Iterable[str]] = None,
+        device_bound: Optional[bool] = None,
     ) -> None:
         """Register a command handler.
-        
+
         Handler can be either a synchronous callable or an async coroutine.
         It accepts the request dict and returns the data/response dict.
+        ``fields`` lists the extra request fields the command accepts; ``device_bound``
+        makes the command require a registered device ID.
         """
         self._handlers[cmd] = handler
+        if fields is not None:
+            self._command_fields[cmd] = frozenset(fields)
+        else:
+            self._command_fields.setdefault(cmd, frozenset())
+        if device_bound is None:
+            device_bound = cmd in COMMAND_FIELDS and cmd not in NO_DEVICE_COMMANDS
+        if device_bound:
+            self._no_device_cmds.discard(cmd)
+        else:
+            self._no_device_cmds.add(cmd)
 
     def _register_default_handlers(self) -> None:
         self.register_handler("ping", self._handle_ping)
         self.register_handler("status", self._handle_status)
+        self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
         self.register_handler("check", self._handle_check)
-        self.register_handler("stations", self._handle_stations)
+        self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
+        self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
+        self.register_handler("button", self._handle_button, fields=("action",), device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
-    async def _handle_ping(self, req: Dict[str, Any]) -> str:
-        return "pong"
+    async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        return {"pong": True, "core_version": CORE_VERSION}
 
     async def _handle_stations(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Return real-time status of all configured test stations."""
@@ -123,13 +256,13 @@ class TcpJsonServer:
         active_ips = set(self.kvm_pool.get_active_ips())
 
         stations_list: list[Dict[str, Any]] = []
-        for cfg in self.stations_config:
-            st_name = str(cfg.get("station", "UNKNOWN")).upper()
-            dev_id = str(cfg.get("device", "1"))
-            kvm_ip = str(cfg.get("kvm_ip", ""))
+        for entry in self.device_registry.entries():
+            st_name = entry.station
+            dev_id = entry.device_id
+            kvm_ip = entry.kvm_ip
 
             is_busy = dev_id in active_devices
-            is_frozen = dev_id in frozen_devices or f"{st_name}:{dev_id}" in frozen_devices
+            is_frozen = dev_id in frozen_devices
             is_connected = kvm_ip in active_ips
 
             if is_busy:
@@ -157,6 +290,25 @@ class TcpJsonServer:
         }
 
     async def _handle_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """LabVIEW status: Core uptime and per-device state. KVM IPs are never returned."""
+        uptime = time.time() - self._start_time if self._start_time else 0.0
+        active_devices = set(self.lock_manager.get_active_devices())
+        frozen_devices = set(self.freeze_guard.get_status().get("frozen_devices", []))
+        active_ips = set(self.kvm_pool.get_active_ips())
+        devices: list[Dict[str, Any]] = []
+        for entry in self.device_registry.entries():
+            devices.append({
+                "device": entry.device_id,
+                "station": entry.station,
+                "connected": entry.kvm_ip in active_ips,
+                "busy": entry.device_id in active_devices,
+                "frozen": entry.device_id in frozen_devices,
+                "channels": entry.channels,
+            })
+        return {"core_uptime_sec": int(uptime), "devices": devices}
+
+    async def _handle_core_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Full internal Core state for Monitor UI / admin tools (not part of the LabVIEW protocol)."""
         uptime = time.time() - self._start_time if self._start_time else 0.0
         active_devices = self.lock_manager.get_active_devices()
         stations_res = await self._handle_stations(req)
@@ -177,15 +329,13 @@ class TcpJsonServer:
     async def _handle_snapshot(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Request and return a single frame snapshot as base64 without acquiring device locks."""
         kvm = req.get("_kvm_client")
-        device_id = str(req.get("device") or "default")
-        raw_kvm_ip = req.get("kvm_ip")
-        kvm_ip = str(raw_kvm_ip).strip() if raw_kvm_ip else None
+        device_id = str(req.get("device") or "")
 
         if kvm is None:
             return {
                 "status": "error",
                 "error": "missing_kvm",
-                "message": "KVM client not available. Specify 'kvm_ip' in request.",
+                "message": "KVM connection not available for this device",
                 "device": device_id,
             }
 
@@ -210,23 +360,9 @@ class TcpJsonServer:
                 "device": device_id,
             }
 
-        # Support optional save_path
-        save_path = req.get("save_path")
-        saved_path_str: Optional[str] = None
-        if save_path:
-            p = Path(save_path).resolve()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                import cv2
-                if hasattr(frame, "shape"):
-                    cv2.imwrite(str(p), frame)
-                    saved_path_str = str(p)
-            except Exception as exc:
-                logger.warning("Failed to save snapshot to %s: %s", p, exc)
-
         # Encode to JPEG/PNG base64
-        fmt = str(req.get("format") or "jpeg").lower()
-        quality = int(req.get("quality") or 80)
+        fmt = req["format"]
+        quality = req["quality"]
         img_b64 = ""
         width = 0
         height = 0
@@ -249,299 +385,282 @@ class TcpJsonServer:
 
         return {
             "status": "ok",
-            "kvm_ip": kvm_ip,
-            "device": device_id,
             "width": width,
             "height": height,
-            "pts": pts,
             "format": fmt,
             "image_base64": img_b64,
-            "saved_path": saved_path_str,
         }
 
-    async def _evaluate_visual_condition(
-        self,
-        kvm: Any,
-        station: str,
-        device_id: str,
-        req: Dict[str, Any],
-        is_long_polling: bool = False,
-    ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
-        """Evaluate the live frame against station rules, patterns, or custom evaluators.
-        
-        Returns:
-            (matched: bool, result_name: Optional[str], extra_data: Optional[Dict[str, Any]])
-            If result_name == "ERROR_FROZEN", indicates a freeze error occurred during inspection.
-            If result_name == "ERROR_CHECK", inspection itself raised; extra_data is the error reply.
-            matched is True only when a result was positively observed (fail closed).
+    async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any], read_only: bool = False,
+                             stability: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """One reading of the Log Solution screen for a device, as a 1.0 check payload.
+
+        The reading runs on a worker thread with a per-frame time limit. A reading that
+        exceeds the limit is reported as unknown and the poll continues; a device whose
+        previous reading is still running is reported as unknown without starting another.
         """
-        # 1. Custom evaluator callback in request
-        evaluator = req.get("evaluator")
-        if callable(evaluator):
-            try:
-                res = evaluator(kvm)
-                if inspect.iscoroutine(res):
-                    res = await res
-                if res is not None and res is not False:
-                    match_res = "PASS" if res is True else str(res).upper()
-                    return True, match_res, {}
-                return False, None, {}
-            except Exception as exc:
-                logger.exception("Custom evaluator error: %s", exc)
+        flight_key = f"inspect:{entry.device_id}" if read_only else entry.device_id
+        previous = self._inspections.get(flight_key)
+        if previous is not None and not previous.done():
+            return _unknown("inspection_busy")
 
-        # 2. DFU Station: only a "taken" round decision carries a result.
-        if station == "DFU":
-            try:
-                from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
-                gate_key = f"{station}:{device_id}"
-                if not hasattr(self, "_dfu_gates"):
-                    self._dfu_gates: Dict[str, Any] = {}
-                gate = self._dfu_gates.get(gate_key)
+        if entry.station == "DFU":
+            from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
+            if read_only:
+                # Gate-less reading: never arms, takes or otherwise touches the round.
+                def job():
+                    return _inspect_round(kvm, stability)
+            else:
+                gate = self._dfu_gates.get(entry.device_id)
                 if gate is None:
-                    gate = RoundFrameGate(gate_key, require_presentation_time=True)
-                    self._dfu_gates[gate_key] = gate
-                decision = observe_latest_round_frame(kvm, gate)
-            except Exception as exc:
-                logger.warning("DFU inspection error for %s: %s", device_id, exc)
-                return False, "ERROR_CHECK", {
-                    "status": "error",
-                    "error": "check_failed",
-                    "message": f"DFU inspection error: {exc}",
-                    "device": device_id,
-                }
-            if decision.kind == "frozen" or decision.reason == "frame_frozen":
-                return False, "ERROR_FROZEN", {
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": "DFU round frame stream is frozen",
-                    "device": device_id,
-                }
-            if decision.kind == "taken":
-                results = decision.results
-                # PASS only when every slot is PASS; FAIL/NOTEST/TIMEOUT → FAIL
-                final_res = "PASS" if results and all(r[1] == "PASS" for r in results) else "FAIL"
-                return True, final_res, {
-                    "kind": decision.kind,
-                    "reason": decision.reason,
-                    "results": results,
-                }
-            return False, None, {"kind": decision.kind, "reason": decision.reason}
+                    gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
+                    self._dfu_gates[entry.device_id] = gate
 
-        no_result_extra: Dict[str, Any] = {}
-
-        # 3. OpenCV Template Catalog Inspection (BT / FCT)
-        frame_val = getattr(kvm, "frame", None)
-        if station in ("BT", "FCT") and hasattr(frame_val, "shape"):
+                def job():
+                    return observe_latest_round_frame(kvm, gate)
+        else:
+            # BT / FCT: template catalog until their Log Solution contract lands.
+            frame_val = getattr(kvm, "frame", None)
+            if not hasattr(frame_val, "shape"):
+                return {"error": "no_frame", "message": "No frame received from KVM yet"}
             template_root = req.get("template_root") or self.template_root
             if not template_root:
                 from template_catalog import TemplateCatalog
                 template_root = TemplateCatalog.default_root()
-            try:
+
+            def job():
                 from auto_flow import run_check
-                r = await run_check(
+                return asyncio.run(run_check(
                     kvm,
-                    device=station,
+                    device=entry.station,
                     template_root=template_root,
-                    freeze_guard=self.freeze_guard,
-                )
-            except Exception as exc:
-                logger.warning("Template check error for %s/%s: %s", station, device_id, exc)
-                return False, "ERROR_CHECK", {
-                    "status": "error",
-                    "error": "check_failed",
-                    "message": f"Template check error: {exc}",
-                    "device": device_id,
-                }
-            if r.get("error") == "frame_frozen":
-                return False, "ERROR_FROZEN", {
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": r.get("message", "Frame presentation timestamp is static / frozen"),
-                    "device": device_id,
-                }
-            if r.get("ok"):
-                if r.get("testing"):
-                    if not is_long_polling:
-                        return True, "TESTING", {"check_result": r}
-                    return False, None, {"check_result": r}
-                rows = r.get("rows") or []
-                if rows:
-                    final_res = "PASS" if all(row[1] == "pass" for row in rows) else "FAIL"
-                    return True, final_res, {"check_result": r}
-            # window not found / missing templates / empty rows → no result
-            no_result_extra = {"check_result": r}
+                    device_id=entry.device_id,
+                    check_liveness=False,  # the check loop already verified the picture is live
+                ))
 
-        # 4/5 below read mock-only attributes (result / visual_state / str frame);
-        # a real JetKVMClient exposes none of them, so they never yield a result there.
-        # 4. Target Pattern matching
-        target_pattern = req.get("target_pattern") or req.get("pattern")
-        if target_pattern is not None:
-            target_str = str(target_pattern).upper()
-            for attr in ("result", "visual_state", "pattern", "status", "visual_result"):
-                val = getattr(kvm, attr, None)
-                if val is not None and str(val).upper() == target_str:
-                    return True, target_str, {}
-            if isinstance(frame_val, str) and frame_val.upper() == target_str:
-                return True, target_str, {}
-            return False, None, no_result_extra
+        future = self._inspector.submit(job)
+        self._inspections[flight_key] = future
+        try:
+            raw = await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
+        except asyncio.TimeoutError:
+            logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", entry.device_id,
+                         self.inspection_timeout_sec)
+            return _unknown("inspection_timeout")
+        except Exception as exc:
+            logger.exception("Inspection error for %s", entry.device_id)
+            return {"error": "internal_error", "message": f"inspection error: {exc}"}
 
-        # 5. Direct KVM visual state attributes
-        if getattr(kvm, "result", None) is not None:
-            res_str = str(kvm.result).upper()
-            if res_str in ("PASS", "FAIL"):
-                return True, res_str, {}
-        if getattr(kvm, "visual_state", None) is not None:
-            vstate = str(kvm.visual_state).upper()
-            if vstate in ("PASS", "FAIL", "COMPLETE", "DONE"):
-                res_str = "PASS" if vstate in ("PASS", "COMPLETE", "DONE") else "FAIL"
-                return True, res_str, {}
+        if entry.station == "DFU":
+            return raw if read_only else _round_observation(raw)
+        return _template_observation(raw)
 
-        # 6. Nothing positively observed → no result (never PASS on liveness alone)
-        return False, None, no_result_extra
+    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
+        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
+        from round_frame_consumer import MarkerState, inspect_app_frame
+
+        if hasattr(kvm, "latest_frame"):
+            snapshot = kvm.latest_frame()
+            frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+        else:
+            frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+        if frame is None:
+            return "hid_failed: no frame to read the Log Solution state"
+        observation = inspect_app_frame(frame, received_at, now=time.monotonic())
+        if not observation.reliable:
+            return "hid_failed: Log Solution state unreadable"
+        if observation.state == MarkerState.STANDBY:
+            return None
+        if observation.state == MarkerState.COMPLETE:
+            gate = self._dfu_gates.get(entry.device_id)
+            if gate is not None and gate.taken:
+                return None
+            return "log_solution_busy: round result not yet taken"
+        return f"log_solution_busy: Log Solution state is {observation.state.value}"
+
+    async def _handle_button(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """BT button 1.0: Start All on a BT device."""
+        from bt_flow import BtButtonError, run_start_all
+        from template_catalog import TemplateCatalog
+
+        entry = req["_device_entry"]
+        template_root = self.template_root or TemplateCatalog.default_root()
+        try:
+            result = await run_start_all(req["_kvm_client"], template_root=template_root,
+                                         log=logger.info, diagnostics_key=entry.device_id)
+        except BtButtonError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
+        return {"status": "ok", "data": result}
+
+    async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
+        from dfu_flow import DfuInputError, run_dfu_input
+        from template_catalog import TemplateCatalog
+
+        kvm = req.get("_kvm_client")
+        entry = req["_device_entry"]
+        refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
+        if refusal is not None:
+            code, _, message = refusal.partition(": ")
+            return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
+
+        template_root = self.template_root or TemplateCatalog.default_root()
+        try:
+            result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
+                                         log=logger.info, diagnostics_key=entry.device_id)
+        except DfuInputError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
+        return {"status": "ok", "data": result}
 
     async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Station vision check handler with long-polling and Frame Freeze Guard protection."""
+        return await self._long_poll(req, read_only=False)
+
+    async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Monitor UI's read-only check: no device lock, and it never consumes the round result."""
+        return await self._long_poll(req, read_only=True)
+
+    async def _long_poll(self, req: Dict[str, Any], read_only: bool) -> Dict[str, Any]:
+        """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
+
+        timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
+        already_taken or an error, and otherwise times out with the last observed state.
+        """
         kvm = req.get("_kvm_client")
-        station = str(req.get("station") or req.get("dev_type") or "BT").upper()
-        device_id = str(req.get("device") or "default")
-        threshold_window = req.get("freeze_threshold") or req.get("threshold_sec")
-        guard_threshold = float(threshold_window) if threshold_window is not None else None
-        dev_key = f"{station}:{device_id}"
-
-        if kvm is None:
-            return {
-                "status": "error",
-                "error": "missing_kvm",
-                "message": "KVM client not available. Specify 'kvm_ip' in request.",
-                "device": device_id,
-            }
-
-        raw_timeout = req.get("timeout_sec") if req.get("timeout_sec") is not None else req.get("timeout")
-        has_timeout_arg = raw_timeout is not None
-        timeout_val: float = 0.0
-        if has_timeout_arg:
-            try:
-                timeout_val = float(raw_timeout)
-            except (ValueError, TypeError):
-                return {
-                    "status": "error",
-                    "error": "invalid_timeout",
-                    "message": f"Invalid timeout_sec: {raw_timeout}",
-                    "device": device_id,
-                }
-            if timeout_val < 0:
-                return {
-                    "status": "error",
-                    "error": "invalid_timeout",
-                    "message": f"Negative timeout_sec: {timeout_val}",
-                    "device": device_id,
-                }
-
-        is_long_polling = has_timeout_arg and timeout_val > 0.0
-        poll_interval = float(req.get("poll_interval") or 0.1)
-
-        start_time = time.monotonic()
+        entry = req.get("_device_entry")
+        timeout_sec = float(req["timeout_sec"])
         reader = req.get("_reader")
         writer = req.get("_writer")
+        start_time = time.monotonic()
+        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
+        stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
 
         while True:
-            # 0. Check client connection liveness & server status
+            elapsed = time.monotonic() - start_time
             is_client_gone = (reader is not None and reader.at_eof()) or (
                 writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
             )
             if is_client_gone:
-                logger.info("Client disconnected during check for device %s", device_id)
-                return {
-                    "status": "cancelled",
-                    "error": "client_disconnected",
-                    "device": device_id,
-                }
+                logger.info("Client disconnected during check for device %s", entry.device_id)
+                return {"status": "cancelled", "error": "client_disconnected"}
             if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
-                return {
-                    "status": "error",
-                    "error": "server_shutting_down",
-                    "device": device_id,
-                }
+                return {"status": "error", "error": "server_shutting_down"}
 
-            # 1. Frame Freeze Guard verification across all stations (BT, FCT, DFU)
+            # Frame Freeze Guard: the picture's timestamps must keep advancing.
             is_live, freeze_err = await self.freeze_guard.verify_liveness(
                 kvm,
-                device_id=dev_key,
-                threshold_window=guard_threshold,
-                poll_interval=min(poll_interval, 0.05),
+                device_id=entry.device_id,
+                poll_interval=0.05,
             )
             if not is_live:
-                elapsed = time.monotonic() - start_time
-                err_dict = dict(freeze_err or {})
-                err_dict["status"] = "error"
-                if "error" not in err_dict:
-                    err_dict["error"] = "frame_frozen"
-                err_dict["device"] = device_id
-                err_dict["elapsed_sec"] = round(elapsed, 2)
-                return err_dict
-
-            # 2. Visual condition evaluation
-            matched, res_name, extra_data = await self._evaluate_visual_condition(
-                kvm, station, device_id, req, is_long_polling=is_long_polling
-            )
-
-            if res_name in ("ERROR_FROZEN", "ERROR_CHECK"):
-                elapsed = time.monotonic() - start_time
-                err_resp = dict(extra_data or {})
-                err_resp["elapsed_sec"] = round(elapsed, 2)
-                return err_resp
-
-            if matched:
-                elapsed = time.monotonic() - start_time
-                resp = {
-                    "status": "ok",
-                    "result": res_name,
-                    "elapsed_sec": round(elapsed, 2),
-                    "station": station,
-                    "device": device_id,
+                return {
+                    "status": "error",
+                    "error": "frame_frozen",
+                    "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
                 }
-                if extra_data:
-                    resp.update(extra_data)
-                return resp
 
-            # 3. Timeout check
-            now = time.monotonic()
-            elapsed = now - start_time
-            if has_timeout_arg and elapsed >= timeout_val:
+            obs = await self._observe_check(kvm, entry, req, read_only=read_only, stability=stability)
+            if "error" in obs:
+                return {"status": "error", "error": obs["error"], "message": obs.get("message", ""),
+                        "data": {**last, "kind": "unknown", "results": []}}
+            last = obs
+
+            if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
+                return {
+                    "status": "error",
+                    "error": "capacity_mismatch",
+                    "message": f"screen shows {obs['capacity']} slots, device is configured for {entry.channels}",
+                    "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
+                }
+            if obs["kind"] in ("taken", "paused", "already_taken"):
+                return {"status": "ok", "data": obs}
+            if timeout_sec == 0:
+                return {"status": "ok", "data": obs}
+            if elapsed >= timeout_sec:
                 return {
                     "status": "timeout",
-                    "result": "NONE",
-                    "elapsed_sec": round(max(elapsed, timeout_val), 1),
-                    "station": station,
-                    "device": device_id,
+                    "error": "timeout",
+                    "message": f"no reliable result within {timeout_sec:g} s",
+                    "data": last,
                 }
-            elif not has_timeout_arg:
-                # Single-shot check with nothing positively observed: fail closed.
-                resp = {
-                    "status": "error",
-                    "error": "no_result",
-                    "result": "NONE",
-                    "elapsed_sec": round(elapsed, 2),
-                    "station": station,
-                    "device": device_id,
-                    "message": "No test result visible on screen",
-                }
-                if extra_data:
-                    resp.update(extra_data)
-                return resp
+            await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, timeout_sec - elapsed)))
 
-            # Wait before next poll iteration
-            sleep_time = min(poll_interval, max(0.01, timeout_val - elapsed))
-            await asyncio.sleep(sleep_time)
-
-    async def _handle_shutdown(self, req: Dict[str, Any]) -> str:
+    async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
         # Schedule the server loop to stop after replying cleanly to the client
         if self._loop and self._shutdown_event:
             self._loop.call_later(0.05, self._shutdown_event.set)
-        return "shutting_down"
+        return {}
 
-    def _generate_req_id(self) -> str:
-        return f"req-{uuid.uuid4().hex[:8]}"
+    def _validate_request(self, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Protocol 1.0 request validation. Returns (error, message) for the first violation."""
+        if req.get("protocol_version") != PROTOCOL_VERSION:
+            return "unsupported_protocol_version", f"protocol_version must be '{PROTOCOL_VERSION}'"
+
+        req_id = req.get("req_id")
+        if req_id is None or req_id == "":
+            return "missing_req_id", "req_id is required"
+        if not isinstance(req_id, str):
+            return "invalid_request", "req_id must be a string"
+
+        cmd = req.get("cmd")
+        if cmd is None or cmd == "":
+            return "missing_command", "cmd is required"
+        if not isinstance(cmd, str):
+            return "invalid_request", "cmd must be a string"
+
+        device = req.get("device")
+        if not isinstance(device, str):
+            return "invalid_request", "device must be a string"
+
+        if cmd not in self._command_fields:
+            return "unknown_command", f"unknown command '{cmd}'"
+
+        allowed = self._command_fields[cmd]
+        for key in req:
+            if key in COMMON_FIELDS or key in allowed:
+                continue
+            if key in ("kvm_ip", "station"):
+                return "forbidden_field", f"field '{key}' is not allowed; address the device by 'device' ID"
+            return "unknown_field", f"field '{key}' is not defined for '{cmd}'"
+
+        if cmd in self._no_device_cmds:
+            if device != "":
+                return "invalid_argument", f"device must be empty for '{cmd}'"
+            return None
+
+        if device == "":
+            return "missing_device", f"'{cmd}' requires a 'device' ID"
+        if self.device_registry.get(device) is None:
+            return "unknown_device", f"device '{device}' is not configured"
+        if cmd == "input" and self.device_registry.get(device).station != "DFU":
+            return "unsupported_command", f"'input' is only supported for DFU devices"
+        if cmd == "button":
+            if self.device_registry.get(device).station != "BT":
+                return "unsupported_command", f"'button' is only supported for BT devices"
+            if req.get("action") != "start_all":
+                return "invalid_argument", "action must be 'start_all'"
+        if cmd == "input":
+            from dfu_flow import DfuInputError, parse_items
+            try:
+                parse_items(req.get("items"), self.device_registry.get(device).channels)
+            except DfuInputError as exc:
+                return exc.code, str(exc)
+        if cmd == "snapshot":
+            fmt = req.get("format")
+            if fmt not in ("jpeg", "png"):
+                return "invalid_argument", "format must be 'jpeg' or 'png'"
+            quality = req.get("quality")
+            if isinstance(quality, bool) or not isinstance(quality, int):
+                return "invalid_argument", "quality is required and must be an integer"
+            if fmt == "png" and quality != 0:
+                return "invalid_argument", "quality must be 0 for png"
+            if fmt == "jpeg" and not 1 <= quality <= 100:
+                return "invalid_argument", "quality must be between 1 and 100 for jpeg"
+        if cmd in ("check", "inspect"):
+            timeout = req.get("timeout_sec")
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return "invalid_argument", "timeout_sec is required and must be a number"
+            if not 0 <= timeout <= CHECK_MAX_TIMEOUT_SEC:
+                return "invalid_argument", f"timeout_sec must be between 0 and {CHECK_MAX_TIMEOUT_SEC}"
+        return None
 
     async def _dispatch_command(
         self,
@@ -556,28 +675,24 @@ class TcpJsonServer:
         if writer is not None:
             req["_writer"] = writer
 
-        handler = self._handlers.get(cmd)
-        if not handler:
-            return {
-                "req_id": req_id,
-                "status": "error",
-                "error": "unknown_command",
-                "message": f"Unknown command: '{cmd}'",
-            }
+        handler = self._handlers[cmd]
 
         # Check per-device locking
         raw_device = req.get("device")
         device_id: Optional[str] = (
-            str(raw_device).strip()
-            if raw_device is not None and str(raw_device).strip() != ""
+            str(raw_device)
+            if raw_device is not None and str(raw_device) != ""
             else None
         )
 
-        is_read_only = (
-            cmd in ("snapshot", "frame")
-            or req.get("no_lock") is True
-            or req.get("read_only") is True
-        )
+        # Only the device ID is trusted from the wire: KVM IP and station come from the registry.
+        if device_id is not None:
+            entry = self.device_registry.get(device_id)
+            if entry is not None:
+                req["_device_entry"] = entry
+                req["kvm_ip"] = entry.kvm_ip
+
+        is_read_only = cmd in ("snapshot", "inspect")
 
         if device_id is not None and not is_read_only:
             if not self.lock_manager.try_acquire(device_id, req_id=req_id):
@@ -594,17 +709,8 @@ class TcpJsonServer:
                     "device": device_id,
                 }
 
-        # Check KVM connection pooling if kvm_ip is provided or inferred for snapshot
+        # Check KVM connection pooling (kvm_ip comes from the device registry)
         raw_kvm_ip = req.get("kvm_ip")
-        if cmd in ("snapshot", "frame") and (raw_kvm_ip is None or not str(raw_kvm_ip).strip()) and (req.get("station") or req.get("device")):
-            st = str(req.get("station") or "").upper()
-            dev = str(req.get("device") or "")
-            for cfg in getattr(self, "stations_config", []):
-                if (st and cfg.get("station") == st) or (dev and str(cfg.get("device")) == dev):
-                    raw_kvm_ip = cfg.get("kvm_ip")
-                    req["kvm_ip"] = raw_kvm_ip
-                    break
-
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
             try:
@@ -617,7 +723,7 @@ class TcpJsonServer:
                 err_resp = {
                     "req_id": req_id,
                     "status": "error",
-                    "error": "kvm_connection_failed",
+                    "error": "kvm_connect_failed",
                     "message": f"Failed to connect to KVM '{kvm_ip}': {exc}",
                 }
                 if device_id is not None:
@@ -631,15 +737,7 @@ class TcpJsonServer:
                 result = await asyncio.to_thread(handler, req)
 
             # If handler explicitly returns an envelope with custom status like busy/error/timeout/cancelled/ok
-            if isinstance(result, dict) and result.get("status") in ("error", "busy", "timeout", "cancelled"):
-                resp = dict(result)
-                if "req_id" not in resp:
-                    resp["req_id"] = req_id
-                if "device" not in resp and device_id is not None:
-                    resp["device"] = device_id
-                return resp
-
-            if isinstance(result, dict) and result.get("status") == "ok":
+            if isinstance(result, dict) and result.get("status") in ("ok", "error", "busy", "timeout", "cancelled"):
                 resp = dict(result)
                 if "req_id" not in resp:
                     resp["req_id"] = req_id
@@ -676,52 +774,79 @@ class TcpJsonServer:
         reader: Optional[asyncio.StreamReader] = None,
         writer: Optional[asyncio.StreamWriter] = None,
     ) -> bytes:
-        """Parse one line, dispatch command, and return newline-terminated JSON response."""
+        """Parse one line, validate it, dispatch it, and return a newline-terminated 1.0 envelope."""
         line_str = raw_line.decode("utf-8", errors="replace").strip()
         if not line_str:
             return b""
 
-        # 1. Parse JSON
+        started = time.monotonic()
         try:
             req = json.loads(line_str)
         except Exception as exc:
-            err_resp = {
-                "req_id": None,
-                "status": "error",
-                "error": "invalid_json",
-                "message": f"Failed to parse JSON: {exc}",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
-
-        # 2. Validate object type
+            return self._encode_envelope(started, "", "", "", "error", "invalid_json", f"Failed to parse JSON: {exc}", {})
         if not isinstance(req, dict):
-            err_resp = {
-                "req_id": None,
-                "status": "error",
-                "error": "invalid_request",
-                "message": "Request must be a JSON object",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
+            return self._encode_envelope(started, "", "", "", "error", "invalid_request", "Request must be a JSON object", {})
 
-        # 3. Extract or assign req_id
-        req_id = req.get("req_id")
-        if req_id is None or str(req_id).strip() == "":
-            req_id = self._generate_req_id()
+        req_id = req.get("req_id") if isinstance(req.get("req_id"), str) else ""
+        device = req.get("device") if isinstance(req.get("device"), str) else ""
+        cmd = req.get("cmd") if isinstance(req.get("cmd"), str) else ""
 
-        # 4. Validate cmd
-        cmd = req.get("cmd")
-        if not cmd or not isinstance(cmd, str):
-            err_resp = {
-                "req_id": req_id,
-                "status": "error",
-                "error": "missing_command",
-                "message": "Missing 'cmd' field",
-            }
-            return (json.dumps(err_resp) + "\n").encode("utf-8")
+        invalid = self._validate_request(req)
+        if invalid is not None:
+            error, message = invalid
+            return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
 
-        # 5. Dispatch command
-        resp = await self._dispatch_command(req_id, cmd.strip(), req, reader=reader, writer=writer)
-        return (json.dumps(resp) + "\n").encode("utf-8")
+        raw = await self._dispatch_command(req_id, cmd, req, reader=reader, writer=writer)
+        if raw.get("error") == "client_disconnected":
+            return b""  # PROTOCOL 7: the client is gone, so nothing is written
+        return self._encode_result(started, req_id, device, cmd, raw)
+
+    def _encode_result(
+        self, started: float, req_id: str, device: str, cmd: str, raw: Dict[str, Any]
+    ) -> bytes:
+        """Map a handler result (ok/error/busy/timeout/...) onto the fixed 1.0 envelope."""
+        status = str(raw.get("status", "ok"))
+        if status in ("busy", "cancelled"):
+            status = "error"
+        if isinstance(raw.get("data"), dict):
+            payload = raw["data"]
+        elif "data" in raw:
+            payload = {"value": raw["data"]}
+        else:
+            payload = {k: v for k, v in raw.items() if k not in ENVELOPE_KEYS}
+
+        error = ""
+        message = str(raw.get("message", ""))
+        if status == "timeout":
+            error = "timeout"
+        elif status != "ok":
+            error = ERROR_CODE_MAP.get(str(raw.get("error") or "internal_error"), str(raw.get("error") or "internal_error"))
+        return self._encode_envelope(started, req_id, device, cmd, status, error, message, payload)
+
+    def _encode_envelope(
+        self,
+        started: float,
+        req_id: str,
+        device: str,
+        cmd: str,
+        status: str,
+        error: str,
+        message: str,
+        payload: Dict[str, Any],
+    ) -> bytes:
+        data = {**DEFAULT_DATA.get(cmd, {}), **payload}
+        envelope = {
+            "protocol_version": PROTOCOL_VERSION,
+            "req_id": req_id,
+            "device": device,
+            "cmd": cmd,
+            "status": status,
+            "error": error if status != "ok" else "",
+            "message": message if status != "ok" else "",
+            "elapsed_sec": round(time.monotonic() - started, 3),
+            "data": data,
+        }
+        return (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
 
     async def _client_connected_cb(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -852,6 +977,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Headless TCP JSON Server for B518 JetKVM Relay")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
+    parser.add_argument("--devices-file", default=None, help="Device list JSON (default: ~/Documents/template/devices.json)")
     parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
     parser.add_argument("--log-file", default=None, help="Path to rotating log file")
     parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log file size before rotation")
@@ -878,7 +1004,14 @@ def main() -> None:
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         )
 
-    server = TcpJsonServer(host=args.host, port=args.port)
+    try:
+        registry = DeviceRegistry.load(args.devices_file)
+    except DeviceRegistryError as exc:
+        for line in exc.errors:
+            logging.error("Device list error: %s", line)
+        raise SystemExit(1) from exc
+
+    server = TcpJsonServer(host=args.host, port=args.port, device_registry=registry)
     print(f"Starting Headless TCP JSON Server on {args.host}:{args.port}...")
     server.serve_forever()
 

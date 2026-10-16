@@ -28,6 +28,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from kvm_pool import KVMConnectionPool, normalize_kvm_ip
+from device_registry import DeviceRegistry
+from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
@@ -326,8 +328,17 @@ def test_concurrent_get_connection_deduplication() -> None:
 _SOCK_BUFFERS: dict[int, bytearray] = {}
 
 
+def pool_registry():
+    """Devices on the IPs these pool tests expect; snapshot drives KVM connections in protocol 1.0."""
+    return DeviceRegistry.from_text(json.dumps({
+        "DFU-01": {"station": "DFU", "kvm_ip": "192.168.1.10", "channels": 4},
+        "DFU-02": {"station": "DFU", "kvm_ip": "192.168.1.30", "channels": 4},
+        "DFU-03": {"station": "DFU", "kvm_ip": "192.168.1.99", "channels": 4},
+    }))
+
+
 def send_json(sock: socket.socket, obj: dict) -> None:
-    line = json.dumps(obj) + "\n"
+    line = json.dumps(wire(obj)) + "\n"
     sock.sendall(line.encode("utf-8"))
 
 
@@ -356,7 +367,7 @@ def test_tcp_server_kvm_pool_reuse_and_status() -> None:
     """TCP server reuses KVM connections for consecutive requests and exposes pool status."""
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory)
-    server = TcpJsonServer(host="127.0.0.1", port=0, kvm_pool=pool)
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
     server.start()
 
     try:
@@ -365,7 +376,7 @@ def test_tcp_server_kvm_pool_reuse_and_status() -> None:
         sock.connect((host, port))
 
         # 1. Request with kvm_ip
-        send_json(sock, {"req_id": "r1", "cmd": "ping", "kvm_ip": "192.168.1.10"})
+        send_json(sock, {"req_id": "r1", "cmd": "snapshot", "device": "DFU-01", "format": "jpeg", "quality": 80})
         resp1 = recv_json(sock)
         assert resp1["req_id"] == "r1"
         assert resp1["status"] == "ok"
@@ -375,7 +386,7 @@ def test_tcp_server_kvm_pool_reuse_and_status() -> None:
         assert client1.connect_calls == 1
 
         # 2. Sequential request targeting same KVM IP
-        send_json(sock, {"req_id": "r2", "cmd": "ping", "kvm_ip": "192.168.1.10"})
+        send_json(sock, {"req_id": "r2", "cmd": "snapshot", "device": "DFU-01", "format": "jpeg", "quality": 80})
         resp2 = recv_json(sock)
         assert resp2["req_id"] == "r2"
         assert resp2["status"] == "ok"
@@ -383,7 +394,7 @@ def test_tcp_server_kvm_pool_reuse_and_status() -> None:
         assert client1.connect_calls == 1
 
         # 3. Check status reporting
-        send_json(sock, {"req_id": "r3", "cmd": "status"})
+        send_json(sock, {"req_id": "r3", "cmd": "core_status"})
         resp3 = recv_json(sock)
         assert resp3["status"] == "ok"
         kvm_status = resp3["data"]["kvm_pool"]
@@ -401,7 +412,7 @@ def test_tcp_server_kvm_connection_failure_handling() -> None:
     factory = MockClientFactory()
     factory.fail_hosts.add("192.168.1.99")
     pool = KVMConnectionPool(client_factory=factory)
-    server = TcpJsonServer(host="127.0.0.1", port=0, kvm_pool=pool)
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
     server.start()
 
     try:
@@ -411,18 +422,19 @@ def test_tcp_server_kvm_connection_failure_handling() -> None:
 
         send_json(sock, {
             "req_id": "r-fail",
-            "cmd": "ping",
-            "device": "1",
-            "kvm_ip": "192.168.1.99",
+            "cmd": "snapshot",
+            "device": "DFU-03",
+            "format": "jpeg",
+            "quality": 80,
         })
         resp = recv_json(sock)
         assert resp["req_id"] == "r-fail"
         assert resp["status"] == "error"
-        assert resp["error"] == "kvm_connection_failed"
+        assert resp["error"] == "kvm_connect_failed"
         assert "192.168.1.99" in resp["message"]
 
         # Ensure device lock was released despite KVM failure
-        assert not server.lock_manager.is_locked("1")
+        assert not server.lock_manager.is_locked("DFU-03")
 
         sock.close()
     finally:
@@ -434,7 +446,7 @@ def test_tcp_server_idle_eviction_and_reconnection() -> None:
     """TCP server cleanly handles idle eviction and subsequent re-connection."""
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.15, heartbeat_interval=0.05)
-    server = TcpJsonServer(host="127.0.0.1", port=0, kvm_pool=pool)
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
     server.start()
 
     try:
@@ -443,7 +455,7 @@ def test_tcp_server_idle_eviction_and_reconnection() -> None:
         sock.connect((host, port))
 
         # First request connects
-        send_json(sock, {"req_id": "r1", "cmd": "ping", "kvm_ip": "192.168.1.30"})
+        send_json(sock, {"req_id": "r1", "cmd": "snapshot", "device": "DFU-02", "format": "jpeg", "quality": 80})
         resp1 = recv_json(sock)
         assert resp1["status"] == "ok"
         c1 = factory.get_latest_client("192.168.1.30")
@@ -456,7 +468,7 @@ def test_tcp_server_idle_eviction_and_reconnection() -> None:
         assert pool.active_count() == 0
 
         # Subsequent request transparently re-establishes connection
-        send_json(sock, {"req_id": "r2", "cmd": "ping", "kvm_ip": "192.168.1.30"})
+        send_json(sock, {"req_id": "r2", "cmd": "snapshot", "device": "DFU-02", "format": "jpeg", "quality": 80})
         resp2 = recv_json(sock)
         assert resp2["status"] == "ok"
         c2 = factory.get_latest_client("192.168.1.30")

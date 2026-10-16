@@ -3,7 +3,7 @@
 Date: 2026-10-15
 
 ## Status
-Proposed（grilling 已完成，待使用者確認共同理解）
+Accepted（spec #1 實作完成，2026-10-15；見 `docs/specs/0001-device-identity-protocol-1.0.md`）
 
 ## Context
 各模組各自組合設備身份：Device Lock 只用 `device` 值（DFU／FCT／BT 預設都是 `"1"`，三站互相 BUSY）；Frame Freeze Guard 與 DFU RoundFrameGate 用 `站別:設備號`；`run_check` 內的凍結檢查只用站別；KVM Connection Pool 用 IP；`snapshot` 沒帶 IP 時以「站別或設備號任一符合」猜設定，FCT:1 會拿到 DFU 的 IP。站別清單在 `tcp_server.py` 與 `ui_app.py` 各寫死一份，DFU 4／7 格另存 `device_profiles.json`。LabVIEW 需記住並傳送每台 KVM IP。

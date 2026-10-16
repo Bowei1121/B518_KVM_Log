@@ -36,6 +36,11 @@ try:
 except ImportError:
     from .tcp_server import TcpJsonServer  # type: ignore[no-redef]
 
+try:
+    from device_registry import DeviceRegistry, DeviceRegistryError
+except ImportError:
+    from .device_registry import DeviceRegistry, DeviceRegistryError  # type: ignore[no-redef]
+
 logger = logging.getLogger("CoreDaemon")
 
 
@@ -239,7 +244,12 @@ def send_tcp_command(
 ) -> Dict[str, Any]:
     """Send a command over TCP and return parsed JSON response."""
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-    req: Dict[str, Any] = {"req_id": f"mgmt-{uuid.uuid4().hex[:8]}", "cmd": cmd}
+    req: Dict[str, Any] = {
+        "protocol_version": "1.0",
+        "req_id": f"mgmt-{uuid.uuid4().hex[:8]}",
+        "device": "",
+        "cmd": cmd,
+    }
     if payload:
         req.update(payload)
 
@@ -274,7 +284,7 @@ def query_status(
 
     # Attempt TCP status request
     try:
-        resp = send_tcp_command("status", host=host, port=port, timeout=timeout)
+        resp = send_tcp_command("core_status", host=host, port=port, timeout=timeout)
         if resp.get("status") == "ok":
             return {
                 "status": "running",
@@ -558,6 +568,7 @@ def run_service_foreground(
     backup_count: int = 5,
     pid_file: Optional[Union[str, Path]] = None,
     console: bool = True,
+    devices_file: Optional[Union[str, Path]] = None,
 ) -> None:
     """Run Core Service synchronously in the foreground with headless configuration."""
     effective_log_file = Path(log_file) if log_file else _DEFAULT_LOG_FILE
@@ -589,8 +600,17 @@ def run_service_foreground(
         effective_log_file,
     )
 
-    # 3. Create and configure server
-    server = TcpJsonServer(host=host, port=port)
+    # 3. Load device list; refuse to start when it is missing or invalid
+    try:
+        registry = DeviceRegistry.load(devices_file)
+    except DeviceRegistryError as exc:
+        for line in exc.errors:
+            log.error("Device list error: %s", line)
+        _cleanup()
+        raise SystemExit(1) from exc
+
+    # 4. Create and configure server
+    server = TcpJsonServer(host=host, port=port, device_registry=registry)
 
     # 4. Handle OS signals
     def _signal_handler(signum, frame):
@@ -650,6 +670,11 @@ def parse_args() -> argparse.Namespace:
     # run command (foreground)
     p_run = subparsers.add_parser("run", help="Run Core Service in foreground (blocking)")
     _add_common_server_args(p_run)
+    p_run.add_argument(
+        "--devices-file",
+        default=None,
+        help="Device list JSON (default: ~/Documents/template/devices.json)",
+    )
 
     # start command (background daemon)
     p_start = subparsers.add_parser("start", help="Start Core Service in background daemon mode")
@@ -698,6 +723,7 @@ def main() -> None:
             max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
+            devices_file=getattr(args, "devices_file", None),
         )
     elif cmd == "start":
         res = start_core_daemon(

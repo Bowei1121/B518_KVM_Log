@@ -7,10 +7,23 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 ## 目錄
 
 - `host-app/`：上位機、自動化與打包原始碼。
-- `config/`：站別與 KVM 設定範例。
+- `config/`：設備清單範例（`devices.example.json`）與設定說明。
 - `docs/`：研究、架構與驗證紀錄。
-- `tests/`：方案測試說明與未來測試。
+- `tests/`：pytest 測試，執行 `python -m pytest -q`（需要 bind localhost，受限沙箱內會失敗）。
+- `tools/`：管理與驗證工具，包含 Core 管理（`manage_core.py`）與錄影重播壓測（`replay_load_test.py`）。
 - `third_party/jetkvm/`：固定版本的 JetKVM private mirror submodule。
+
+## 設備清單與通訊協定
+
+設備清單是上位機唯一的設備設定來源，檔案位於 `~/Documents/template/devices.json`，不隨程式打包、不進 Git。格式與範例見 `config/devices.example.json`：每台設備以設備 ID（`<站別>-<兩位數>`，例如 `DFU-01`）為 key，記錄站別、KVM IP 與測試通道數。Core Service 缺檔或內容有誤時拒絕啟動並列出錯誤；修改後需重啟 Core。Monitor UI 的「⚙ 設備設定」頁可編輯此檔並在儲存前驗證，儲存時會備份舊檔。
+
+LabVIEW 與 Core 之間的協定為 TCP JSON 1.0：每行一筆 JSON、以 `req_id` 配對回覆、只帶設備 ID。例如：
+
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check","timeout_sec":600}
+```
+
+完整欄位、錯誤碼與範例見 [TCP JSON 介面規格 1.0](docs/PROTOCOL.md)。
 
 ## 視覺模板
 
@@ -23,9 +36,19 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 
 請在「創建Pattern」視窗選擇設備與模板種類；程式會自動決定唯讀檔名及輸出位置。`host-app/FCT` 中的圖片僅保留為歷史參考，執行程式不會讀取它。
 
-BT 使用六種模板：`BT_window.png`、`BT_testing.png`、`BT_pass.png`、`BT_fail.png`、`BT_start_all.png`、`BT_dock_icon.png`。既有 TCP `button` 指令會操作 Start All；BT 不支援 TCP `input` 指令。FCT 使用五種模板：`FCT_window.png`、`FCT_testing.png`、`FCT_pass.png`、`FCT_fail.png`、`FCT_dock_icon.png`；FCT TCP `input` 與 `button` 均不支援，主畫面 Switch 僅執行 Dock 前景化。
+各站使用的模板：
 
-DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`（例如 `DFU,1,192.168.1.10,input,1:SN123,3:SN789`），依明確 profile 校正外部 DFU 視窗 checkbox、逐筆 Enter、最後只按一次 OK，並送 `Command+Shift+M` 啟動 B518 Log Solution 監控。這個輸入 profile 仍可為 4／7 格；它不控制 Log 結果版型。`check` 直接讀最新 JetKVM BGR frame，依版本化 `KVM_DISPLAY_CONTRACT.md` 辨識 1–20 格與四種狀態，無舊四／七格 Log 結果模板或生產 fallback。它先觀察到監控中，且需 JetKVM 呈現時間戳持續遞增、兩張不同序號的新鮮完整畫面才會一次回覆本輪狀態；缺少時間戳、時間戳倒退或容量在輪次中改變均拒絕取用。待確認回覆暫停。回覆列格式為 `slot::STATUS`，因畫面契約的色帶只提供狀態，不提供 SN；尚未確認外部 TCP 呼叫端是否接受此狀態列格式。設備編號仍須在 `~/Documents/template/device_profiles.json` 對應至 `4slot` 或 `7slot`，但此 profile 僅用於 DFU 輸入。DFU 不支援對外 `button`。
+- DFU：`window`、`input`、`button`、`checkbox_checked`、`checkbox_unchecked`、`dock_icon`。checkbox 只需兩種狀態模板，通道數由設備清單決定，不再需要每通道的錨點模板。
+- BT：`window`、`testing`、`pass`、`fail`、`start_all`、`dock_icon`。
+- FCT：`window`、`testing`、`pass`、`fail`、`dock_icon`。
+
+各站支援的 TCP 指令：
+
+- DFU：`input`（`items[{slot, sn}]`，通道 1..N，依 Log Solution 狀態拒絕忙碌）與 `check`。
+- BT：`button`（`action: start_all`）與 `check`。`check` 仍為模板判讀。
+- FCT：`check`。`input` 與 `button` 不支援，回 `unsupported_command`。
+
+DFU 的 `check` 讀取 Log Solution 顯示契約 1.1 的畫面，不再依賴模板。
 
 ## 匹配診斷
 
@@ -34,6 +57,9 @@ DFU 僅提供 TCP `input` 與 `check`。`input` 可一次帶入多筆 `slot:SN`�
 ## 接手與設備流程文件
 
 - [專案開發與接手摘要（2026-09-01）](docs/PROJECT_SUMMARY_20260901.md)
+- [TCP JSON 介面規格 1.0](docs/PROTOCOL.md)
+- [部署說明（B518 九台）](docs/DEPLOYMENT.md)
+- [錄影重播壓測](docs/LOAD_TEST.md)
 - [DFU 設備工作流程](docs/workflow_DFU.md)
 - [FCT 設備工作流程](docs/workflow_FCT.md)
 - [BT 設備工作流程](docs/workflow_BT.md)

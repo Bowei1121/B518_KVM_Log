@@ -1,8 +1,8 @@
 # LabVIEW ↔ JetKVM Log 橋接程式 TCP JSON 介面規格
 
-版本：`protocol_version = "1.0"`（草案）
+版本：`protocol_version = "1.0"`
 日期：2026-10-15（Asia/Taipei）
-狀態：設計草案，供 LabVIEW 設計 type definition。**尚未實作**；與現行程式的落差見第 10 節。
+狀態：已在 Core Service 實作（spec #1 的 #2～#11）。LabVIEW 端的 type definition 與 VI 改版尚待 #13（人工）。FCT／BT 的 `check` 仍為過渡期模板判讀，與第 10 節一併說明。
 相關：`CONTEXT.md`、ADR-0002／0003／0006、`docs/LABVIEW_LOG_SOLUTION_INTEGRATION.md`。
 
 輪次 UUID、結果保存、接收確認（ACK）不在 1.0 範圍，定案後以 1.1 加入。
@@ -65,6 +65,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `check` | 讀取 Log Solution 本輪狀態／結果，可長輪詢 | 是 | ✔ | ✔ | ✔ |
+| `inspect` | Monitor UI 唯讀檢視（僅供 Monitor UI，LabVIEW 不得使用） | 否 | ✔ | ✔ | ✔ |
 | `input` | 輸入本輪 SN | 是 | ✔ | ✘ | ✘ |
 | `button` | 按 Start All | 是 | ✘ | ✘ | ✔ |
 
@@ -114,6 +115,8 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | --- | --- | --- | --- |
 | `format` | string | 是 | `jpeg` 或 `png` |
 | `quality` | number | 是 | 1–100，僅 `jpeg` 有效；`png` 請填 `0` |
+
+`format` 不是 `jpeg`／`png`、`quality` 缺少或非整數、`jpeg` 的 `quality` 不在 1–100、`png` 的 `quality` 不為 `0`，皆回 `invalid_argument`，且不連線 KVM。
 
 `data`：
 
@@ -217,6 +220,15 @@ Core 在 DFU 輸入視窗找出所有 checkbox，數量必須等於 N，依由�
 | --- | --- | --- |
 | `action` | string | 實際執行的動作 |
 
+### 5.7 `inspect`（僅供 Monitor UI）
+
+Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必填，0～3600），回覆格式相同（`data` 為同一結構）。
+
+- 不上鎖：同一設備有 LabVIEW 上鎖指令執行中時仍可執行，不回 `device_busy`。
+- 唯讀：不改變本輪狀態，不消耗 LabVIEW 的結果，LabVIEW 之後的 `check` 仍可取得 `taken`。
+- 因為不經過本輪狀態，`inspect` 不會回 `already_taken`。完整畫面須連續兩次讀到相同結果才回 `taken`（`reason=reliable_complete`），僅代表「此刻畫面上的結果可靠」，不代表已交付給 LabVIEW。
+- LabVIEW 不得使用本指令；Core 不保證它與 `check` 的長輪詢結果一致。
+
 ## 6. 錯誤碼
 
 | `error` | `status` | 何時發生 | LabVIEW 建議 |
@@ -231,7 +243,7 @@ Core 在 DFU 輸入視窗找出所有 checkbox，數量必須等於 N，依由�
 | `unknown_device` | error | `device` 不在設備清單 | 檢查設備 ID |
 | `unknown_field` | error | 帶了未定義欄位 | 修正程式 |
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
-| `invalid_argument` | error | 指令欄位值不合法（slot 超出範圍、timeout 超出範圍等） | 修正程式 |
+| `invalid_argument` | error | 指令欄位值不合法（input 的 items 格式或 slot 超出範圍、snapshot 的 format／quality 不合法、timeout 超出範圍等） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
 | `log_solution_busy` | error | `input` 時 Log Solution 為 `monitoring` 或 `review`（上一輪未結束或待確認） | 先完成本輪 `check`／人工確認 |
 | `capacity_mismatch` | error | `check` 畫面結果格數與設定的測試通道數不同 | 檢查 Log Solution 設定，暫停 |
@@ -380,18 +392,27 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
  "data":{"kind":"","state":"","reason":"","capacity":0,"results":[]}}
 ```
 
-## 10. 與現行程式的落差（實作待辦）
+## 10. 實作對照與待辦
 
-| 項目 | 現行 | 1.0 目標 |
+第 10 節原為 1.0 立案時的落差表。下表為目前 Core Service 的狀態。
+
+| 項目 | 1.0 規定 | 目前實作 |
 | --- | --- | --- |
-| 設備身份 | `device="1"`，三站同號互鎖；`kvm_ip` 由請求帶入 | 設備清單 `devices.json`，只帶設備 ID |
-| `req_id` | 缺少時 Core 自動補 | 必填，缺少回錯誤 |
-| `protocol_version`、`unknown_field` 檢查 | 無 | 有 |
-| 回覆欄位 | 依指令與分支不同，部分省略、含 `null` | 固定 envelope + 固定 `data` |
-| `input`／`button` | Core JSON 未註冊，只有舊 GUI 流程 | 註冊為正式指令 |
-| `check` 長輪詢 | 待確認（paused）不立即回，等到逾時；非長輪詢在等待中回 `result=PASS` | paused 立即回；移除總結果欄位 |
-| FCT／BT `check` | 模板判讀 | Log Solution 顯示契約判讀 |
-| `stations`／`status` | 回傳 `kvm_ip`、內部狀態 | LabVIEW 用新 `status`；完整內部狀態改名 `core_status`，與 `shutdown` 只供 Monitor UI／管理工具 |
-| `check` 格數核對 | 無 | 畫面格數 ≠ 設定通道數回 `capacity_mismatch` |
-| 長輪詢間隔 | 0.1 秒，判讀在事件迴圈同步執行 | 0.5 秒，判讀移至背景執行緒並設單張時間上限 |
-| DFU 輸入定位 | 每通道一張錨點模板（`slotN_4slot`） | 只用 checkbox 模板，自動排序 |
+| 設備身份 | 只帶設備 ID；KVM IP 與站別由設備清單決定 | 已實作。`kvm_ip`、`station` 回 `forbidden_field` |
+| `req_id` | 必填，不自動補 | 已實作。缺少回 `missing_req_id` |
+| `protocol_version`、`unknown_field` | 必檢 | 已實作 |
+| 回覆欄位 | 固定 envelope＋固定 `data`，不出現 `null` | 已實作 |
+| `input`／`button` | 正式指令 | 已實作（DFU `input`、BT `button start_all`） |
+| `check` 長輪詢 | paused 立即回；無總結果欄位 | 已實作；`timeout_sec` 必填 |
+| `check` 格數核對 | 格數 ≠ 通道數回 `capacity_mismatch` | 已實作 |
+| 長輪詢間隔與判讀 | 0.5 秒；判讀不在事件迴圈，單張上限 | 已實作；單張上限預設 200 ms，超時記 `unknown` |
+| DFU 輸入定位 | 只用 checkbox 模板，自動排序 | 已實作；錨點模板與 `device_profiles.json` 已淘汰 |
+| `stations`／`status` | 新 `status`，內部狀態改名 `core_status` | 已實作；`stations` 併入 `core_status` |
+| Monitor UI 手動檢查 | 唯讀、不上鎖 | 以 `inspect` 實作（見 5.7），僅供 Monitor UI |
+
+### 仍待辦
+
+- **FCT／BT 的 `check`**：仍為模板判讀，輸出已映射到本節的 `data` 結構，但尚未改為 Log Solution 顯示契約判讀。
+- **STOPPED 的 header 狀態**：人員按停止監控後，Log Solution header 會變成哪一種，待現場確認。若維持 monitoring，STOPPED 結果需另外處理才能觸發 taken。
+- **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
+- **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。

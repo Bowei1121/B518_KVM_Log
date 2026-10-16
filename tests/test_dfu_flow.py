@@ -1,117 +1,147 @@
+"""DFU input 1.0 on a synthetic DFU window: checkbox discovery, channel order, SN entry."""
+
 import asyncio
-import json
 import sys
 import tempfile
-import unittest
 from pathlib import Path
-from unittest.mock import patch
 
-import numpy as np
+import cv2
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-import dfu_flow
-from template_catalog import TemplateCatalog
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import dfu_flow  # noqa: E402
+from dfu_flow import DfuInputError  # noqa: E402
+from dfu_helpers import SyntheticDfuKVM, checkbox_templates, save_templates  # noqa: E402
+
+FOUR = [(40, 50), (120, 50), (40, 90), (120, 90)]
 
 
-class FakeKvm:
-    def __init__(self, frame):
-        self.frame = frame
-        self.rpc_errors = []
-        self.events = []
-
-    async def click(self, x, y):
-        self.events.append(("click", x, y))
-
-    async def type_text(self, text):
-        self.events.append(("type", text))
-
-    async def press_enter(self):
-        self.events.append(("enter",))
-
-    async def press_command_shift_m(self):
-        self.events.append(("log_shortcut",))
+@pytest.fixture
+def root(tmp_path):
+    return tmp_path / "template"
 
 
-class DfuFlowTests(unittest.TestCase):
-    def test_parser_sorts_sparse_slots_and_rejects_invalid_payloads(self):
-        self.assertEqual(dfu_flow.parse_sn_payload("3:SN3,1:SN1", 4), [(1, "SN1"), (3, "SN3")])
-        for payload in ("", "1:", "a:SN", "1:SN,1:OTHER", "5:SN", "1:SN:EXTRA"):
-            with self.assertRaises(ValueError, msg=payload):
-                dfu_flow.parse_sn_payload(payload, 4)
+def _run(kvm, channels, items, root):
+    return asyncio.run(dfu_flow.run_dfu_input(kvm, channels, items, root, log=lambda *_: None))
 
-    def test_profile_requires_explicit_valid_mapping(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "template"
-            with self.assertRaises(ValueError):
-                dfu_flow.load_profile(root, "1")
-            root.mkdir(parents=True)
-            (root / "device_profiles.json").write_text('{"DFU":{"1":"bad"}}', encoding="utf-8")
-            with self.assertRaises(ValueError):
-                dfu_flow.load_profile(root, "1")
-            (root / "device_profiles.json").write_text('{"DFU":{"1":"4slot"}}', encoding="utf-8")
-            self.assertEqual(dfu_flow.load_profile(root, "1"), ("4slot", 4))
 
-    def _prepare_catalog(self, root, profile="4slot"):
-        catalog = TemplateCatalog(root)
-        image = np.random.RandomState(4).randint(0, 255, (40, 40, 3), dtype=np.uint8)
-        keys = ["dock_icon", "window", "checkbox_checked", "checkbox_unchecked", "input", "button"]
-        keys += ["slot{}_{}".format(i, profile) for i in range(1, 5)]
-        for key in keys:
-            catalog.save_crop(image, (2, 2, 30, 30), "DFU", key)
-        (catalog.root / "device_profiles.json").write_text(
-            json.dumps({"DFU": {"1": profile}}), encoding="utf-8"
-        )
-        return catalog
+# --- parsing -----------------------------------------------------------------
 
-    def test_input_orders_dock_checkbox_sn_ok_and_log_shortcut(self):
-        with tempfile.TemporaryDirectory() as temp:
-            catalog = self._prepare_catalog(Path(temp) / "template")
-            frame = np.zeros((80, 80, 3), dtype=np.uint8)
-            kvm = FakeKvm(frame)
-            rows = {slot: (1, slot * 10, 60, 8) for slot in range(1, 5)}
-            calls = {"verify": 0}
+def test_parse_items_sorts_sparse_slots():
+    assert dfu_flow.parse_items([{"slot": 3, "sn": "SN3"}, {"slot": 1, "sn": "SN1"}], 4) == [(1, "SN1"), (3, "SN3")]
 
-            async def focused(kvm, *args, **kwargs):
-                await kvm.click(70, 70)
 
-            def state(_frame, _row, _checked, _unchecked, _diag, slot, _threshold):
-                # Initial screen needs slot 1 toggled; verification is then fully correct.
-                desired = "checked" if slot in (1, 3) else "unchecked"
-                current = "unchecked" if slot == 1 and calls["verify"] == 1 else desired
-                return current, (10, slot * 10, 5, 5), .95, .10
+def test_sn_may_contain_commas_and_colons():
+    assert dfu_flow.parse_items([{"slot": 1, "sn": "F5K2:003,B"}], 4) == [(1, "F5K2:003,B")]
 
-            def window(*_args):
-                calls["verify"] += 1
-                return .99, (0, 0, 70, 70)
 
-            with patch.object(dfu_flow, "_focus_dock", focused), \
-                 patch.object(dfu_flow, "_window_match", window), \
-                 patch.object(dfu_flow, "_slot_rows", lambda *_args: rows), \
-                 patch.object(dfu_flow, "_best_state", state), \
-                 patch.object(dfu_flow, "_locate_control", lambda *_args: (30, 30, 10, 10)):
-                result = asyncio.run(dfu_flow.run_dfu_input(kvm, "1", "3:SN3,1:SN1", catalog.root))
+@pytest.mark.parametrize("items", [
+    [],
+    "not-a-list",
+    [{"slot": 0, "sn": "A"}],
+    [{"slot": 5, "sn": "A"}],
+    [{"slot": True, "sn": "A"}],
+    [{"slot": "1", "sn": "A"}],
+    [{"slot": 1, "sn": ""}],
+    [{"slot": 1, "sn": "x" * 65}],
+    [{"slot": 1, "sn": "A"}, {"slot": 1, "sn": "B"}],
+    [{"slot": 1}],
+    [{"slot": 1, "sn": "A", "extra": 1}],
+    ["1:A"],
+])
+def test_invalid_items_are_refused_as_invalid_argument(items):
+    with pytest.raises(DfuInputError) as excinfo:
+        dfu_flow.parse_items(items, 4)
+    assert excinfo.value.code == "invalid_argument"
 
-            self.assertTrue(result["ok"])
-            self.assertEqual(kvm.events[0], ("click", 70, 70))
-            self.assertIn(("type", "SN1"), kvm.events)
-            self.assertIn(("type", "SN3"), kvm.events)
-            self.assertLess(kvm.events.index(("type", "SN1")), kvm.events.index(("type", "SN3")))
-            self.assertEqual(kvm.events.count(("enter",)), 2)
-            self.assertEqual(kvm.events[-1], ("log_shortcut",))
-            # Dock, checkbox correction, input, one OK; no extra checkbox retry.
-            self.assertEqual(len([event for event in kvm.events if event[0] == "click"]), 4)
 
-    def test_ambiguous_checkbox_stops_before_typing(self):
-        with tempfile.TemporaryDirectory() as temp:
-            catalog = self._prepare_catalog(Path(temp) / "template")
-            kvm = FakeKvm(np.zeros((80, 80, 3), dtype=np.uint8))
-            with patch.object(dfu_flow, "_focus_dock", lambda *_args, **_kwargs: asyncio.sleep(0)), \
-                 patch.object(dfu_flow, "_window_match", lambda *_args: (.99, (0, 0, 70, 70))), \
-                 patch.object(dfu_flow, "_slot_rows", lambda *_args: {1: (0, 0, 20, 10), 2: (0, 10, 20, 10), 3: (0, 20, 20, 10), 4: (0, 30, 20, 10)}), \
-                 patch.object(dfu_flow, "_best_state", side_effect=ValueError("slot 1 checkbox 狀態不明確")):
-                result = asyncio.run(dfu_flow.run_dfu_input(kvm, "1", "1:SN1", catalog.root))
-            self.assertFalse(result["ok"])
-            self.assertFalse(any(event[0] == "type" for event in kvm.events))
+# --- checkbox discovery ------------------------------------------------------
 
-if __name__ == "__main__":
-    unittest.main()
+def test_checkboxes_are_ordered_top_to_bottom_then_left_to_right(root):
+    shuffled = [(120, 90), (40, 50), (120, 50), (40, 90)]
+    save_templates(root, FOUR)
+    kvm = SyntheticDfuKVM(shuffled)
+    checked, unchecked = (cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in checkbox_templates())
+    boxes = dfu_flow.find_checkboxes(kvm.frame, (10, 10, 240, 190), checked, unchecked)
+    centres = [(box["box"][0], box["box"][1]) for box in boxes]
+    assert centres == [(40, 50), (120, 50), (40, 90), (120, 90)]
+
+
+# --- full input flow ----------------------------------------------------------
+
+def test_items_set_only_requested_channels_and_type_in_slot_order(root):
+    save_templates(root, FOUR, [True, False, False, True])
+    kvm = SyntheticDfuKVM(FOUR, [True, False, False, True])
+
+    result = _run(kvm, 4, [{"slot": 3, "sn": "SN3"}, {"slot": 1, "sn": "SN1"}], root)
+
+    assert result == {"entered": [1, 3]}
+    assert kvm.checked_channels() == [1, 3]
+    types = [event for event in kvm.events if event[0] == "type"]
+    assert types == [("type", "SN1"), ("type", "SN3")]
+    first_type = kvm.events.index(types[0])
+    assert all(event[0] != "click" or kvm.events.index(event) < first_type
+               for event in kvm.events[:first_type])
+    assert kvm.events[-1] == ("log_shortcut",)
+
+
+def test_a_checkbox_count_other_than_channels_refuses_before_any_sn(root):
+    three = FOUR[:3]
+    save_templates(root, three)
+    kvm = SyntheticDfuKVM(three)
+
+    with pytest.raises(DfuInputError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert excinfo.value.entered == []
+    assert not any(event[0] == "type" for event in kvm.events)
+
+
+def test_a_lost_click_is_corrected_by_one_retry(root):
+    save_templates(root, FOUR)
+    kvm = SyntheticDfuKVM(FOUR)
+    kvm.lost_clicks = [1]  # the first click on channel 2 is ignored
+
+    result = _run(kvm, 4, [{"slot": 2, "sn": "SN2"}], root)
+
+    assert result == {"entered": [2]}
+    assert kvm.checked_channels() == [2]
+
+
+def test_a_second_mismatch_stops_before_typing(root):
+    save_templates(root, FOUR)
+    kvm = SyntheticDfuKVM(FOUR)
+    kvm.lost_clicks = [1, 1]  # the click and its retry both fail
+
+    with pytest.raises(DfuInputError) as excinfo:
+        _run(kvm, 4, [{"slot": 2, "sn": "SN2"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert not any(event[0] == "type" for event in kvm.events)
+
+
+def test_hid_error_while_typing_reports_the_slots_already_entered(root):
+    save_templates(root, FOUR)
+    kvm = SyntheticDfuKVM(FOUR)
+    kvm.hid_error_after_types = 1
+
+    with pytest.raises(DfuInputError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}, {"slot": 2, "sn": "SN2"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert excinfo.value.entered == [1]
+
+
+def test_missing_template_is_hid_failed_before_any_click(root):
+    save_templates(root, FOUR)
+    (root / "DFU" / "DFU_checkbox_unchecked.png").unlink()
+    kvm = SyntheticDfuKVM(FOUR)
+
+    with pytest.raises(DfuInputError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert kvm.events == []
