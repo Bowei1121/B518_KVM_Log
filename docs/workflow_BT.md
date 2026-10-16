@@ -51,7 +51,7 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 
 ## `start_test` 狀態機
 
-1. 讀取 Log Solution 狀態。非 Monitoring 或無法讀取回 `monitor_not_ready`，不送 HID。沒有影格回 `hid_failed`。
+1. 讀取 Log Solution 狀態。非 Monitoring、無法讀取或沒有影格回 `monitor_not_ready`，不送 HID。
 2. 以 `BT_dock_icon.png` 定位並點擊，等待 0.5 秒讓 BT 視窗回到最前方。Dock 未命中或 HID 錯誤回 `hid_failed`。
 3. 重新取得影格，以 `BT_window.png` 定位視窗，再以 `BT_start_all.png` 定位並點擊一次 Start All。視窗或按鈕未命中、HID 錯誤回 `hid_failed`。
 4. 成功回 `data.action = "start_all"`。
@@ -82,7 +82,7 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 
 | 情況 | 處理 |
 | --- | --- |
-| 無 HDMI 影格 | `hid_failed`，不送 HID |
+| 無 HDMI 影格 | `monitor_start` 回 `hid_failed`；`start_test` 回 `monitor_not_ready`；皆不送 HID |
 | Log Solution 未在監控中就要求開測 | `monitor_not_ready`，不送 HID |
 | Dock 圖示、Log Solution 視窗找不到 | `log_solution_not_found`，未送快捷鍵 |
 | Cmd+Shift+M 後 10 秒內未見 Monitoring | `monitor_not_started`，不開測 |

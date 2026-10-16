@@ -118,6 +118,26 @@ def test_start_test_is_monitor_not_ready_unless_log_solution_is_monitoring(serve
     assert kvm.events == []
 
 
+class NoFrameKVM(SyntheticDfuKVM):
+    """JetKVM that has not delivered a frame yet: the Log Solution marker cannot be read."""
+
+    def latest_frame(self):
+        return None
+
+
+@pytest.mark.parametrize("device", ["DFU-01", "BT-01"])
+def test_start_test_without_a_frame_is_monitor_not_ready_and_sends_no_hid(serve, device):
+    kvm = NoFrameKVM(FOUR)
+    srv = serve(kvm)
+
+    resp = _start_test(srv, device)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_ready"
+    assert resp["data"]["action"] == ""
+    assert kvm.events == []
+
+
 def test_dfu_hid_failure_is_hid_failed_and_no_ok_click(serve):
     kvm = FailingDfuKVM(FOUR)
     kvm.log_state = "monitoring"

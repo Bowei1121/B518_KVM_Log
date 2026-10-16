@@ -46,6 +46,18 @@ try:
 except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
 
+try:
+    from monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC
+except ImportError:
+    from .monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC  # type: ignore[import-not-found,no-redef]
+
+try:
+    from bt_flow import BtStartError, run_start_all
+    from dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok
+except ImportError:
+    from .bt_flow import BtStartError, run_start_all  # type: ignore[import-not-found,no-redef]
+    from .dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
 
 PROTOCOL_VERSION = "1.0"
@@ -53,8 +65,6 @@ CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
 INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
-MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
-MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 VISIBILITY_LOST_SEC = 60.0  # continuous "Log Solution not found" readings before a Dock click
 DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
 MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
@@ -78,6 +88,16 @@ ERROR_CODE_MAP = {
     "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
 }
+# Station-limited commands: the operation each station runs. A station without an entry is refused
+# with unsupported_command during request validation, before any HID.
+STATION_OPERATIONS: Dict[str, Dict[str, Callable[..., Any]]] = {
+    "input": {"DFU": run_dfu_input},
+    "start_test": {"DFU": run_dfu_ok, "BT": run_start_all},
+}
+UNSUPPORTED_STATION_MESSAGES = {
+    "input": "'input' is only supported for DFU devices",
+    "start_test": "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in",
+}
 DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
@@ -92,6 +112,12 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
 
 def _unknown(reason: str) -> Dict[str, Any]:
     return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
+
+
+def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
+    """check/inspect error reply: data keeps the last observation, with kind unknown and no results."""
+    return {"status": "error", "error": code, "message": message,
+            "data": {**last, "kind": "unknown", "results": []}}
 
 
 def _round_observation(decision: Any) -> Dict[str, Any]:
@@ -117,16 +143,11 @@ def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, A
     Reports what the screen shows now. A complete round is reported as taken only after two
     equal complete readings, and nothing here arms or consumes the device's round gate.
     """
-    from round_frame_consumer import MarkerState, inspect_app_frame
+    from round_frame_consumer import MarkerState, read_latest_app_frame
 
-    if hasattr(kvm, "latest_frame"):
-        snapshot = kvm.latest_frame()
-        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-    else:
-        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    frame, obs = read_latest_app_frame(kvm)
     if frame is None:
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
-    obs = inspect_app_frame(frame, received_at, now=time.monotonic())
     if not obs.reliable:
         return _unknown(obs.reason)
     base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
@@ -446,44 +467,37 @@ class TcpJsonServer:
             self._round_gates[device_id] = gate
         return gate
 
-    def _log_solution_reading(self, kvm: Any) -> Tuple[Any, Any]:
-        """(frame, observation) for the newest frame; (None, None) when no frame has arrived."""
-        from round_frame_consumer import inspect_app_frame
+    def _template_root(self) -> Any:
+        """Configured template root, or TemplateCatalog.default_root() (~/Documents/template)."""
+        from template_catalog import TemplateCatalog
 
-        if hasattr(kvm, "latest_frame"):
-            snapshot = kvm.latest_frame()
-            frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-        else:
-            frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+        return self.template_root or TemplateCatalog.default_root()
+
+    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[Tuple[str, str]]:
+        """Why SN input must wait, as (code, message): None when the Log Solution is in standby or its round was taken."""
+        from round_frame_consumer import MarkerState, read_latest_app_frame
+
+        frame, observation = read_latest_app_frame(kvm)
         if frame is None:
-            return None, None
-        return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
-
-    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
-        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
-        from round_frame_consumer import MarkerState
-
-        frame, observation = self._log_solution_reading(kvm)
-        if frame is None:
-            return "hid_failed: no frame to read the Log Solution state"
+            return "hid_failed", "no frame to read the Log Solution state"
         if not observation.reliable:
-            return "hid_failed: Log Solution state unreadable"
+            return "hid_failed", "Log Solution state unreadable"
         if observation.state == MarkerState.STANDBY:
             return None
         if observation.state == MarkerState.COMPLETE:
             gate = self._round_gates.get(entry.device_id)
             if gate is not None and gate.taken:
                 return None
-            return "log_solution_busy: round result not yet taken"
-        return f"log_solution_busy: Log Solution state is {observation.state.value}"
+            return "log_solution_busy", "round result not yet taken"
+        return "log_solution_busy", f"Log Solution state is {observation.state.value}"
 
     def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
-        """Why start_test must wait: None when a reliable Log Solution frame reads Monitoring."""
-        from round_frame_consumer import MarkerState
+        """Why start_test must wait, as (code, message): None when a reliable Log Solution frame reads Monitoring."""
+        from round_frame_consumer import MarkerState, read_latest_app_frame
 
-        frame, observation = self._log_solution_reading(kvm)
+        frame, observation = read_latest_app_frame(kvm)
         if frame is None:
-            return "hid_failed", "no frame to read the Log Solution state"
+            return "monitor_not_ready", "Log Solution is not monitoring (no frame); no HID sent"
         if observation.reliable and observation.state == MarkerState.MONITORING:
             return None
         state = observation.state.value if observation.reliable else "unreadable"
@@ -491,10 +505,6 @@ class TcpJsonServer:
 
     async def _handle_start_test(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
-        from bt_flow import BtStartError, run_start_all
-        from dfu_flow import DfuInputError, run_dfu_ok
-        from template_catalog import TemplateCatalog
-
         kvm = req["_kvm_client"]
         entry = req["_device_entry"]
         refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
@@ -502,25 +512,20 @@ class TcpJsonServer:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
 
-        template_root = self.template_root or TemplateCatalog.default_root()
+        start = STATION_OPERATIONS["start_test"][entry.station]
         try:
-            if entry.station == "DFU":
-                result = await run_dfu_ok(kvm, template_root=template_root,
-                                          log=logger.info, diagnostics_key=entry.device_id)
-            else:
-                result = await run_start_all(kvm, template_root=template_root,
-                                             log=logger.info, diagnostics_key=entry.device_id)
-        except (BtStartError, DfuInputError) as exc:
+            result = await start(kvm, template_root=self._template_root(),
+                                 log=logger.info, diagnostics_key=entry.device_id)
+        except (BtStartError, DfuError) as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
         return {"status": "ok", "data": result}
 
     async def _handle_monitor_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """monitor_start 1.0: open Log Solution from the Dock and start monitoring (all stations)."""
         from monitor_flow import MonitorStartError, run_monitor_start
-        from template_catalog import TemplateCatalog
 
         entry = req["_device_entry"]
-        template_root = self.template_root or TemplateCatalog.default_root()
+        template_root = self._template_root()
         try:
             result = await run_monitor_start(
                 req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
@@ -532,21 +537,18 @@ class TcpJsonServer:
 
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
-        from dfu_flow import DfuInputError, run_dfu_input
-        from template_catalog import TemplateCatalog
-
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
         refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
         if refusal is not None:
-            code, _, message = refusal.partition(": ")
+            code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
 
-        template_root = self.template_root or TemplateCatalog.default_root()
+        enter = STATION_OPERATIONS["input"][entry.station]
         try:
-            result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
-                                         log=logger.info, diagnostics_key=entry.device_id)
-        except DfuInputError as exc:
+            result = await enter(kvm, entry.channels, req.get("items"), template_root=self._template_root(),
+                                 log=logger.info, diagnostics_key=entry.device_id)
+        except DfuError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
@@ -564,7 +566,6 @@ class TcpJsonServer:
         already_taken or an error, and otherwise times out with the last observed state.
         """
         from monitor_flow import MonitorStartError, bring_log_solution_forward
-        from template_catalog import TemplateCatalog
 
         kvm = req.get("_kvm_client")
         entry = req.get("_device_entry")
@@ -605,8 +606,7 @@ class TcpJsonServer:
 
             obs = await self._observe_check(kvm, entry, req, read_only=read_only, stability=stability)
             if "error" in obs:
-                return {"status": "error", "error": obs["error"], "message": obs.get("message", ""),
-                        "data": {**last, "kind": "unknown", "results": []}}
+                return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
 
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
@@ -633,22 +633,17 @@ class TcpJsonServer:
                     if unseen_since is None:
                         unseen_since = now
                     if dock_recoveries >= self.max_dock_recoveries:
-                        return {
-                            "status": "error",
-                            "error": "log_solution_not_visible",
-                            "message": f"Log Solution not visible after {dock_recoveries} Dock clicks",
-                            "data": {**last, "kind": "unknown", "results": []},
-                        }
+                        return _check_error("log_solution_not_visible",
+                                            f"Log Solution not visible after {dock_recoveries} Dock clicks", last)
                     if now - unseen_since >= self.visibility_lost_sec:
                         dock_recoveries += 1
                         unseen_since = None
-                        template_root = self.template_root or TemplateCatalog.default_root()
+                        template_root = self._template_root()
                         try:
                             await bring_log_solution_forward(kvm, template_root=template_root,
                                                              diagnostics_key=entry.device_id)
                         except MonitorStartError as exc:
-                            return {"status": "error", "error": exc.code, "message": str(exc),
-                                    "data": {**last, "kind": "unknown", "results": []}}
+                            return _check_error(exc.code, str(exc), last)
                         await asyncio.sleep(self.dock_recheck_sec)
                         continue
                 else:
@@ -702,15 +697,14 @@ class TcpJsonServer:
             return "missing_device", f"'{cmd}' requires a 'device' ID"
         if self.device_registry.get(device) is None:
             return "unknown_device", f"device '{device}' is not configured"
-        if cmd == "input" and self.device_registry.get(device).station != "DFU":
-            return "unsupported_command", f"'input' is only supported for DFU devices"
-        if cmd == "start_test" and self.device_registry.get(device).station == "FCT":
-            return "unsupported_command", "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in"
+        entry = self.device_registry.get(device)
+        operations = STATION_OPERATIONS.get(cmd)
+        if operations is not None and entry.station not in operations:
+            return "unsupported_command", UNSUPPORTED_STATION_MESSAGES[cmd]
         if cmd == "input":
-            from dfu_flow import DfuInputError, parse_items
             try:
-                parse_items(req.get("items"), self.device_registry.get(device).channels)
-            except DfuInputError as exc:
+                parse_items(req.get("items"), entry.channels)
+            except DfuError as exc:
                 return exc.code, str(exc)
         if cmd == "snapshot":
             fmt = req.get("format")
