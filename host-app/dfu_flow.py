@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from auto_flow import _load_template, locate
+from hid_helpers import center, last_hid_error
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -96,16 +97,6 @@ def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_TH
     return ordered
 
 
-def _center(box):
-    x, y, width, height = box
-    return int(x + width / 2), int(y + height / 2)
-
-
-def _has_hid_error(kvm):
-    errors = getattr(kvm, "rpc_errors", [])
-    return errors[-1] if errors else None
-
-
 def _frame(kvm):
     frame = getattr(kvm, "frame", None)
     return None if frame is None else frame.copy()
@@ -140,10 +131,10 @@ async def _focus_dock(kvm, template, diagnostics, threshold):
     diagnostics.record("dock_icon", value, threshold, frame, box)
     if box is None or value < threshold:
         raise DfuInputError("hid_failed", f"找不到 dock_icon（相似度 {value:.2f}）")
-    await kvm.click(*_center(box))
+    await kvm.click(*center(*box))
     await asyncio.sleep(FOCUS_DELAY)
-    if _has_hid_error(kvm):
-        raise DfuInputError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+    if last_hid_error(kvm):
+        raise DfuInputError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
 
 
 def _load(catalog, keys, diagnostics, threshold, log):
@@ -204,9 +195,9 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
 
         for _channel, box in _mismatches(boxes, wanted):
-            await kvm.click(*_center(box))
-        if _has_hid_error(kvm):
-            raise DfuInputError("hid_failed", f"checkbox HID 錯誤: {_has_hid_error(kvm)}")
+            await kvm.click(*center(*box))
+        if last_hid_error(kvm):
+            raise DfuInputError("hid_failed", f"checkbox HID 錯誤: {last_hid_error(kvm)}")
         await asyncio.sleep(FOCUS_DELAY)
 
         # Verify; allow exactly one correction pass for boxes still out of state.
@@ -226,18 +217,18 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
             if attempt == 1:
                 raise DfuInputError("hid_failed", "checkbox 第二次複驗仍不符")
             for _channel, box in remaining:
-                await kvm.click(*_center(box))
-            if _has_hid_error(kvm):
-                raise DfuInputError("hid_failed", f"checkbox 重試 HID 錯誤: {_has_hid_error(kvm)}")
+                await kvm.click(*center(*box))
+            if last_hid_error(kvm):
+                raise DfuInputError("hid_failed", f"checkbox 重試 HID 錯誤: {last_hid_error(kvm)}")
             await asyncio.sleep(FOCUS_DELAY)
 
         input_box = _locate_control(frame, window, templates["input"], "input", diagnostics, threshold)
-        await kvm.click(*_center(input_box))
+        await kvm.click(*center(*input_box))
         for slot, sn in serials:
             await kvm.type_text(sn)
             await kvm.press_enter()
-            if _has_hid_error(kvm):
-                raise DfuInputError("hid_failed", f"SN 輸入 HID 錯誤: {_has_hid_error(kvm)}", entered)
+            if last_hid_error(kvm):
+                raise DfuInputError("hid_failed", f"SN 輸入 HID 錯誤: {last_hid_error(kvm)}", entered)
             entered.append(slot)
         ok = True
         return {"entered": entered}
@@ -269,9 +260,9 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
         if window is None:
             raise DfuInputError("hid_failed", "找不到 DFU_window")
         button_box = _locate_control(frame, window, templates["button"], "button", diagnostics, threshold)
-        await kvm.click(*_center(button_box))
-        if _has_hid_error(kvm):
-            raise DfuInputError("hid_failed", f"OK HID 錯誤: {_has_hid_error(kvm)}")
+        await kvm.click(*center(*button_box))
+        if last_hid_error(kvm):
+            raise DfuInputError("hid_failed", f"OK HID 錯誤: {last_hid_error(kvm)}")
         ok = True
         return {"action": "ok"}
     except DfuInputError as exc:

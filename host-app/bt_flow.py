@@ -9,6 +9,7 @@ import asyncio
 import cv2
 
 from auto_flow import _load_template, locate
+from hid_helpers import center, last_hid_error
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -22,15 +23,6 @@ class BtStartError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
-
-
-def _center(x, y, width, height):
-    return int(x + width / 2), int(y + height / 2)
-
-
-def _has_hid_error(kvm):
-    errors = getattr(kvm, "rpc_errors", [])
-    return errors[-1] if errors else None
 
 
 async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="BT"):
@@ -55,10 +47,10 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         diagnostics.record("dock_icon", dv, threshold, frame, (dl, dt, dw, dh) if dl is not None else None)
         if dl is None or dv < threshold:
             raise BtStartError("hid_failed", f"找不到 Dock icon（相似度 {dv:.2f}）")
-        await kvm.click(*_center(dl, dt, dw, dh))
+        await kvm.click(*center(dl, dt, dw, dh))
         await asyncio.sleep(DOCK_SETTLE_DELAY)
-        if _has_hid_error(kvm):
-            raise BtStartError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+        if last_hid_error(kvm):
+            raise BtStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
 
         frame = kvm.frame.copy()
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -73,10 +65,10 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
                            (wl + sl, wt + st, sw, sh) if sl is not None else None)
         if sl is None or sv < threshold:
             raise BtStartError("hid_failed", f"找不到 Start All（相似度 {sv:.2f}）")
-        await kvm.click(*_center(wl + sl, wt + st, sw, sh))
+        await kvm.click(*center(wl + sl, wt + st, sw, sh))
         await asyncio.sleep(0)
-        if _has_hid_error(kvm):
-            raise BtStartError("hid_failed", f"Start All HID 錯誤: {_has_hid_error(kvm)}")
+        if last_hid_error(kvm):
+            raise BtStartError("hid_failed", f"Start All HID 錯誤: {last_hid_error(kvm)}")
         ok = True
         return {"action": "start_all"}
     finally:

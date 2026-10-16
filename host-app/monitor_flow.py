@@ -16,6 +16,7 @@ import cv2
 
 from auto_flow import load_gray, locate
 from match_diagnostics import MatchDiagnostics
+from hid_helpers import center, last_hid_error
 from round_frame_consumer import MarkerState, observe_latest_round_frame, read_latest_app_frame
 from template_catalog import TemplateCatalog
 
@@ -31,15 +32,6 @@ class MonitorStartError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
-
-
-def _center(x, y, width, height):
-    return int(x + width / 2), int(y + height / 2)
-
-
-def _has_hid_error(kvm):
-    errors = getattr(kvm, "rpc_errors", [])
-    return errors[-1] if errors else None
 
 
 def _busy(state):
@@ -77,9 +69,9 @@ async def click_dock_icon(kvm, frame, catalog, diagnostics, threshold=MATCH_THRE
 
     if hasattr(kvm, "rpc_errors"):
         kvm.rpc_errors.clear()
-    await kvm.click(*_center(left, top, width, height))
-    if _has_hid_error(kvm):
-        raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+    await kvm.click(*center(left, top, width, height))
+    if last_hid_error(kvm):
+        raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
     return True, value
 
 
@@ -130,8 +122,8 @@ async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRES
             raise _busy(observation.state)
 
         await kvm.press_command_shift_m()
-        if _has_hid_error(kvm):
-            raise MonitorStartError("hid_failed", f"快捷鍵 HID 錯誤: {_has_hid_error(kvm)}")
+        if last_hid_error(kvm):
+            raise MonitorStartError("hid_failed", f"快捷鍵 HID 錯誤: {last_hid_error(kvm)}")
 
         deadline = time.monotonic() + start_timeout_sec
         while True:
