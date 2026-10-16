@@ -195,7 +195,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 #### 可見性與遺失
 
-- 連續 60 秒判讀為「找不到 Log Solution」（`kind = unknown`，`reason` 為定位失敗類：`locators_missing_or_ambiguous`、`locator_orientation_or_contrast_invalid`）：Core 點一次 Log Solution 的 Dock 圖示，等 5 秒後重新判讀。
+- 連續 60 秒判讀為「找不到 Log Solution」（`kind = unknown`，`reason` 為定位失敗類：`locators_missing_or_ambiguous`、`locator_orientation_or_contrast_invalid`）：Core 點一次 Log Solution 的 Dock 圖示，等 5 秒後重新判讀。Log Solution 左側被 ATE 視窗遮住時，判讀失敗的 `reason` 同樣屬於「看不到」，設計上也要觸發點 Dock（目前實作尚未涵蓋，見第 10 節待辦）。
 - 同一請求最多點 3 次，仍看不到回 `error = "log_solution_not_visible"`。
 - 本輪在串流上已見過 Monitoring，之後判讀到 Standby：立即回 `error = "round_lost"`。本輪結果已無法取得，LabVIEW 應暫停並通知人員。
 - 人工停止監控：Log Solution 1.2 下顯示 Complete（`results` 含 `STOPPED`），依一般流程回 `taken` 正常交付；1.1 下顯示 Standby，因此落入 `round_lost`。
@@ -488,6 +488,7 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 
 ### 仍待辦
 
+- **左側遮住的可見性恢復（程式待辦）**：設計上 Log Solution 左側被 ATE 視窗遮住時，`check` 應點 Dock 恢復。目前實作只在兩個定位失敗類 `reason` 觸發點 Dock，左側遮住時判讀多半回 `marker_low_contrast_or_occluded`、`result_cell_unknown_N`、`app_band_cropped` 等，不會觸發，`check` 會等到逾時。需擴大觸發條件並補測試。
 - **人工停止後的 header 實際標記（現場確認）**：規定行為見 5.4——Log Solution 1.2 下人工停止顯示 Complete（`results` 含 `STOPPED`），`check` 正常回 `taken` 交付；1.1 下人工停止顯示 Standby，`check` 回 `round_lost`。待現場確認的只是實機 header 是否確實如此標記，不改變上述規定。
 - **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
 - **FCT 推入前訊號的現場時序**：訊號到首次寫檔的實際時間，決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。

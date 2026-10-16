@@ -85,7 +85,7 @@ state_for_round_snapshot(snapshot)
 
 | Log Solution | 橋接程式 | 結果 |
 | --- | --- | --- |
-| 1.1（現況） | 現況／新版 | 人工停止的輪次不交付，LabVIEW 等到逾時（安全，不會誤判） |
+| 1.1（現況） | 現況／新版 | 人工停止後顯示 Standby，橋接回 `round_lost`，LabVIEW 暫停並通知人員，不交付結果（安全，不會誤判） |
 | 1.2 | 現況／新版 | 人工停止的輪次以 Complete 交付，`results` 含 `STOPPED`；橋接判讀程式不需要改 |
 
 兩邊可以分開部署，不需要同時更新。
