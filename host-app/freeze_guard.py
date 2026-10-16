@@ -100,6 +100,38 @@ def extract_frame_sequence(kvm_or_frame: Any) -> Optional[int]:
     return None
 
 
+def extract_stream_id(kvm_or_frame: Any) -> Optional[str]:
+    """Extract the stream id (index 3 of latest_frame()) so PTS is compared within one stream."""
+    if kvm_or_frame is None:
+        return None
+    if isinstance(kvm_or_frame, (tuple, list)):
+        if len(kvm_or_frame) >= 4 and kvm_or_frame[3] is not None:
+            return str(kvm_or_frame[3])
+        return None
+    if hasattr(kvm_or_frame, "latest_frame") and callable(kvm_or_frame.latest_frame):
+        try:
+            snapshot = kvm_or_frame.latest_frame()
+        except Exception:
+            snapshot = None
+        if isinstance(snapshot, (tuple, list)) and len(snapshot) >= 4 and snapshot[3] is not None:
+            return str(snapshot[3])
+    val = getattr(kvm_or_frame, "stream_id", None)
+    return None if val is None else str(val)
+
+
+def _read_meta(kvm: Any) -> Tuple[Optional[float], Optional[int], Optional[str]]:
+    """(pts, sequence, stream_id) from one latest_frame() call when the KVM returns a snapshot."""
+    snapshot = None
+    if hasattr(kvm, "latest_frame") and callable(kvm.latest_frame):
+        try:
+            snapshot = kvm.latest_frame()
+        except Exception:
+            snapshot = None
+    if isinstance(snapshot, (tuple, list)) and len(snapshot) >= 5:
+        return extract_pts(snapshot), extract_frame_sequence(snapshot), extract_stream_id(snapshot)
+    return extract_pts(kvm), extract_frame_sequence(kvm), extract_stream_id(kvm)
+
+
 @dataclass
 class DevicePTSState:
     """Tracks PTS history and freeze state for a specific device or station."""
@@ -108,6 +140,7 @@ class DevicePTSState:
     first_static_time: Optional[float] = None
     last_observed_time: Optional[float] = None
     last_sequence: Optional[int] = None
+    stream_id: Optional[str] = None
     observation_count: int = 0
     is_frozen: bool = False
     history: List[Tuple[float, float]] = field(default_factory=list)  # [(clock_time, pts), ...]
@@ -148,12 +181,32 @@ class FrameFreezeGuard:
             self._states[key] = DevicePTSState(device_id=key)
         return self._states[key]
 
+    def _bind_stream(self, device_id: str, stream_id: Optional[str]) -> None:
+        """A new stream starts a new PTS baseline: the device's freeze state restarts from its first frame.
+
+        PTS is only comparable within one stream. Without a stream id nothing is bound.
+        A baseline observed before any stream id was known is adopted by the first stream seen.
+        """
+        if stream_id is None:
+            return
+        state = self.get_state(device_id)
+        if state.stream_id is None or state.stream_id == stream_id:
+            state.stream_id = stream_id
+            return
+        state.last_pts = None
+        state.first_static_time = None
+        state.last_sequence = None
+        state.is_frozen = False
+        state.history.clear()
+        state.stream_id = stream_id
+
     def observe(
         self,
         device_id: str,
         pts: Optional[float],
         now: Optional[float] = None,
         sequence: Optional[int] = None,
+        stream_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record an incoming frame's presentation timestamp.
         
@@ -163,6 +216,7 @@ class FrameFreezeGuard:
             - If frozen (static >= threshold): {"is_frozen": True, "status": "error", "error": "frame_frozen", ...}
         """
         now = self.clock() if now is None else float(now)
+        self._bind_stream(device_id, stream_id)
         state = self.get_state(device_id)
         state.observation_count += 1
         state.last_observed_time = now
@@ -280,9 +334,9 @@ class FrameFreezeGuard:
         )
         dev_key = str(device_id) if device_id is not None else "default"
 
-        pts_start = extract_pts(kvm)
-        seq_start = extract_frame_sequence(kvm)
+        pts_start, seq_start, stream_start = _read_meta(kvm)
         now_start = self.clock()
+        self._bind_stream(dev_key, stream_start)
 
         if pts_start is None:
             if self.require_pts:
@@ -328,10 +382,14 @@ class FrameFreezeGuard:
             now_current = self.clock()
             elapsed = now_current - now_start
 
-            pts_current = extract_pts(kvm)
-            seq_current = extract_frame_sequence(kvm)
+            pts_current, seq_current, stream_current = _read_meta(kvm)
+            if stream_current != stream_start:
+                # Reconnected mid-window: the new stream's first frame is the new baseline.
+                stream_start, pts_start, seq_start, now_start = stream_current, pts_current, seq_current, now_current
+                self._bind_stream(dev_key, stream_current)
+                continue
 
-            if pts_current is not None and pts_current > pts_start + self.min_increment:
+            if pts_start is not None and pts_current is not None and pts_current > pts_start + self.min_increment:
                 # Presentation timestamp has advanced! Stream is actively live.
                 self.observe(dev_key, pts_current, now=now_current, sequence=seq_current)
                 logger.debug(
@@ -378,9 +436,9 @@ class FrameFreezeGuard:
         )
         dev_key = str(device_id) if device_id is not None else "default"
 
-        pts_start = extract_pts(kvm)
-        seq_start = extract_frame_sequence(kvm)
+        pts_start, seq_start, stream_start = _read_meta(kvm)
         now_start = self.clock()
+        self._bind_stream(dev_key, stream_start)
 
         if pts_start is None:
             if self.require_pts:
@@ -420,10 +478,14 @@ class FrameFreezeGuard:
             now_current = self.clock()
             elapsed = now_current - now_start
 
-            pts_current = extract_pts(kvm)
-            seq_current = extract_frame_sequence(kvm)
+            pts_current, seq_current, stream_current = _read_meta(kvm)
+            if stream_current != stream_start:
+                # Reconnected mid-window: the new stream's first frame is the new baseline.
+                stream_start, pts_start, seq_start, now_start = stream_current, pts_current, seq_current, now_current
+                self._bind_stream(dev_key, stream_current)
+                continue
 
-            if pts_current is not None and pts_current > pts_start + self.min_increment:
+            if pts_start is not None and pts_current is not None and pts_current > pts_start + self.min_increment:
                 self.observe(dev_key, pts_current, now=now_current, sequence=seq_current)
                 return True, None
 
