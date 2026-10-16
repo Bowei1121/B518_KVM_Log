@@ -32,3 +32,11 @@
 - A9：點 Dock 後滑鼠移到中性位置（不點擊），`monitor_start` 亦同。
 - A10：測試輔助新增 `cover_left(until_x, colour, y_range)`，點 Dock 成功清除遮擋並可設定恢復失敗。使用者將把 Log Solution 的左定位方塊（「KVM RESULT」字樣右側那個）移到色帶最左側上方，使左右兩個定位方塊涵蓋整條色帶；定位方塊被遮住即點 Dock，3 次仍未出現回警示。
 - A11：開修正票掛在 spec #21 下；文件分支內容一併更新；CONTEXT.md 新增「Log Solution 不可見」。
+
+## 第 3 輪（A12–A14）與實作
+
+- A12：定位方塊移動併入 1.2；橋接過渡期同時支援 1.1 與新位置（以兩定位方塊距離判斷），部署先更新橋接再更新 Log Solution。
+- A13：Log Solution 拿掉「KVM RESULT」字樣，再把左定位方塊移到色帶第 1 格正上方；座標由 Log Solution 開發者依五條限制條件決定（`docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` C6）。
+- A14：分兩張票並先做票 A。票 A = #31（`ready-for-agent`, `bug`），票 B = #32（`needs-info`，等 Log Solution 定座標；本次新建 `needs-info` 標籤）；皆為 #21 的 sub-issue，本機副本 `.scratch/log-solution-all-stations/issues/07-*.md`、`08-*.md`。
+- CONTEXT.md 新增「Log Solution 不可見」；PROTOCOL.md 5.4、錯誤碼表、第 10 節與 DEPLOYMENT.md 第 4 節改為本次定案。
+- 票 A 已實作（分支 `docs/occlusion-recovery-decisions`，commit `9340ad0`）：排除法判定不可見、只有可靠畫面歸零、30 秒、找不到 Dock 圖示回 `log_solution_not_found`、點 Dock 後滑鼠移到畫面頂端中央（避開 Dock 與 macOS 熱角）。新測試先在舊程式上失敗（18 failed），修正後全套 454 passed、30 subtests passed。
