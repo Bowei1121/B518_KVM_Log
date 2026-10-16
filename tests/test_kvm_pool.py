@@ -19,15 +19,16 @@ import socket
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import pytest
 
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from kvm_pool import KVMConnectionPool, normalize_kvm_ip
+from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
@@ -555,24 +556,49 @@ def test_in_use_count_is_per_connection() -> None:
     asyncio.run(_test())
 
 
+def _in_use(pool: KVMConnectionPool, ip: str) -> int:
+    info = pool.get_connection_info(ip)
+    return info["in_use"] if info is not None else -1
+
+
+def _wait_for(predicate: Callable[[], bool], timeout: float = 3.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+@contextmanager
+def _probe_server(pool: KVMConnectionPool, cmd: str, handler: Any) -> Iterator[socket.socket]:
+    """A TCP server with one device-bound probe command; yields a client socket connected to it."""
+    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
+    server.register_handler(cmd, handler, device_bound=True)
+    server.start()
+    sock = None
+    try:
+        host, port = server.server_address
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host, port))
+        yield sock
+    finally:
+        if sock is not None:
+            sock.close()
+        server.stop()
+        server.wait(timeout=2.0)
+
+
 def test_tcp_command_holds_lease_for_whole_handler_run() -> None:
     """A slow command over the socket keeps its KVM alive past the idle limit, then releases it."""
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.15, heartbeat_interval=0.05)
-    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
 
     async def slow_handler(req):
         await asyncio.sleep(0.4)
         return {"slept": True}
 
-    server.register_handler("slow_probe", slow_handler, device_bound=True)
-    server.start()
-
-    try:
-        host, port = server.server_address
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, port))
-
+    with _probe_server(pool, "slow_probe", slow_handler) as sock:
         send_json(sock, {"req_id": "lease-1", "cmd": "slow_probe", "device": "DFU-02"})
         resp = recv_json(sock, timeout=5.0)
         assert resp["status"] == "ok"
@@ -582,29 +608,16 @@ def test_tcp_command_holds_lease_for_whole_handler_run() -> None:
         assert client.close_calls == 0, "KVM was evicted while a command was still using it"
         assert pool.get_connection_info("192.168.1.30")["in_use"] == 0
 
-        sock.close()
-    finally:
-        server.stop()
-        server.wait(timeout=2.0)
-
 
 def test_tcp_command_releases_lease_when_handler_raises() -> None:
     """The exception path returns the connection to the pool, so it can go idle and be evicted."""
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
-    server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
 
     def boom_handler(req):
         raise RuntimeError("boom")
 
-    server.register_handler("boom_probe", boom_handler, device_bound=True)
-    server.start()
-
-    try:
-        host, port = server.server_address
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, port))
-
+    with _probe_server(pool, "boom_probe", boom_handler) as sock:
         send_json(sock, {"req_id": "lease-err", "cmd": "boom_probe", "device": "DFU-02"})
         resp = recv_json(sock)
         assert resp["status"] == "error"
@@ -612,10 +625,93 @@ def test_tcp_command_releases_lease_when_handler_raises() -> None:
 
         assert pool.get_connection_info("192.168.1.30")["in_use"] == 0
 
-        sock.close()
-    finally:
-        server.stop()
-        server.wait(timeout=2.0)
+
+def test_tcp_command_releases_lease_when_client_disconnects() -> None:
+    """A client that drops while its command runs does not leave the KVM leased."""
+    factory = MockClientFactory()
+    pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+    async def slow_handler(req):
+        await asyncio.sleep(0.3)
+        return {"slept": True}
+
+    with _probe_server(pool, "slow_probe", slow_handler) as sock:
+        send_json(sock, {"req_id": "lease-gone", "cmd": "slow_probe", "device": "DFU-02"})
+        assert _wait_for(lambda: _in_use(pool, "192.168.1.30") == 1), "command never took the lease"
+        sock.close()  # the command is still running when the client goes away
+        assert _wait_for(lambda: _in_use(pool, "192.168.1.30") == 0), "lease was not returned"
+
+        client = factory.get_latest_client("192.168.1.30")
+        assert client is not None
+        assert client.close_calls == 0
+
+
+def test_recovered_heartbeat_keeps_leased_connection_on_release() -> None:
+    """A heartbeat that failed during a command and then recovered does not evict the connection on release."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        client.latest_frame_exc = RuntimeError("frame pull broke")
+        assert await pool.perform_heartbeat() == 0
+
+        client.latest_frame_exc = None
+        assert await pool.perform_heartbeat() == 1
+
+        await pool.release_connection("192.168.1.10")
+        assert client.close_calls == 0
+        assert pool.active_count() == 1
+
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+def test_recovered_heartbeat_hands_leased_connection_to_new_request() -> None:
+    """Once the heartbeat recovers, a new request reuses the leased connection instead of being refused."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        client.latest_frame_exc = RuntimeError("frame pull broke")
+        assert await pool.perform_heartbeat() == 0
+        client.latest_frame_exc = None
+        assert await pool.perform_heartbeat() == 1
+
+        assert await pool.acquire_connection("192.168.1.10") is client
+        assert client.connect_calls == 1
+
+        await pool.release_connection("192.168.1.10")
+        await pool.release_connection("192.168.1.10")
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+def test_failed_heartbeat_on_leased_connection_is_not_given_to_new_request() -> None:
+    """While a failed-heartbeat connection is leased, new requests are refused and no replacement is opened."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        client.latest_frame_exc = RuntimeError("frame pull broke")
+        assert await pool.perform_heartbeat() == 0
+
+        with pytest.raises(KVMUnavailableError):
+            await pool.acquire_connection("192.168.1.10")
+        with pytest.raises(KVMUnavailableError):
+            await pool.get_connection("192.168.1.10")
+        assert factory.created_clients["192.168.1.10"] == [client]
+        assert client.close_calls == 0, "the running command must keep its connection"
+
+        await pool.release_connection("192.168.1.10")
+        assert client.close_calls == 1
+        assert pool.active_count() == 0
+
+    asyncio.run(_test())
 
 
 def test_failed_heartbeat_on_leased_connection_is_evicted_on_release() -> None:

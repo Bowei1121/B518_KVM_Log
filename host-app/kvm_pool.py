@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger("KVMConnectionPool")
 
 
+class KVMUnavailableError(ConnectionError):
+    """A leased connection failed its heartbeat; it is not handed to new requests until the heartbeat recovers."""
+
+
 def normalize_kvm_ip(ip: Any) -> str:
     """Normalize a KVM IP/host identifier.
     
@@ -65,7 +69,8 @@ class PooledKVMConnection:
         self.heartbeat_count = 0
         # Number of commands currently holding this connection via acquire_connection().
         self.in_use = 0
-        # Set when a heartbeat/disconnect failure hits a busy connection; applied on final release.
+        # Set when a heartbeat/disconnect failure hits a busy connection and cleared by the next
+        # successful heartbeat. While set, the connection is not shared; on final release it is evicted.
         self.evict_pending = False
         self._lock: Optional[asyncio.Lock] = None
 
@@ -167,6 +172,11 @@ class KVMConnectionPool:
             if entry is not None:
                 client = entry.client
                 if getattr(client, "connected", True):
+                    if entry.evict_pending:
+                        # Still leased by a running command whose heartbeat failed: do not share it.
+                        raise KVMUnavailableError(
+                            f"KVM '{canonical_ip}' heartbeat failed while a command is using it"
+                        )
                     entry.last_used_at = now
                     if lease:
                         entry.in_use += 1
@@ -220,6 +230,8 @@ class KVMConnectionPool:
 
                 entry.last_heartbeat_at = now
                 entry.heartbeat_count += 1
+                # Recovered: a leased connection stays pooled when its command returns.
+                entry.evict_pending = False
                 success_count += 1
                 logger.debug("Heartbeat pulled for KVM '%s' (total=%d)", ip, entry.heartbeat_count)
             except Exception as exc:
