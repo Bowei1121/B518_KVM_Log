@@ -616,3 +616,23 @@ def test_tcp_command_releases_lease_when_handler_raises() -> None:
     finally:
         server.stop()
         server.wait(timeout=2.0)
+
+
+def test_failed_heartbeat_on_leased_connection_is_evicted_on_release() -> None:
+    """A heartbeat failure during a command defers eviction; the release applies it."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
+
+        client = await pool.acquire_connection("192.168.1.10")
+        client.latest_frame_exc = RuntimeError("frame pull broke")
+        assert await pool.perform_heartbeat() == 0
+
+        assert client.close_calls == 0
+        assert pool.active_count() == 1
+
+        await pool.release_connection("192.168.1.10")
+        assert client.close_calls == 1
+        assert pool.active_count() == 0
+
+    asyncio.run(_test())
