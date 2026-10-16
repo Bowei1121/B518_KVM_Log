@@ -37,9 +37,9 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
 
 try:
-    from freeze_guard import FrameFreezeGuard
+    from freeze_guard import FrameFreezeGuard, extract_stream_id
 except ImportError:
-    from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
+    from .freeze_guard import FrameFreezeGuard, extract_stream_id  # type: ignore[import-not-found,no-redef]
 
 try:
     from device_registry import DeviceRegistry
@@ -434,8 +434,9 @@ class TcpJsonServer:
                     kvm,
                     device=entry.station,
                     template_root=template_root,
+                    freeze_guard=self.freeze_guard,
                     device_id=entry.device_id,
-                    check_liveness=False,  # the check loop already verified the picture is live
+                    stream_id=extract_stream_id(kvm),
                 ))
 
         future = self._inspector.submit(job)
@@ -549,6 +550,7 @@ class TcpJsonServer:
                 kvm,
                 device_id=entry.device_id,
                 poll_interval=0.05,
+                stream_id=extract_stream_id(kvm),
             )
             if not is_live:
                 return {
@@ -710,11 +712,14 @@ class TcpJsonServer:
                 }
 
         # Check KVM connection pooling (kvm_ip comes from the device registry)
+        # The lease is taken here and released in the finally below, so the KVM stays alive for the whole handler run.
         raw_kvm_ip = req.get("kvm_ip")
+        leased_kvm_ip: Optional[str] = None
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
             try:
-                kvm_client = await self.kvm_pool.get_connection(kvm_ip)
+                kvm_client = await self.kvm_pool.acquire_connection(kvm_ip)
+                leased_kvm_ip = kvm_ip
                 req["_kvm_client"] = kvm_client
             except Exception as exc:
                 logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id)
@@ -767,6 +772,8 @@ class TcpJsonServer:
         finally:
             if device_id is not None and not is_read_only:
                 self.lock_manager.release(device_id)
+            if leased_kvm_ip is not None:
+                await self.kvm_pool.release_connection(leased_kvm_ip)
 
     async def _process_line(
         self,

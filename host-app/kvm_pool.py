@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger("KVMConnectionPool")
 
 
+class KVMUnavailableError(ConnectionError):
+    """A leased connection failed its heartbeat; it is not handed to new requests until the heartbeat recovers."""
+
+
 def normalize_kvm_ip(ip: Any) -> str:
     """Normalize a KVM IP/host identifier.
     
@@ -63,6 +67,11 @@ class PooledKVMConnection:
         self.last_used_at = now
         self.last_heartbeat_at = 0.0
         self.heartbeat_count = 0
+        # Number of commands currently holding this connection via acquire_connection().
+        self.in_use = 0
+        # Set when a heartbeat/disconnect failure hits a busy connection and cleared by the next
+        # successful heartbeat. While set, the connection is not shared; on final release it is evicted.
+        self.evict_pending = False
         self._lock: Optional[asyncio.Lock] = None
 
     @property
@@ -123,25 +132,60 @@ class KVMConnectionPool:
 
     async def get_connection(self, ip: str, password: str = "") -> Any:
         """Get an active WebRTC connection for the given KVM IP.
-        
+
         Reuses an existing healthy connection if available, or transparently
-        connects a fresh instance.
+        connects a fresh instance. The connection is not leased; prefer
+        acquire_connection() for command execution.
         """
+        return await self._get_connection(ip, password=password, lease=False)
+
+    async def acquire_connection(self, ip: str, password: str = "") -> Any:
+        """Get a connection and lease it until release_connection(ip) is called.
+
+        Leased connections (in_use > 0) are never idle-evicted.
+        """
+        return await self._get_connection(ip, password=password, lease=True)
+
+    async def release_connection(self, ip: str) -> None:
+        """Return a lease taken by acquire_connection(); restarts the idle clock."""
+        try:
+            canonical_ip = normalize_kvm_ip(ip)
+        except ValueError:
+            return
+        entry = self._pool.get(canonical_ip)
+        if entry is None or entry.in_use <= 0:
+            return
+        entry.in_use -= 1
+        entry.last_used_at = time.time()
+        if entry.in_use == 0 and entry.evict_pending:
+            await self._evict_or_defer(entry, "released after failed heartbeat")
+
+    async def _get_connection(self, ip: str, password: str, lease: bool) -> Any:
         canonical_ip = normalize_kvm_ip(ip)
         ip_lock = self._get_ip_lock(canonical_ip)
 
         async with ip_lock:
             now = time.time()
             entry = self._pool.get(canonical_ip)
+            carried_in_use = 0
 
             if entry is not None:
                 client = entry.client
                 if getattr(client, "connected", True):
+                    if entry.evict_pending:
+                        # Still leased by a running command whose heartbeat failed: do not share it.
+                        raise KVMUnavailableError(
+                            f"KVM '{canonical_ip}' heartbeat failed while a command is using it"
+                        )
                     entry.last_used_at = now
+                    if lease:
+                        entry.in_use += 1
                     logger.debug("Reusing existing KVM connection for '%s'", canonical_ip)
                     return client
                 else:
                     logger.warning("Existing KVM connection for '%s' is closed; discarding", canonical_ip)
+                    # Holders of the dead client release against the replacement, so carry their count over.
+                    carried_in_use = entry.in_use
                     await self._evict_entry(canonical_ip)
 
             logger.info("Connecting to KVM '%s'...", canonical_ip)
@@ -151,6 +195,7 @@ class KVMConnectionPool:
                 await self._safe_call(getattr(client, "connect"))
 
             entry = PooledKVMConnection(canonical_ip, client)
+            entry.in_use = carried_in_use + (1 if lease else 0)
             self._pool[canonical_ip] = entry
             logger.info("KVM connection established and pooled for '%s'", canonical_ip)
             return client
@@ -172,8 +217,7 @@ class KVMConnectionPool:
             ip = entry.ip
 
             if not getattr(client, "connected", True):
-                logger.warning("KVM '%s' disconnected during heartbeat; evicting", ip)
-                await self._evict_entry(ip)
+                await self._evict_or_defer(entry, "disconnected during heartbeat")
                 continue
 
             try:
@@ -186,17 +230,30 @@ class KVMConnectionPool:
 
                 entry.last_heartbeat_at = now
                 entry.heartbeat_count += 1
+                # Recovered: a leased connection stays pooled when its command returns.
+                entry.evict_pending = False
                 success_count += 1
                 logger.debug("Heartbeat pulled for KVM '%s' (total=%d)", ip, entry.heartbeat_count)
             except Exception as exc:
-                logger.warning("Heartbeat failed for KVM '%s': %s; evicting connection", ip, exc)
-                await self._evict_entry(ip)
+                await self._evict_or_defer(entry, f"heartbeat failed ({exc})")
 
         return success_count
 
+    async def _evict_or_defer(self, entry: PooledKVMConnection, reason: str) -> None:
+        """Evict now if idle; otherwise defer until the last lease is released."""
+        if self._pool.get(entry.ip) is not entry:
+            return
+        if entry.in_use > 0:
+            entry.evict_pending = True
+            logger.warning("KVM '%s' %s while in use; eviction deferred until release", entry.ip, reason)
+            return
+        logger.warning("KVM '%s' %s; evicting connection", entry.ip, reason)
+        await self._evict_entry(entry.ip)
+
     async def prune_idle_connections(self, max_idle: Optional[float] = None) -> int:
         """Evict connections that have remained idle longer than the timeout.
-        
+
+        Connections with an active lease are skipped.
         Returns the number of evicted connections.
         """
         timeout = max_idle if max_idle is not None else self.idle_timeout
@@ -204,17 +261,24 @@ class KVMConnectionPool:
         to_evict: List[str] = []
 
         for ip, entry in list(self._pool.items()):
+            if entry.in_use > 0:
+                continue
             idle_time = now - entry.last_used_at
             if idle_time > timeout:
                 to_evict.append(ip)
 
+        evicted = 0
         for ip in to_evict:
+            # Re-check: an earlier close may have yielded and a new lease may have been taken.
             target_entry = self._pool.get(ip)
-            idle_duration = (now - target_entry.last_used_at) if target_entry is not None else timeout
+            if target_entry is None or target_entry.in_use > 0:
+                continue
+            idle_duration = now - target_entry.last_used_at
             logger.info("Evicting idle KVM connection '%s' (idle %.1fs > %.1fs)", ip, idle_duration, timeout)
             await self._evict_entry(ip)
+            evicted += 1
 
-        return len(to_evict)
+        return evicted
 
     async def _close_entry(self, entry: PooledKVMConnection) -> None:
         client = entry.client
@@ -317,6 +381,7 @@ class KVMConnectionPool:
             "idle_seconds": round(now - entry.last_used_at, 2),
             "last_heartbeat_at": entry.last_heartbeat_at,
             "heartbeat_count": entry.heartbeat_count,
+            "in_use": entry.in_use,
         }
 
     def get_pool_status(self) -> Dict[str, Any]:
