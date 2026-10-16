@@ -111,21 +111,6 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
     }
 
 
-def _template_observation(r: Dict[str, Any]) -> Dict[str, Any]:
-    """Map a template-catalog reading onto the check 1.0 data shape."""
-    if r.get("error") == "frame_frozen":
-        return {"error": "frame_frozen", "message": r.get("message", "Frame presentation timestamp is static / frozen")}
-    base = {"state": "", "capacity": 0, "results": []}
-    if r.get("ok") and r.get("testing"):
-        return {**base, "kind": "waiting", "reason": "testing"}
-    rows = r.get("rows") or []
-    if r.get("ok") and rows:
-        # run_check rows are (index, result, sn); the SN is not part of check 1.0.
-        results = [{"slot": row[0], "status": "PASS" if row[1] == "pass" else "FAIL"} for row in rows]
-        return {"kind": "taken", "state": "", "reason": "template_rows", "capacity": len(rows), "results": results}
-    return {**base, "kind": "unknown", "reason": "template_not_matched"}
-
-
 def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 

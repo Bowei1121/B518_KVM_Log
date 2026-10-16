@@ -10,30 +10,8 @@ run_flow(kvm, device, template_root, ...): 用「已連線的 JetKVMClient」跑
 """
 import asyncio
 import cv2
-import numpy as np
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
-
-try:
-    from ocr_sn import read_lines
-except Exception:
-    def read_lines(_img):      # OCR 模組缺失時的退路
-        return []
-
-try:
-    from freeze_guard import FrameFreezeGuard, extract_pts
-except ImportError:
-    try:
-        from .freeze_guard import FrameFreezeGuard, extract_pts  # type: ignore[import-not-found,no-redef]
-    except ImportError:
-        FrameFreezeGuard = None  # type: ignore[assignment,misc]
-        def extract_pts(_k):  # type: ignore[misc]
-            return None
-
-# SN 欄在「視窗寬度」中的比例範圍 (左, 右)。OCR 前用此範圍裁出 SN 那一格,
-# 才不會把 group/slot 等其他欄一起讀進來。不同版面可調整。
-SN_COL_FRAC = (0.22, 0.51)
-
 
 def load_gray(path):
     img = cv2.imread(path)
@@ -85,23 +63,6 @@ def locate(gray, tmpl, downscale=True):
     return best
 
 
-def find_all(gray, tmpl, threshold=0.8):
-    """在 gray 中找出「所有」符合的位置 (非只取最高分), 回傳 [(x, y, score), ...]
-    座標為 gray 內左上角。用簡單 NMS 去除重疊的重複命中。"""
-    th, tw = tmpl.shape[:2]
-    if th > gray.shape[0] or tw > gray.shape[1]:
-        return []
-    res = cv2.matchTemplate(gray, tmpl, cv2.TM_CCOEFF_NORMED)
-    ys, xs = np.where(res >= threshold)
-    pts = sorted(((int(x), int(y), float(res[y, x])) for x, y in zip(xs, ys)),
-                 key=lambda p: -p[2])
-    kept = []
-    for x, y, s in pts:
-        if all(abs(x - kx) > tw * 0.5 or abs(y - ky) > th * 0.5 for kx, ky, _ in kept):
-            kept.append((x, y, s))
-    return kept
-
-
 def _load_template(catalog, device, template_key, log, diagnostics=None, threshold=0.8):
     path = catalog.path(device, template_key)
     image = load_gray(str(path))
@@ -111,139 +72,6 @@ def _load_template(catalog, device, template_key, log, diagnostics=None, thresho
         if diagnostics:
             diagnostics.record(template_key, None, threshold, note=note)
     return image
-
-
-async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, annotate_path=None,
-                    freeze_guard=None, inspection_window=None, device_id=None, check_liveness=True,
-                    stream_id=None):
-    """check 指令: 找視窗 -> 若有 testing 模板則回 testing;
-    否則由上而下找所有 pass / fail 模板，回每列結果。
-    回傳 dict: {ok, window, testing(bool), rows:[(index, 'pass'/'fail'), ...]}"""
-    catalog = TemplateCatalog(template_root)
-    try:
-        device = catalog.normalize_device(device)
-    except ValueError as exc:
-        log(str(exc))
-        return {"ok": False}
-    # Templates are per station; freeze state and diagnostics are per device ID.
-    unit_key = str(device_id) if device_id else device
-    diagnostics = MatchDiagnostics(catalog.root, unit_key)
-
-    def finish(payload):
-        diagnostics.finalize(payload.get("ok", False), "check")
-        return payload
-
-    # Frame Freeze Guard: 驗證 WebRTC Presentation Timestamp 是否正常遞增
-    pts = extract_pts(kvm)
-    if check_liveness and (freeze_guard is not None or pts is not None):
-        guard = freeze_guard if freeze_guard is not None else (
-            FrameFreezeGuard(freeze_threshold=inspection_window or 1.0)
-            if FrameFreezeGuard is not None else None
-        )
-        if guard is not None:
-            is_live, freeze_err = await guard.verify_liveness(
-                kvm, device_id=unit_key, threshold_window=inspection_window, stream_id=stream_id
-            )
-            if not is_live:
-                err_msg = (freeze_err or {}).get("message", "Frame presentation timestamp is static / frozen")
-                note = f"畫面凍結防呆觸發: {err_msg}"
-                log(note)
-                diagnostics.record("freeze_guard", 0.0, threshold, note=note)
-                return finish({
-                    "ok": False,
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": err_msg,
-                })
-
-    win_g = _load_template(catalog, device, "window", log, diagnostics, threshold)
-    if win_g is None:
-        return finish({"ok": False})
-    if kvm.frame is None:
-        log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
-        diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
-        return finish({"ok": False})
-
-    frame = kvm.frame.copy()
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    wv, wl, wt, ww, wh = locate(gray, win_g, downscale=True)
-    log(f"[視窗] 相似度 {wv:.2f}")
-    diagnostics.record("window", wv, threshold, frame,
-                       (wl, wt, ww, wh) if wl is not None else None)
-    if wl is None or wv < threshold:
-        if annotate_path:
-            cv2.imwrite(annotate_path, frame)
-        log(f"找不到視窗 (相似度 {wv:.2f} < {threshold})")
-        return finish({"ok": False, "window": wv})
-    H = gray.shape[0]
-    roi = gray[wt:H, wl:wl + ww]
-    cv2.rectangle(frame, (wl, wt), (wl + ww, H - 1), (0, 255, 0), 2)
-
-    # 1) 是否在測試中
-    testing_g = _load_template(catalog, device, "testing", log, diagnostics, threshold)
-    if testing_g is not None:
-        tv, tl, tt, ttw, tth = locate(roi, testing_g, downscale=False)
-        log(f"[Testing] 相似度 {tv:.2f}")
-        diagnostics.record("testing", tv, threshold, frame,
-                           (wl + tl, wt + tt, ttw, tth) if tl is not None else None)
-        if tl is not None and tv >= threshold:
-            cv2.rectangle(frame, (wl + tl, wt + tt),
-                          (wl + tl + ttw, wt + tt + tth), (0, 165, 255), 2)
-            if annotate_path:
-                cv2.imwrite(annotate_path, frame)
-            return finish({"ok": True, "testing": True, "rows": []})
-
-    # 2) 由上而下找所有 Pass / Fail
-    pass_g = _load_template(catalog, device, "pass", log, diagnostics, threshold)
-    fail_g = _load_template(catalog, device, "fail", log, diagnostics, threshold)
-    if pass_g is None or fail_g is None:
-        return finish({"ok": False})
-
-    # 先找出所有 PASS/FAIL 的位置 (roi 座標, roi 與下方 SN 欄同origin=wt)
-    marks = []  # (y_center, result, row_h)
-    for tmpl, res_name, color in ((pass_g, "pass", (0, 200, 0)),
-                                  (fail_g, "fail", (0, 0, 255))):
-        best, left, top, width, height = locate(roi, tmpl, downscale=False)
-        diagnostics.record(res_name, best, threshold, frame,
-                           (wl + left, wt + top, width, height) if left is not None else None,
-                           color=color)
-        th, tw = tmpl.shape[:2]
-        for x, y, s in find_all(roi, tmpl, threshold):
-            marks.append((y + th // 2, res_name, th))
-            cv2.rectangle(frame, (wl + x, wt + y), (wl + x + tw, wt + y + th), color, 2)
-
-    # SN 欄「一次 OCR」(取代每列各一次, 大幅加速); 且只 OCR marks 涵蓋的
-    # Y 範圍以縮小偵測面積。sn_lines 的 y 換算回 roi 座標 (與 marks 同origin=wt)。
-    sx0 = wl + int(SN_COL_FRAC[0] * ww)
-    sx1 = wl + int(SN_COL_FRAC[1] * ww)
-    sn_lines = []
-    if marks:
-        rh = max(m[2] for m in marks)
-        y_lo = max(0, min(m[0] for m in marks) - rh)
-        y_hi = min(roi.shape[0], max(m[0] for m in marks) + rh)
-        cv2.rectangle(frame, (sx0, wt + y_lo), (sx1, wt + y_hi), (200, 200, 0), 1)
-        for text, ly in read_lines(frame[wt + y_lo:wt + y_hi, sx0:sx1]):
-            sn_lines.append((text, y_lo + ly))     # -> roi 座標
-
-    def nearest_sn(yc, tol):
-        best, bestd = "SN", tol
-        for text, ly in sn_lines:
-            d = abs(ly - yc)
-            if d < bestd:
-                bestd, best = d, text
-        return best
-
-    items = []
-    for yc, res_name, row_h in marks:
-        items.append((yc, res_name, nearest_sn(yc, max(row_h, 15))))
-    items.sort(key=lambda it: it[0])      # 由上而下
-    rows = [(i + 1, r, sn) for i, (yc, r, sn) in enumerate(items)]
-    log(f"[結果] {rows}")
-
-    if annotate_path:
-        cv2.imwrite(annotate_path, frame)
-    return finish({"ok": True, "testing": False, "rows": rows})
 
 
 async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
