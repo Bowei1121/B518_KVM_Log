@@ -58,7 +58,7 @@ checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板�
 
 ## `start_test` 狀態機
 
-1. 讀取 Log Solution 狀態。非 Monitoring 或無法讀取回 `monitor_not_ready`，不送 HID。沒有影格回 `hid_failed`。
+1. 讀取 Log Solution 狀態。非 Monitoring、無法讀取或沒有影格回 `monitor_not_ready`，不送 HID。
 2. 以 `DFU_dock_icon.png` 定位並點擊，前景化 DFU 視窗，等待 0.3 秒。
 3. 找 DFU window，再以 `DFU_button.png` 定位 OK，點一次。找不到或 HID 錯誤回 `hid_failed`。
 4. 成功回 `data.action = "ok"`。

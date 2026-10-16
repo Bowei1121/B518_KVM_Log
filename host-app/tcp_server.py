@@ -483,7 +483,7 @@ class TcpJsonServer:
 
         frame, observation = self._log_solution_reading(kvm)
         if frame is None:
-            return "hid_failed", "no frame to read the Log Solution state"
+            return "monitor_not_ready", "Log Solution is not monitoring (no frame); no HID sent"
         if observation.reliable and observation.state == MarkerState.MONITORING:
             return None
         state = observation.state.value if observation.reliable else "unreadable"

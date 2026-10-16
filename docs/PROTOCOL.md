@@ -260,7 +260,7 @@ Dock 點擊在 Log Solution 已關閉時會讓 macOS 重新開啟它；開啟後
 
 流程：
 
-1. 讀取最新畫面。Log Solution 非 Monitoring 或無法讀取 → `monitor_not_ready`，不送 HID。沒有影格 → `hid_failed`。
+1. 讀取最新畫面判讀 Log Solution 標記。非 Monitoring、無法讀取或沒有影格 → `monitor_not_ready`，不送 HID。
 2. DFU：點 DFU Dock 圖示前景化 DFU 視窗，找到 DFU 視窗與 OK 按鈕後點一次 OK。
    BT：點 BT Dock 圖示前景化 BT 視窗，找到 Start All 後點一次。
 3. 任一模板找不到或 HID 錯誤 → `hid_failed`。
@@ -302,10 +302,10 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM | 設備／網路異常，暫停 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
-| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失、沒有影格 | 設備異常，暫停 |
+| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格 | 設備異常，暫停 |
 | `log_solution_not_found` | error | `monitor_start`：Dock 上找不到 Log Solution 圖示，或點擊後 3 秒內找不到 Log Solution 視窗；未送快捷鍵 | 環境異常，暫停，請人員開啟或前景化 Log Solution |
 | `monitor_not_started` | error | `monitor_start`：送出 Cmd+Shift+M 後 10 秒內未見 Monitoring | 設備／環境異常，暫停，不開測 |
-| `monitor_not_ready` | error | `start_test`：Log Solution 非 Monitoring 或無法讀取；未送 HID | 先完成 `monitor_start` |
+| `monitor_not_ready` | error | `start_test`：Log Solution 非 Monitoring、無法讀取或沒有影格；未送 HID | 先完成 `monitor_start` |
 | `log_solution_not_visible` | error | `check`：連續 60 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 環境異常，暫停，不得判產品 FAIL |
 | `round_lost` | error | `check`：本輪已見 Monitoring 後 Log Solution 回到 Standby（1.1 下人工停止會落入此處） | 本輪結果已無法取得，暫停，不得判產品 FAIL（見 5.4） |
 | `timeout` | timeout | `check` 長輪詢逾時 | 依流程決定是否再 `check` |
