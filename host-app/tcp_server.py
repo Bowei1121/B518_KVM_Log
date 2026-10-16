@@ -456,26 +456,26 @@ class TcpJsonServer:
 
         return self.template_root or TemplateCatalog.default_root()
 
-    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
-        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
+    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[Tuple[str, str]]:
+        """Why SN input must wait, as (code, message): None when the Log Solution is in standby or its round was taken."""
         from round_frame_consumer import MarkerState, read_latest_app_frame
 
         frame, observation = read_latest_app_frame(kvm)
         if frame is None:
-            return "hid_failed: no frame to read the Log Solution state"
+            return "hid_failed", "no frame to read the Log Solution state"
         if not observation.reliable:
-            return "hid_failed: Log Solution state unreadable"
+            return "hid_failed", "Log Solution state unreadable"
         if observation.state == MarkerState.STANDBY:
             return None
         if observation.state == MarkerState.COMPLETE:
             gate = self._round_gates.get(entry.device_id)
             if gate is not None and gate.taken:
                 return None
-            return "log_solution_busy: round result not yet taken"
-        return f"log_solution_busy: Log Solution state is {observation.state.value}"
+            return "log_solution_busy", "round result not yet taken"
+        return "log_solution_busy", f"Log Solution state is {observation.state.value}"
 
     def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
-        """Why start_test must wait: None when a reliable Log Solution frame reads Monitoring."""
+        """Why start_test must wait, as (code, message): None when a reliable Log Solution frame reads Monitoring."""
         from round_frame_consumer import MarkerState, read_latest_app_frame
 
         frame, observation = read_latest_app_frame(kvm)
@@ -533,7 +533,7 @@ class TcpJsonServer:
         entry = req["_device_entry"]
         refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
         if refusal is not None:
-            code, _, message = refusal.partition(": ")
+            code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
 
         template_root = self._template_root()
