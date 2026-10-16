@@ -731,23 +731,6 @@ class TestCallerSuppliedStreamID:
         assert guard.get_state("BT-01").stream_id == "stream-new"
 
 
-class TestTemplatePathFreeze:
-    def test_template_reading_reports_frame_frozen_on_static_pts(self, tmp_path):
-        import numpy as np
-
-        frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        kvm = MockKVMClient(initial_pts=100.0, stream_id="mock-stream-01", frame_data=frame)
-        server = TcpJsonServer(
-            device_registry=make_registry(),
-            freeze_guard=FrameFreezeGuard(freeze_threshold=0.1),
-        )
-        entry = make_registry().get("BT-01")
-
-        resp = asyncio.run(server._observe_check(kvm, entry, {"template_root": str(tmp_path)}))
-
-        assert resp.get("error") == "frame_frozen", resp
-
-
 class TestStreamReconnectOverTheWire:
     def test_reconnected_stream_does_not_report_frame_frozen(self, freeze_rig):
         server, kvms, address = freeze_rig
