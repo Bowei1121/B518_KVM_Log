@@ -97,6 +97,12 @@
 - 使用者確認共同理解與測試切入點（TCP JSON 協定＋合成 ATE 畫面為唯一主要 seam；模板目錄沿用既有測試）。
 - Spec #2 已發布：https://github.com/Bowei1121/B518_KVM_Log/issues/21 （`ready-for-agent`）；本機副本 `docs/specs/0002-log-solution-judgement-all-stations.md`。
 
+## to-tickets：spec #2
+
+- 拆成 6 張票 #22～#27（#21 的 sub-issue，原生 blocked-by：#24←#23、#25←#22／#23、#26←#22、#27←#24／#25／#26），皆 `ready-for-agent`；本機副本 `.scratch/log-solution-all-stations/issues/01～06-*.md`（本機編號 = GitHub 編號 − 21）。
+- 可立即開始：#22（FCT／BT 改用 Log Solution 判讀）、#23（monitor_start）；兩者都改 TCP 伺服器，不建議同時進行。
+- 已在 #13 留言提醒 LabVIEW 改版以 #21 完成後的 PROTOCOL 為準。
+
 ## 附錄：implement-spec session 的 2026-10-15 實作摘要（PR #16 帶入）
 
 
