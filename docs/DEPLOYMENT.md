@@ -50,7 +50,7 @@
 橋接以 ATE 畫面與 Log Solution 畫面的位置判讀與操作，以下設定須在每台 ATE 電腦完成。
 
 - **ATE 視窗**：DFU、FCT、BT 的 ATE 測試程式視窗不可最大化。Log Solution 視窗貼齊畫面右側邊緣，因此**右側不可被遮住**；左側允許被 ATE 視窗遮住。
-- **被遮住時的恢復**：Log Solution 整個被遮住或已關閉時，`check` 會點 Dock 圖示把它拉回最上層；左側被遮住時同樣以點 Dock 恢復（見 `docs/PROTOCOL.md` 第 10 節待辦）。仍看不到則回 `log_solution_not_visible`。
+- **被遮住時的恢復**：Log Solution 整個或部分被遮住（例如左側被 ATE 視窗遮住）、已關閉或縮到 Dock，連續 30 秒看不到時，`check` 會點 Dock 圖示把它拉回最上層，5 秒後重新判讀；同一 `check` 最多 3 次，仍看不到回 `log_solution_not_visible`。Dock 上找不到 Log Solution 圖示時回 `log_solution_not_found`，屬嚴重異常，需停線檢查（請確認 Log Solution 圖示固定在 Dock）。
 - **Log Solution 保持開啟**：若已關閉，`monitor_start` 的 Dock 點擊會讓 macOS 重新開啟，開啟後為 Standby，流程可繼續。
 - **通道數一致**：每站 Log Solution profile 的通道數（Slot 數）必須等於 `devices.json` 的 `channels`。不一致時 `check` 回 `capacity_mismatch`，不交付結果。
 - **共用 Dock 模板**：在「創建 Pattern」建立 COMMON 的 `log_solution_dock_icon`，檔案為 `~/Documents/template/COMMON/COMMON_log_solution_dock_icon.png`。三站共用，缺檔時 `monitor_start` 回 `hid_failed`。
