@@ -26,6 +26,15 @@ MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 POLL_INTERVAL_SEC = 0.05
 
 
+def neutral_pointer_position(frame):
+    """Where the pointer rests after a Dock click: top edge, mid-screen.
+
+    Off the Dock (no hover magnification over the icon), off the Log Solution band, and away from
+    the screen corners (macOS Hot Corners).
+    """
+    return frame.shape[1] // 2, 1
+
+
 class MonitorStartError(Exception):
     """A refused or failed monitor_start. ``code`` is a protocol error code."""
 
@@ -70,6 +79,8 @@ async def click_dock_icon(kvm, frame, catalog, diagnostics, threshold=MATCH_THRE
     if hasattr(kvm, "rpc_errors"):
         kvm.rpc_errors.clear()
     await kvm.click(*center(left, top, width, height))
+    if hasattr(kvm, "move"):
+        await kvm.move(*neutral_pointer_position(frame))
     if last_hid_error(kvm):
         raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
     return True, value

@@ -99,7 +99,11 @@ class LogSolutionKVM:
     - close_window(): the window is not running. A Dock click reopens it in standby when restore_on_dock is set.
     - dock_visible / shortcut_enabled: hide the Dock icon, or make Cmd+Shift+M do nothing.
     - state_on_dock: state the window shows after a restoring Dock click, when set.
-    click() and press_command_shift_m() are recorded in ``events`` as ("click", x, y) and ("key", name).
+    - cover_left(until_x, colour, y_range): an ATE window covers the Log Solution window from its
+      left edge up to ``until_x`` (contract units). A restoring Dock click clears it.
+    - repeat_sequence: latest_frame() repeats the frame sequence number (a duplicate-frame stream problem).
+    click(), move() and press_command_shift_m() are recorded in ``events`` as ("click", x, y),
+    ("move", x, y) and ("key", name).
     """
 
     def __init__(self, state="standby", statuses=()):
@@ -120,6 +124,8 @@ class LogSolutionKVM:
         self.shortcut_enabled = True
         self.restore_on_dock = False
         self.state_on_dock = None
+        self.repeat_sequence = False
+        self._cover = None
         self.connected = False
 
     def show(self, state, statuses=()):
@@ -147,6 +153,14 @@ class LogSolutionKVM:
             self._hidden = True
             self._state = None
 
+    def cover_left(self, until_x, colour="grey", y_range=None):
+        """Cover the window from its left edge to ``until_x`` contract units, optionally only rows ``y_range``.
+
+        ``colour`` is "grey", "white", "black" or "noise". The right edge is never covered on site.
+        """
+        with self._lock:
+            self._cover = (until_x, colour, y_range)
+
     def dock_icon_box(self):
         """Absolute (x, y, w, h) of the Dock icon in latest_frame() coordinates."""
         x, y, w, h = DOCK_ICON_BOX
@@ -162,16 +176,21 @@ class LogSolutionKVM:
     async def click(self, x, y):
         with self._lock:
             self.events.append(("click", x, y))
-            if not (self._hidden and self.restore_on_dock and self.dock_visible):
+            if not ((self._hidden or self._cover) and self.restore_on_dock and self.dock_visible):
                 return
             x0, y0, w, h = self.dock_icon_box()
             if not (x0 <= x < x0 + w and y0 <= y < y0 + h):
                 return
             self._hidden = False
+            self._cover = None
             if self.state_on_dock is not None:
                 self._set_state_locked(self.state_on_dock)
             elif self._state is None:
                 self._set_state_locked("standby")
+
+    async def move(self, x, y):
+        with self._lock:
+            self.events.append(("move", x, y))
 
     async def press_command_shift_m(self):
         with self._lock:
@@ -188,16 +207,35 @@ class LogSolutionKVM:
         import time as _time
         import numpy as np
         with self._lock:
-            self._seq += 1
+            if not self.repeat_sequence or self._seq == 0:
+                self._seq += 1
             if not self._frozen:
                 self._pts += 0.033
             window = render_log_solution(None if self._hidden else self._state, self._statuses)
+            if self._cover is not None and not self._hidden:
+                _paint_cover(window, *self._cover)
             strip = np.full((DOCK_HEIGHT, window.shape[1], 3), DOCK_COLOR, dtype=np.uint8)
             if self.dock_visible:
                 x, y, w, h = DOCK_ICON_BOX
                 strip[y:y + h, x:x + w] = self._dock_icon
             frame = np.vstack([window, strip])
             return (frame, self._seq, _time.monotonic(), "synthetic-stream", self._pts)
+
+
+_COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}
+
+
+def _paint_cover(window, until_x, colour, y_range, scale=2, origin=(23, 31)):
+    """Paint an opaque ATE window over the left part of a render_log_solution() frame."""
+    import numpy as np
+    ox, oy = origin
+    x1 = round(ox + until_x * scale)
+    y0, y1 = (0, window.shape[0]) if y_range is None else (round(oy + y_range[0] * scale),
+                                                          round(oy + y_range[1] * scale))
+    if colour == "noise":
+        window[y0:y1, :x1] = np.random.RandomState(7).randint(0, 256, (y1 - y0, x1, 3), dtype=np.uint8)
+    else:
+        window[y0:y1, :x1] = _COVER_COLOURS[colour]
 
 
 def make_log_solution_pool(kvm: "LogSolutionKVM") -> KVMConnectionPool:
