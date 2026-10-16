@@ -358,10 +358,15 @@ class RoundFrameGate:
             return TakeDecision("paused", self.device_id, observation.state,
                                 observation.capacity, reason="confirmation_required")
         if observation.state == MarkerState.STANDBY:
+            # Standby after this round was seen in Monitoring (and not yet taken) means the round is gone.
+            round_lost = self.armed
             self.armed = False
             self.armed_capacity = None
             self._candidate_signature = None
             self._candidate_count = 0
+            if round_lost:
+                return TakeDecision("round_lost", self.device_id, observation.state,
+                                    observation.capacity, reason="round_lost")
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="standby")
         if observation.state == MarkerState.MONITORING:

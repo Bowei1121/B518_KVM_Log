@@ -70,6 +70,47 @@ async def _wait_for_reliable_reading(kvm, timeout_sec):
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
+async def click_dock_icon(kvm, frame, catalog, diagnostics, threshold=MATCH_THRESHOLD):
+    """Click the shared Dock icon once. Returns ``(clicked, score)``; no click when the icon is not on screen.
+
+    A missing template or a HID error raises ``MonitorStartError(hid_failed)``.
+    """
+    dock_path = catalog.path("COMMON", "log_solution_dock_icon")
+    template = load_gray(str(dock_path))
+    if template is None:
+        raise MonitorStartError("hid_failed", f"缺少 Log Solution Dock 圖示模板: {dock_path}")
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    value, left, top, width, height = locate(gray, template, downscale=False)
+    box = (left, top, width, height) if left is not None else None
+    diagnostics.record("log_solution_dock_icon", value, threshold, frame, box)
+    if box is None or value < threshold:
+        return False, value
+
+    if hasattr(kvm, "rpc_errors"):
+        kvm.rpc_errors.clear()
+    await kvm.click(*_center(left, top, width, height))
+    if _has_hid_error(kvm):
+        raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+    return True, value
+
+
+async def bring_log_solution_forward(kvm, template_root=None, threshold=MATCH_THRESHOLD,
+                                     diagnostics_key="check"):
+    """check's visibility recovery: one Dock click, no keys. Returns False when the Dock icon is not on screen."""
+    catalog = TemplateCatalog(template_root)
+    diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
+    ok = False
+    try:
+        frame, _observation = _reading(kvm)
+        if frame is None:
+            raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
+        ok, _score = await click_dock_icon(kvm, frame, catalog, diagnostics, threshold)
+        return ok
+    finally:
+        diagnostics.finalize(ok, "check_dock_recovery")
+
+
 async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=CONFIRM_SEC, start_timeout_sec=START_TIMEOUT_SEC,
                             log=print, diagnostics_key="monitor"):
@@ -88,24 +129,10 @@ async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRES
         if observation.reliable and observation.state in (MarkerState.MONITORING, MarkerState.REVIEW):
             raise _busy(observation.state)
 
-        dock_path = catalog.path("COMMON", "log_solution_dock_icon")
-        template = load_gray(str(dock_path))
-        if template is None:
-            raise MonitorStartError("hid_failed", f"缺少 Log Solution Dock 圖示模板: {dock_path}")
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        value, left, top, width, height = locate(gray, template, downscale=False)
-        box = (left, top, width, height) if left is not None else None
-        diagnostics.record("log_solution_dock_icon", value, threshold, frame, box)
-        if box is None or value < threshold:
+        clicked, score = await click_dock_icon(kvm, frame, catalog, diagnostics, threshold)
+        if not clicked:
             raise MonitorStartError("log_solution_not_found",
-                                    f"找不到 Log Solution Dock 圖示（相似度 {value:.2f}）")
-
-        if hasattr(kvm, "rpc_errors"):
-            kvm.rpc_errors.clear()
-        await kvm.click(*_center(left, top, width, height))
-        if _has_hid_error(kvm):
-            raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+                                    f"找不到 Log Solution Dock 圖示（相似度 {score:.2f}）")
 
         observation = await _wait_for_reliable_reading(kvm, confirm_sec)
         if observation is None:
