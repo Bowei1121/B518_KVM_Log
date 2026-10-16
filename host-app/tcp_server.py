@@ -117,16 +117,11 @@ def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, A
     Reports what the screen shows now. A complete round is reported as taken only after two
     equal complete readings, and nothing here arms or consumes the device's round gate.
     """
-    from round_frame_consumer import MarkerState, inspect_app_frame
+    from round_frame_consumer import MarkerState, read_latest_app_frame
 
-    if hasattr(kvm, "latest_frame"):
-        snapshot = kvm.latest_frame()
-        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-    else:
-        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    frame, obs = read_latest_app_frame(kvm)
     if frame is None:
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
-    obs = inspect_app_frame(frame, received_at, now=time.monotonic())
     if not obs.reliable:
         return _unknown(obs.reason)
     base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
@@ -446,24 +441,11 @@ class TcpJsonServer:
             self._round_gates[device_id] = gate
         return gate
 
-    def _log_solution_reading(self, kvm: Any) -> Tuple[Any, Any]:
-        """(frame, observation) for the newest frame; (None, None) when no frame has arrived."""
-        from round_frame_consumer import inspect_app_frame
-
-        if hasattr(kvm, "latest_frame"):
-            snapshot = kvm.latest_frame()
-            frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-        else:
-            frame, received_at = getattr(kvm, "frame", None), time.monotonic()
-        if frame is None:
-            return None, None
-        return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
-
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
         """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
-        from round_frame_consumer import MarkerState
+        from round_frame_consumer import MarkerState, read_latest_app_frame
 
-        frame, observation = self._log_solution_reading(kvm)
+        frame, observation = read_latest_app_frame(kvm)
         if frame is None:
             return "hid_failed: no frame to read the Log Solution state"
         if not observation.reliable:
@@ -479,9 +461,9 @@ class TcpJsonServer:
 
     def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
         """Why start_test must wait: None when a reliable Log Solution frame reads Monitoring."""
-        from round_frame_consumer import MarkerState
+        from round_frame_consumer import MarkerState, read_latest_app_frame
 
-        frame, observation = self._log_solution_reading(kvm)
+        frame, observation = read_latest_app_frame(kvm)
         if frame is None:
             return "monitor_not_ready", "Log Solution is not monitoring (no frame); no HID sent"
         if observation.reliable and observation.state == MarkerState.MONITORING:

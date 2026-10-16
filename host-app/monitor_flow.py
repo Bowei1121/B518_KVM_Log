@@ -16,7 +16,7 @@ import cv2
 
 from auto_flow import load_gray, locate
 from match_diagnostics import MatchDiagnostics
-from round_frame_consumer import MarkerState, inspect_app_frame, observe_latest_round_frame
+from round_frame_consumer import MarkerState, observe_latest_round_frame, read_latest_app_frame
 from template_catalog import TemplateCatalog
 
 MATCH_THRESHOLD = 0.80
@@ -42,18 +42,6 @@ def _has_hid_error(kvm):
     return errors[-1] if errors else None
 
 
-def _reading(kvm):
-    """(frame, observation) for the newest frame; (None, None) when no frame has arrived."""
-    if hasattr(kvm, "latest_frame"):
-        snapshot = kvm.latest_frame()
-        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-    else:
-        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
-    if frame is None:
-        return None, None
-    return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
-
-
 def _busy(state):
     return MonitorStartError("log_solution_busy", f"Log Solution 為 {state.value}，未送出快捷鍵")
 
@@ -62,7 +50,7 @@ async def _wait_for_reliable_reading(kvm, timeout_sec):
     """Newest reliable Log Solution reading within timeout_sec, or None."""
     deadline = time.monotonic() + timeout_sec
     while True:
-        _frame, observation = _reading(kvm)
+        _frame, observation = read_latest_app_frame(kvm)
         if observation is not None and observation.reliable:
             return observation
         if time.monotonic() >= deadline:
@@ -102,7 +90,7 @@ async def bring_log_solution_forward(kvm, template_root=None, threshold=MATCH_TH
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
     ok = False
     try:
-        frame, _observation = _reading(kvm)
+        frame, _observation = read_latest_app_frame(kvm)
         if frame is None:
             raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
         ok, _score = await click_dock_icon(kvm, frame, catalog, diagnostics, threshold)
@@ -123,7 +111,7 @@ async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRES
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
     ok = False
     try:
-        frame, observation = _reading(kvm)
+        frame, observation = read_latest_app_frame(kvm)
         if frame is None:
             raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
         if observation.reliable and observation.state in (MarkerState.MONITORING, MarkerState.REVIEW):
