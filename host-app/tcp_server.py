@@ -489,7 +489,7 @@ class TcpJsonServer:
     async def _handle_start_test(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
         from bt_flow import BtStartError, run_start_all
-        from dfu_flow import DfuInputError, run_dfu_ok
+        from dfu_flow import DfuError, run_dfu_ok
 
         kvm = req["_kvm_client"]
         entry = req["_device_entry"]
@@ -506,7 +506,7 @@ class TcpJsonServer:
             else:
                 result = await run_start_all(kvm, template_root=template_root,
                                              log=logger.info, diagnostics_key=entry.device_id)
-        except (BtStartError, DfuInputError) as exc:
+        except (BtStartError, DfuError) as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
         return {"status": "ok", "data": result}
 
@@ -527,7 +527,7 @@ class TcpJsonServer:
 
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
-        from dfu_flow import DfuInputError, run_dfu_input
+        from dfu_flow import DfuError, run_dfu_input
 
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
@@ -540,7 +540,7 @@ class TcpJsonServer:
         try:
             result = await run_dfu_input(kvm, entry.channels, req.get("items"), template_root=template_root,
                                          log=logger.info, diagnostics_key=entry.device_id)
-        except DfuInputError as exc:
+        except DfuError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
@@ -694,10 +694,10 @@ class TcpJsonServer:
         if cmd == "start_test" and self.device_registry.get(device).station == "FCT":
             return "unsupported_command", "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in"
         if cmd == "input":
-            from dfu_flow import DfuInputError, parse_items
+            from dfu_flow import DfuError, parse_items
             try:
                 parse_items(req.get("items"), self.device_registry.get(device).channels)
-            except DfuInputError as exc:
+            except DfuError as exc:
                 return exc.code, str(exc)
         if cmd == "snapshot":
             fmt = req.get("format")

@@ -22,8 +22,9 @@ SN_MAX_LENGTH = 64
 ROW_TOLERANCE = 0.5  # fraction of a checkbox height that still counts as the same row
 
 
-class DfuInputError(Exception):
-    """A refused or failed input. ``code`` is a protocol error code; ``entered`` lists slots typed so far."""
+class DfuError(Exception):
+    """A refused or failed DFU operation (input or OK). ``code`` is a protocol error code;
+    ``entered`` lists slots typed so far."""
 
     def __init__(self, code, message, entered=()):
         super().__init__(message)
@@ -32,20 +33,20 @@ class DfuInputError(Exception):
 
 
 def parse_items(items, channels):
-    """Return sorted ``[(slot, sn)]``; raise ``DfuInputError(invalid_argument)`` before any HID action."""
+    """Return sorted ``[(slot, sn)]``; raise ``DfuError(invalid_argument)`` before any HID action."""
     if not isinstance(items, list) or not items:
-        raise DfuInputError("invalid_argument", "items must be a non-empty list")
+        raise DfuError("invalid_argument", "items must be a non-empty list")
     parsed = {}
     for entry in items:
         if not isinstance(entry, dict) or set(entry) != {"slot", "sn"}:
-            raise DfuInputError("invalid_argument", "each item needs exactly slot and sn")
+            raise DfuError("invalid_argument", "each item needs exactly slot and sn")
         slot, sn = entry["slot"], entry["sn"]
         if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= channels:
-            raise DfuInputError("invalid_argument", f"slot must be an integer 1..{channels}")
+            raise DfuError("invalid_argument", f"slot must be an integer 1..{channels}")
         if slot in parsed:
-            raise DfuInputError("invalid_argument", f"slot {slot} is repeated")
+            raise DfuError("invalid_argument", f"slot {slot} is repeated")
         if not isinstance(sn, str) or not 1 <= len(sn) <= SN_MAX_LENGTH:
-            raise DfuInputError("invalid_argument", f"sn must be 1..{SN_MAX_LENGTH} characters")
+            raise DfuError("invalid_argument", f"sn must be 1..{SN_MAX_LENGTH} characters")
         parsed[slot] = sn
     return sorted(parsed.items())
 
@@ -117,24 +118,24 @@ def _locate_control(frame, window_box, template, key, diagnostics, threshold):
     box = (wx + left, wy + top, width, height) if left is not None else None
     diagnostics.record(key, value, threshold, frame, box)
     if box is None or value < threshold:
-        raise DfuInputError("hid_failed", f"找不到 {key}（相似度 {value:.2f}）")
+        raise DfuError("hid_failed", f"找不到 {key}（相似度 {value:.2f}）")
     return box
 
 
 async def _focus_dock(kvm, template, diagnostics, threshold):
     frame = _frame(kvm)
     if frame is None:
-        raise DfuInputError("hid_failed", "沒有 JetKVM 影格")
+        raise DfuError("hid_failed", "沒有 JetKVM 影格")
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     value, left, top, width, height = locate(gray, template, downscale=False)
     box = (left, top, width, height) if left is not None else None
     diagnostics.record("dock_icon", value, threshold, frame, box)
     if box is None or value < threshold:
-        raise DfuInputError("hid_failed", f"找不到 dock_icon（相似度 {value:.2f}）")
+        raise DfuError("hid_failed", f"找不到 dock_icon（相似度 {value:.2f}）")
     await kvm.click(*center(*box))
     await asyncio.sleep(FOCUS_DELAY)
     if last_hid_error(kvm):
-        raise DfuInputError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
+        raise DfuError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
 
 
 def _load(catalog, keys, diagnostics, threshold, log):
@@ -142,7 +143,7 @@ def _load(catalog, keys, diagnostics, threshold, log):
     for key in keys:
         image = _load_template(catalog, "DFU", key, log, diagnostics, threshold)
         if image is None:
-            raise DfuInputError("hid_failed", f"缺少必要 DFU 模板 {key}")
+            raise DfuError("hid_failed", f"缺少必要 DFU 模板 {key}")
         loaded[key] = image
     return loaded
 
@@ -152,7 +153,7 @@ def _boxes_or_fail(frame, window, templates, channels, diagnostics):
     diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
                        note="expected {}".format(channels))
     if len(boxes) != channels:
-        raise DfuInputError("hid_failed", f"DFU 視窗找到 {len(boxes)} 個 checkbox，設備設定為 {channels} 個通道")
+        raise DfuError("hid_failed", f"DFU 視窗找到 {len(boxes)} 個 checkbox，設備設定為 {channels} 個通道")
     return boxes
 
 
@@ -170,7 +171,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
                         log=print, diagnostics_key="DFU"):
     """Set checkboxes for the requested channels, then type each SN. Never clicks OK or sends the shortcut.
 
-    Returns ``{"entered": [slot, ...]}``. Raises ``DfuInputError`` with the protocol error code;
+    Returns ``{"entered": [slot, ...]}``. Raises ``DfuError`` with the protocol error code;
     no SN is typed unless every checkbox was found and set correctly.
     """
     serials = parse_items(items, channels)
@@ -188,38 +189,38 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
 
         frame = _frame(kvm)
         if frame is None:
-            raise DfuInputError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
+            raise DfuError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
         _, window = _window_match(frame, templates["window"], diagnostics, "window", threshold)
         if window is None:
-            raise DfuInputError("hid_failed", "找不到 DFU_window")
+            raise DfuError("hid_failed", "找不到 DFU_window")
         boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
 
         for _channel, box in _mismatches(boxes, wanted):
             await kvm.click(*center(*box))
         if last_hid_error(kvm):
-            raise DfuInputError("hid_failed", f"checkbox HID 錯誤: {last_hid_error(kvm)}")
+            raise DfuError("hid_failed", f"checkbox HID 錯誤: {last_hid_error(kvm)}")
         await asyncio.sleep(FOCUS_DELAY)
 
         # Verify; allow exactly one correction pass for boxes still out of state.
         for attempt in range(2):
             verify = _frame(kvm)
             if verify is None:
-                raise DfuInputError("hid_failed", "checkbox 複驗沒有 JetKVM 影格")
+                raise DfuError("hid_failed", "checkbox 複驗沒有 JetKVM 影格")
             _, verified_window = _window_match(verify, templates["window"], diagnostics,
                                                f"window_verify{attempt + 1}", threshold)
             if verified_window is None:
-                raise DfuInputError("hid_failed", "checkbox 複驗找不到 DFU_window")
+                raise DfuError("hid_failed", "checkbox 複驗找不到 DFU_window")
             boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics)
             remaining = _mismatches(boxes, wanted)
             if not remaining:
                 frame, window = verify, verified_window
                 break
             if attempt == 1:
-                raise DfuInputError("hid_failed", "checkbox 第二次複驗仍不符")
+                raise DfuError("hid_failed", "checkbox 第二次複驗仍不符")
             for _channel, box in remaining:
                 await kvm.click(*center(*box))
             if last_hid_error(kvm):
-                raise DfuInputError("hid_failed", f"checkbox 重試 HID 錯誤: {last_hid_error(kvm)}")
+                raise DfuError("hid_failed", f"checkbox 重試 HID 錯誤: {last_hid_error(kvm)}")
             await asyncio.sleep(FOCUS_DELAY)
 
         input_box = _locate_control(frame, window, templates["input"], "input", diagnostics, threshold)
@@ -228,11 +229,11 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
             await kvm.type_text(sn)
             await kvm.press_enter()
             if last_hid_error(kvm):
-                raise DfuInputError("hid_failed", f"SN 輸入 HID 錯誤: {last_hid_error(kvm)}", entered)
+                raise DfuError("hid_failed", f"SN 輸入 HID 錯誤: {last_hid_error(kvm)}", entered)
             entered.append(slot)
         ok = True
         return {"entered": entered}
-    except DfuInputError as exc:
+    except DfuError as exc:
         log(str(exc))
         raise
     finally:
@@ -242,7 +243,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
 async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="DFU"):
     """Bring the DFU window forward and click OK once. Returns ``{"action": "ok"}``.
 
-    Raises ``DfuInputError`` (hid_failed) when the Dock icon, window or OK button cannot be found or HID fails.
+    Raises ``DfuError`` (hid_failed) when the Dock icon, window or OK button cannot be found or HID fails.
     """
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
@@ -255,18 +256,18 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
 
         frame = _frame(kvm)
         if frame is None:
-            raise DfuInputError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
+            raise DfuError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
         _, window = _window_match(frame, templates["window"], diagnostics, "window", threshold)
         if window is None:
-            raise DfuInputError("hid_failed", "找不到 DFU_window")
+            raise DfuError("hid_failed", "找不到 DFU_window")
         button_box = _locate_control(frame, window, templates["button"], "button", diagnostics, threshold)
         await kvm.click(*center(*button_box))
         if last_hid_error(kvm):
-            raise DfuInputError("hid_failed", f"OK HID 錯誤: {last_hid_error(kvm)}")
+            raise DfuError("hid_failed", f"OK HID 錯誤: {last_hid_error(kvm)}")
         ok = True
         return {"action": "ok"}
-    except DfuInputError as exc:
+    except DfuError as exc:
         log(str(exc))
         raise
     finally:
-        diagnostics.finalize(ok, "start_test")
+        diagnostics.finalize(ok, "ok")
