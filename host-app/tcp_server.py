@@ -55,6 +55,11 @@ CHECK_POLL_INTERVAL_SEC = 0.5
 INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
 MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
 MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
+VISIBILITY_LOST_SEC = 60.0  # continuous "Log Solution not found" readings before a Dock click
+DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
+MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
+# inspect_app_frame reasons meaning the Log Solution window could not be located on screen.
+LOG_SOLUTION_NOT_FOUND_REASONS = frozenset({"locators_missing_or_ambiguous", "locator_orientation_or_contrast_invalid"})
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
@@ -93,6 +98,8 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
     """Map a round-gate decision onto the check 1.0 data shape."""
     if decision.kind == "frozen" or decision.reason == "frame_frozen":
         return {"error": "frame_frozen", "message": "Log Solution frame stream is frozen"}
+    if decision.kind == "round_lost":
+        return {"error": "round_lost", "message": "Log Solution returned to standby before this round was taken"}
     if decision.reason == "no_frame":
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
     return {
@@ -174,6 +181,9 @@ class TcpJsonServer:
         inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
         monitor_confirm_sec: float = MONITOR_CONFIRM_SEC,
         monitor_start_timeout_sec: float = MONITOR_START_TIMEOUT_SEC,
+        visibility_lost_sec: float = VISIBILITY_LOST_SEC,
+        dock_recheck_sec: float = DOCK_RECHECK_SEC,
+        max_dock_recoveries: int = MAX_DOCK_RECOVERIES,
     ) -> None:
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
@@ -199,6 +209,9 @@ class TcpJsonServer:
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
         self.monitor_start_timeout_sec = float(monitor_start_timeout_sec)
+        self.visibility_lost_sec = float(visibility_lost_sec)
+        self.dock_recheck_sec = float(dock_recheck_sec)
+        self.max_dock_recoveries = int(max_dock_recoveries)
         # Frame readings run on worker threads so the event loop keeps serving requests.
         self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
         self._inspections: Dict[str, Future] = {}
@@ -565,6 +578,9 @@ class TcpJsonServer:
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
         already_taken or an error, and otherwise times out with the last observed state.
         """
+        from monitor_flow import MonitorStartError, bring_log_solution_forward
+        from template_catalog import TemplateCatalog
+
         kvm = req.get("_kvm_client")
         entry = req.get("_device_entry")
         timeout_sec = float(req["timeout_sec"])
@@ -573,6 +589,9 @@ class TcpJsonServer:
         start_time = time.monotonic()
         last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
         stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
+        # Visibility recovery (check only): start of the current run of "not found" readings, and Dock clicks so far.
+        unseen_since: Optional[float] = None
+        dock_recoveries = 0
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -623,6 +642,32 @@ class TcpJsonServer:
                     "message": f"no reliable result within {timeout_sec:g} s",
                     "data": last,
                 }
+            if not read_only:
+                if obs["kind"] == "unknown" and obs["reason"] in LOG_SOLUTION_NOT_FOUND_REASONS:
+                    now = time.monotonic()
+                    if unseen_since is None:
+                        unseen_since = now
+                    if dock_recoveries >= self.max_dock_recoveries:
+                        return {
+                            "status": "error",
+                            "error": "log_solution_not_visible",
+                            "message": f"Log Solution not visible after {dock_recoveries} Dock clicks",
+                            "data": {**last, "kind": "unknown", "results": []},
+                        }
+                    if now - unseen_since >= self.visibility_lost_sec:
+                        dock_recoveries += 1
+                        unseen_since = None
+                        template_root = self.template_root or TemplateCatalog.default_root()
+                        try:
+                            await bring_log_solution_forward(kvm, template_root=template_root,
+                                                             diagnostics_key=entry.device_id)
+                        except MonitorStartError as exc:
+                            return {"status": "error", "error": exc.code, "message": str(exc),
+                                    "data": {**last, "kind": "unknown", "results": []}}
+                        await asyncio.sleep(self.dock_recheck_sec)
+                        continue
+                else:
+                    unseen_since = None
             await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, timeout_sec - elapsed)))
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
