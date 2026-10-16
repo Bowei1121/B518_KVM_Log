@@ -1,10 +1,13 @@
-"""BT button 1.0 (Start All) over the socket and in the flow, on a synthetic BT screen."""
+"""start_test 1.0 on BT (Start All) over the socket and in the flow, on a synthetic BT screen (ticket #24).
+
+The BT screen is ``frame``; the Log Solution window is read from ``latest_frame()``, the same split
+as the DFU tests. Clicks are recorded in ``clicks``.
+"""
 
 import asyncio
 import json
 import socket
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -13,10 +16,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from bt_flow import BtButtonError, run_start_all  # noqa: E402
+from bt_flow import BtStartError, run_start_all  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
-from protocol_helpers import make_registry  # noqa: E402
+from protocol_helpers import make_registry, render_log_solution  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
@@ -47,7 +50,17 @@ class FakeKvm:
         self.clicks.append((x, y))
 
 
-class FailingKvm(FakeKvm):
+class BtKvm(FakeKvm):
+    def __init__(self, frame, log_state="monitoring"):
+        super().__init__(frame)
+        self.log_state = log_state
+
+    def latest_frame(self):
+        now = time.monotonic()
+        return (render_log_solution(self.log_state, ["WAITING"] * 4), 1, now, "synthetic", now)
+
+
+class FailingKvm(BtKvm):
     async def click(self, x, y):
         await super().click(x, y)
         self.rpc_errors.append("hidg endpoint disconnected")
@@ -58,7 +71,7 @@ def rig(tmp_path):
     frame = _bt_screen()
     root = tmp_path / "template"
     _save_templates(root, frame)
-    kvm = FakeKvm(frame)
+    kvm = BtKvm(frame)
     srv = TcpJsonServer(
         device_registry=make_registry(),
         host="127.0.0.1",
@@ -76,11 +89,9 @@ def rig(tmp_path):
         srv.wait(timeout=2.0)
 
 
-def _button(srv, device, action, req_id="btn-1"):
+def _start_test(srv, device, req_id="st-bt"):
     host, port = srv.server_address
-    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "button"}
-    if action is not None:
-        payload["action"] = action
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "start_test"}
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
         buf = b""
@@ -95,7 +106,7 @@ def _button(srv, device, action, req_id="btn-1"):
 def test_start_all_clicks_dock_then_start_all_and_reports_action(rig):
     srv, kvm, _ = rig
 
-    resp = _button(srv, "BT-01", "start_all")
+    resp = _start_test(srv, "BT-01")
 
     assert resp["status"] == "ok"
     assert resp["error"] == ""
@@ -105,23 +116,16 @@ def test_start_all_clicks_dock_then_start_all_and_reports_action(rig):
     assert kvm.clicks[1][0] < 140  # Start All inside the window
 
 
-@pytest.mark.parametrize("action", ["stop_all", "START_ALL", "", None])
-def test_actions_other_than_start_all_are_invalid_argument(rig, action):
+@pytest.mark.parametrize("state", ["standby", "complete", "review"])
+def test_start_test_is_monitor_not_ready_and_clicks_nothing(rig, state):
     srv, kvm, _ = rig
+    kvm.log_state = state
 
-    resp = _button(srv, "BT-01", action)
+    resp = _start_test(srv, "BT-01")
 
     assert resp["status"] == "error"
-    assert resp["error"] == "invalid_argument"
-    assert kvm.clicks == []
-
-
-def test_button_on_a_dfu_device_is_unsupported_command(rig):
-    srv, kvm, _ = rig
-
-    resp = _button(srv, "DFU-01", "start_all")
-
-    assert resp["error"] == "unsupported_command"
+    assert resp["error"] == "monitor_not_ready"
+    assert resp["data"]["action"] == ""
     assert kvm.clicks == []
 
 
@@ -130,21 +134,21 @@ def test_hid_failure_is_hid_failed(rig):
     failing = FailingKvm(frame)
     srv.kvm_pool = KVMConnectionPool(client_factory=lambda host, password="": failing)
 
-    resp = _button(srv, "BT-01", "start_all")
+    resp = _start_test(srv, "BT-01")
 
     assert resp["status"] == "error"
     assert resp["error"] == "hid_failed"
     assert resp["data"]["action"] == ""
 
 
-def test_missing_start_all_is_hid_failed_and_never_clicks_it(rig, tmp_path):
+def test_missing_start_all_is_hid_failed_and_never_clicks_it(rig):
     srv, kvm, frame = rig
     changed = frame.copy()
     x, y, w, h = START_ALL_BOX
     changed[y:y + h, x:x + w] = _bt_screen(seed=99)[y:y + h, x:x + w]
     kvm.frame = changed
 
-    resp = _button(srv, "BT-01", "start_all")
+    resp = _start_test(srv, "BT-01")
 
     assert resp["error"] == "hid_failed"
     assert all(not (x <= cx < x + w and y <= cy < y + h) for cx, cy in kvm.clicks)
@@ -152,7 +156,7 @@ def test_missing_start_all_is_hid_failed_and_never_clicks_it(rig, tmp_path):
 
 def test_flow_refuses_without_templates_before_any_click(tmp_path):
     kvm = FakeKvm(_bt_screen())
-    with pytest.raises(BtButtonError) as excinfo:
+    with pytest.raises(BtStartError) as excinfo:
         asyncio.run(run_start_all(kvm, template_root=tmp_path / "empty", log=lambda *_: None))
     assert excinfo.value.code == "hid_failed"
     assert kvm.clicks == []

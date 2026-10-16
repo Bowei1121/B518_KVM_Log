@@ -79,7 +79,7 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
     "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
     "input": {"entered": []},
-    "button": {"action": ""},
+    "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
     "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
 }
@@ -249,7 +249,7 @@ class TcpJsonServer:
         self.register_handler("check", self._handle_check)
         self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
-        self.register_handler("button", self._handle_button, fields=("action",), device_bound=True)
+        self.register_handler("start_test", self._handle_start_test, device_bound=True)
         self.register_handler("monitor_start", self._handle_monitor_start, device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
@@ -448,9 +448,9 @@ class TcpJsonServer:
             self._round_gates[device_id] = gate
         return gate
 
-    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
-        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
-        from round_frame_consumer import MarkerState, inspect_app_frame
+    def _log_solution_reading(self, kvm: Any) -> Tuple[Any, Any]:
+        """(frame, observation) for the newest frame; (None, None) when no frame has arrived."""
+        from round_frame_consumer import inspect_app_frame
 
         if hasattr(kvm, "latest_frame"):
             snapshot = kvm.latest_frame()
@@ -458,8 +458,16 @@ class TcpJsonServer:
         else:
             frame, received_at = getattr(kvm, "frame", None), time.monotonic()
         if frame is None:
+            return None, None
+        return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
+
+    def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
+        """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
+        from round_frame_consumer import MarkerState
+
+        frame, observation = self._log_solution_reading(kvm)
+        if frame is None:
             return "hid_failed: no frame to read the Log Solution state"
-        observation = inspect_app_frame(frame, received_at, now=time.monotonic())
         if not observation.reliable:
             return "hid_failed: Log Solution state unreadable"
         if observation.state == MarkerState.STANDBY:
@@ -471,17 +479,40 @@ class TcpJsonServer:
             return "log_solution_busy: round result not yet taken"
         return f"log_solution_busy: Log Solution state is {observation.state.value}"
 
-    async def _handle_button(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """BT button 1.0: Start All on a BT device."""
-        from bt_flow import BtButtonError, run_start_all
+    def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
+        """Why start_test must wait: None when a reliable Log Solution frame reads Monitoring."""
+        from round_frame_consumer import MarkerState
+
+        frame, observation = self._log_solution_reading(kvm)
+        if frame is None:
+            return "hid_failed", "no frame to read the Log Solution state"
+        if observation.reliable and observation.state == MarkerState.MONITORING:
+            return None
+        state = observation.state.value if observation.reliable else "unreadable"
+        return "monitor_not_ready", f"Log Solution is not monitoring ({state}); no HID sent"
+
+    async def _handle_start_test(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
+        from bt_flow import BtStartError, run_start_all
+        from dfu_flow import DfuInputError, run_dfu_ok
         from template_catalog import TemplateCatalog
 
+        kvm = req["_kvm_client"]
         entry = req["_device_entry"]
+        refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
+        if refusal is not None:
+            code, message = refusal
+            return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
+
         template_root = self.template_root or TemplateCatalog.default_root()
         try:
-            result = await run_start_all(req["_kvm_client"], template_root=template_root,
-                                         log=logger.info, diagnostics_key=entry.device_id)
-        except BtButtonError as exc:
+            if entry.station == "DFU":
+                result = await run_dfu_ok(kvm, template_root=template_root,
+                                          log=logger.info, diagnostics_key=entry.device_id)
+            else:
+                result = await run_start_all(kvm, template_root=template_root,
+                                             log=logger.info, diagnostics_key=entry.device_id)
+        except (BtStartError, DfuInputError) as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
         return {"status": "ok", "data": result}
 
@@ -643,11 +674,8 @@ class TcpJsonServer:
             return "unknown_device", f"device '{device}' is not configured"
         if cmd == "input" and self.device_registry.get(device).station != "DFU":
             return "unsupported_command", f"'input' is only supported for DFU devices"
-        if cmd == "button":
-            if self.device_registry.get(device).station != "BT":
-                return "unsupported_command", f"'button' is only supported for BT devices"
-            if req.get("action") != "start_all":
-                return "invalid_argument", "action must be 'start_all'"
+        if cmd == "start_test" and self.device_registry.get(device).station == "FCT":
+            return "unsupported_command", "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in"
         if cmd == "input":
             from dfu_flow import DfuInputError, parse_items
             try:

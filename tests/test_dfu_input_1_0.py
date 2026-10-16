@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dfu_helpers import SyntheticDfuKVM, save_templates  # noqa: E402
+from dfu_helpers import BUTTON, SyntheticDfuKVM, save_templates  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from protocol_helpers import make_registry  # noqa: E402
@@ -74,6 +74,20 @@ def test_standby_input_enters_requested_slots(rig):
     assert resp["data"] == {"entered": [1, 3]}
     assert kvm.checked_channels() == [1, 3]
     assert ("type", "F5K2:003,B") in kvm.events
+
+
+def test_input_never_clicks_ok_or_sends_the_shortcut(rig):
+    srv, kvm = rig
+    kvm.log_state = "standby"
+
+    resp = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN1"}, {"slot": 3, "sn": "SN3"}])
+
+    assert resp["status"] == "ok"
+    bx, by, bw, bh = BUTTON
+    ok_clicks = [e for e in kvm.events if e[0] == "click" and bx <= e[1] < bx + bw and by <= e[2] < by + bh]
+    assert ok_clicks == []
+    assert not any(event[0] == "log_shortcut" for event in kvm.events)
+    assert kvm.events[-1] == ("enter",)
 
 
 def test_monitoring_refuses_input_without_any_hid_action(rig):

@@ -177,7 +177,7 @@ def _mismatches(boxes, wanted):
 
 async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATCH_THRESHOLD,
                         log=print, diagnostics_key="DFU"):
-    """Set checkboxes for the requested channels, type each SN, press OK once, then the Log shortcut.
+    """Set checkboxes for the requested channels, then type each SN. Never clicks OK or sends the shortcut.
 
     Returns ``{"entered": [slot, ...]}``. Raises ``DfuInputError`` with the protocol error code;
     no SN is typed unless every checkbox was found and set correctly.
@@ -190,7 +190,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
     ok = False
     try:
         templates = _load(catalog, ["dock_icon", "window", "checkbox_checked", "checkbox_unchecked",
-                                    "input", "button"], diagnostics, threshold, log)
+                                    "input"], diagnostics, threshold, log)
         if hasattr(kvm, "rpc_errors"):
             kvm.rpc_errors.clear()
         await _focus_dock(kvm, templates["dock_icon"], diagnostics, threshold)
@@ -232,7 +232,6 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
             await asyncio.sleep(FOCUS_DELAY)
 
         input_box = _locate_control(frame, window, templates["input"], "input", diagnostics, threshold)
-        button_box = _locate_control(frame, window, templates["button"], "button", diagnostics, threshold)
         await kvm.click(*_center(input_box))
         for slot, sn in serials:
             await kvm.type_text(sn)
@@ -240,10 +239,6 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
             if _has_hid_error(kvm):
                 raise DfuInputError("hid_failed", f"SN 輸入 HID 錯誤: {_has_hid_error(kvm)}", entered)
             entered.append(slot)
-        await kvm.click(*_center(button_box))
-        await kvm.press_command_shift_m()
-        if _has_hid_error(kvm):
-            raise DfuInputError("hid_failed", f"HID 錯誤: {_has_hid_error(kvm)}", entered)
         ok = True
         return {"entered": entered}
     except DfuInputError as exc:
@@ -251,3 +246,36 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         raise
     finally:
         diagnostics.finalize(ok, "dfu_input")
+
+
+async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="DFU"):
+    """Bring the DFU window forward and click OK once. Returns ``{"action": "ok"}``.
+
+    Raises ``DfuInputError`` (hid_failed) when the Dock icon, window or OK button cannot be found or HID fails.
+    """
+    catalog = TemplateCatalog(template_root)
+    diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
+    ok = False
+    try:
+        templates = _load(catalog, ["dock_icon", "window", "button"], diagnostics, threshold, log)
+        if hasattr(kvm, "rpc_errors"):
+            kvm.rpc_errors.clear()
+        await _focus_dock(kvm, templates["dock_icon"], diagnostics, threshold)
+
+        frame = _frame(kvm)
+        if frame is None:
+            raise DfuInputError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
+        _, window = _window_match(frame, templates["window"], diagnostics, "window", threshold)
+        if window is None:
+            raise DfuInputError("hid_failed", "找不到 DFU_window")
+        button_box = _locate_control(frame, window, templates["button"], "button", diagnostics, threshold)
+        await kvm.click(*_center(button_box))
+        if _has_hid_error(kvm):
+            raise DfuInputError("hid_failed", f"OK HID 錯誤: {_has_hid_error(kvm)}")
+        ok = True
+        return {"action": "ok"}
+    except DfuInputError as exc:
+        log(str(exc))
+        raise
+    finally:
+        diagnostics.finalize(ok, "start_test")
