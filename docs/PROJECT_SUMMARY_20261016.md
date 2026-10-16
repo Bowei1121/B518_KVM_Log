@@ -46,3 +46,11 @@
 - A4：FCT／BT 的 SN 由 ATE 測試程式處理，橋接不輸入 SN；FCT／BT 監控啟動同樣是 Cmd+Shift+M。
 - A5：PR #16 FCT／BT 列拆解 bug 已修：commit `55b7f93` 推上 `feat/device-identity-protocol-1.0`（兩個 remote），全套 334 passed。
 - A6：第 6～8 項開票：parent #17，子票 #18（凍結檢查區分重連串流）、#19（連線池不淘汰使用中連線）、#20（Monitor UI 通訊分流），皆 `ready-for-agent`；本機副本 `.scratch/core-ui-stability/`。
+
+## grilling：FCT／BT 判讀方式（第 2 輪，A7–A11）
+
+- A7：DFU 點「OK」、BT 點「Start All」即開始測試，啟動權在 LabVIEW／橋接；DFU `input` 改為只填 SN、不點 OK。FCT 由測試儀器在治具推入後自動開始測試，收到訊號時可能已在測試中，FCT 不需任何點擊，只需開始監控。
+- A8：新增三站共用 `monitor_start`（送 Cmd+Shift+M、等待畫面進入 monitoring）。快捷鍵是全域的，但只有 Log Solution 已開啟才有效。
+- A9：`start_test`（DFU=OK、BT=Start All）；FCT 無需啟動。Log Solution 設計：開始監控前後 ±30 秒內產生的檔案都算同一輪；已派子代理唯讀查證 Log Solution 原始碼。
+- A10：Log Solution 置於畫面最右側、ATE 測試程式在左側，盡量不遮擋；本輪監控完成後會回到最上層。
+- A11：三站 `check` 統一走 Log Solution 判讀，淘汰模板判讀結果程式與 `testing`／`pass`／`fail` 模板。
