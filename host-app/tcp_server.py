@@ -37,9 +37,9 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
 
 try:
-    from freeze_guard import FrameFreezeGuard
+    from freeze_guard import FrameFreezeGuard, extract_stream_id
 except ImportError:
-    from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
+    from .freeze_guard import FrameFreezeGuard, extract_stream_id  # type: ignore[import-not-found,no-redef]
 
 try:
     from device_registry import DeviceRegistry
@@ -434,8 +434,9 @@ class TcpJsonServer:
                     kvm,
                     device=entry.station,
                     template_root=template_root,
+                    freeze_guard=self.freeze_guard,
                     device_id=entry.device_id,
-                    check_liveness=False,  # the check loop already verified the picture is live
+                    stream_id=extract_stream_id(kvm),
                 ))
 
         future = self._inspector.submit(job)
@@ -549,6 +550,7 @@ class TcpJsonServer:
                 kvm,
                 device_id=entry.device_id,
                 poll_interval=0.05,
+                stream_id=extract_stream_id(kvm),
             )
             if not is_live:
                 return {
