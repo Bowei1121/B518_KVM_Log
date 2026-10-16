@@ -53,6 +53,8 @@ CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
 INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
+MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
+MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
@@ -78,6 +80,7 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
     "input": {"entered": []},
     "button": {"action": ""},
+    "monitor_start": {"state": "", "capacity": 0},
     "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
 }
 
@@ -169,6 +172,8 @@ class TcpJsonServer:
         device_registry: Optional[DeviceRegistry] = None,
         template_root: Optional[str | Path] = None,
         inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
+        monitor_confirm_sec: float = MONITOR_CONFIRM_SEC,
+        monitor_start_timeout_sec: float = MONITOR_START_TIMEOUT_SEC,
     ) -> None:
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
@@ -192,6 +197,8 @@ class TcpJsonServer:
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._round_gates: Dict[str, Any] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
+        self.monitor_confirm_sec = float(monitor_confirm_sec)
+        self.monitor_start_timeout_sec = float(monitor_start_timeout_sec)
         # Frame readings run on worker threads so the event loop keeps serving requests.
         self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
         self._inspections: Dict[str, Future] = {}
@@ -243,6 +250,7 @@ class TcpJsonServer:
         self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("button", self._handle_button, fields=("action",), device_bound=True)
+        self.register_handler("monitor_start", self._handle_monitor_start, device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -405,16 +413,13 @@ class TcpJsonServer:
             return _unknown("inspection_busy")
 
         # Every station reads the Log Solution display contract; the station only affects operations.
-        from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
+        from round_frame_consumer import observe_latest_round_frame
         if read_only:
             # Gate-less reading: never arms, takes or otherwise touches the round.
             def job():
                 return _inspect_round(kvm, stability)
         else:
-            gate = self._round_gates.get(entry.device_id)
-            if gate is None:
-                gate = RoundFrameGate(entry.device_id, require_presentation_time=True)
-                self._round_gates[entry.device_id] = gate
+            gate = self._round_gate(entry.device_id)
 
             def job():
                 return observe_latest_round_frame(kvm, gate)
@@ -432,6 +437,16 @@ class TcpJsonServer:
             return {"error": "internal_error", "message": f"inspection error: {exc}"}
 
         return raw if read_only else _round_observation(raw)
+
+    def _round_gate(self, device_id: str) -> Any:
+        """The device's round gate, created on first use; it lives as long as the server."""
+        from round_frame_consumer import RoundFrameGate
+
+        gate = self._round_gates.get(device_id)
+        if gate is None:
+            gate = RoundFrameGate(device_id, require_presentation_time=True)
+            self._round_gates[device_id] = gate
+        return gate
 
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[str]:
         """Why SN input must wait: None when the Log Solution is in standby or its round was taken."""
@@ -468,6 +483,22 @@ class TcpJsonServer:
                                          log=logger.info, diagnostics_key=entry.device_id)
         except BtButtonError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
+        return {"status": "ok", "data": result}
+
+    async def _handle_monitor_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """monitor_start 1.0: open Log Solution from the Dock and start monitoring (all stations)."""
+        from monitor_flow import MonitorStartError, run_monitor_start
+        from template_catalog import TemplateCatalog
+
+        entry = req["_device_entry"]
+        template_root = self.template_root or TemplateCatalog.default_root()
+        try:
+            result = await run_monitor_start(
+                req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
+                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=self.monitor_start_timeout_sec,
+                log=logger.info, diagnostics_key=entry.device_id)
+        except MonitorStartError as exc:
+            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"state": "", "capacity": 0}}
         return {"status": "ok", "data": result}
 
     async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:

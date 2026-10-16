@@ -1,0 +1,135 @@
+"""monitor_start 1.0: bring Log Solution up from the Dock, then start monitoring with Cmd+Shift+M.
+
+Fixed order, so no shortcut is sent unless Log Solution is on screen:
+1. Monitoring or Review on screen: log_solution_busy, no HID at all.
+2. Shared Dock icon template missing: hid_failed; Dock icon not on screen: log_solution_not_found.
+3. Click the Dock icon; Log Solution must read reliably within the confirm window, else
+   log_solution_not_found. Monitoring or Review after the click is busy. Still no shortcut.
+4. Cmd+Shift+M; the device's round gate must read Monitoring within the start timeout,
+   else monitor_not_started. The gate is armed by that reading, so the next check takes this round.
+"""
+
+import asyncio
+import time
+
+import cv2
+
+from auto_flow import load_gray, locate
+from match_diagnostics import MatchDiagnostics
+from round_frame_consumer import MarkerState, inspect_app_frame, observe_latest_round_frame
+from template_catalog import TemplateCatalog
+
+MATCH_THRESHOLD = 0.80
+CONFIRM_SEC = 3.0
+START_TIMEOUT_SEC = 10.0
+POLL_INTERVAL_SEC = 0.05
+
+
+class MonitorStartError(Exception):
+    """A refused or failed monitor_start. ``code`` is a protocol error code."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def _center(x, y, width, height):
+    return int(x + width / 2), int(y + height / 2)
+
+
+def _has_hid_error(kvm):
+    errors = getattr(kvm, "rpc_errors", [])
+    return errors[-1] if errors else None
+
+
+def _reading(kvm):
+    """(frame, observation) for the newest frame; (None, None) when no frame has arrived."""
+    if hasattr(kvm, "latest_frame"):
+        snapshot = kvm.latest_frame()
+        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+    else:
+        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    if frame is None:
+        return None, None
+    return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
+
+
+def _busy(state):
+    return MonitorStartError("log_solution_busy", f"Log Solution 為 {state.value}，未送出快捷鍵")
+
+
+async def _wait_for_reliable_reading(kvm, timeout_sec):
+    """Newest reliable Log Solution reading within timeout_sec, or None."""
+    deadline = time.monotonic() + timeout_sec
+    while True:
+        _frame, observation = _reading(kvm)
+        if observation is not None and observation.reliable:
+            return observation
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(POLL_INTERVAL_SEC)
+
+
+async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRESHOLD,
+                            confirm_sec=CONFIRM_SEC, start_timeout_sec=START_TIMEOUT_SEC,
+                            log=print, diagnostics_key="monitor"):
+    """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
+
+    ``gate`` is the device's RoundFrameGate; the Monitoring reading arms it. Raises
+    ``MonitorStartError`` with the protocol error code otherwise.
+    """
+    catalog = TemplateCatalog(template_root)
+    diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
+    ok = False
+    try:
+        frame, observation = _reading(kvm)
+        if frame is None:
+            raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
+        if observation.reliable and observation.state in (MarkerState.MONITORING, MarkerState.REVIEW):
+            raise _busy(observation.state)
+
+        dock_path = catalog.path("COMMON", "log_solution_dock_icon")
+        template = load_gray(str(dock_path))
+        if template is None:
+            raise MonitorStartError("hid_failed", f"缺少 Log Solution Dock 圖示模板: {dock_path}")
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        value, left, top, width, height = locate(gray, template, downscale=False)
+        box = (left, top, width, height) if left is not None else None
+        diagnostics.record("log_solution_dock_icon", value, threshold, frame, box)
+        if box is None or value < threshold:
+            raise MonitorStartError("log_solution_not_found",
+                                    f"找不到 Log Solution Dock 圖示（相似度 {value:.2f}）")
+
+        if hasattr(kvm, "rpc_errors"):
+            kvm.rpc_errors.clear()
+        await kvm.click(*_center(left, top, width, height))
+        if _has_hid_error(kvm):
+            raise MonitorStartError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
+
+        observation = await _wait_for_reliable_reading(kvm, confirm_sec)
+        if observation is None:
+            raise MonitorStartError("log_solution_not_found",
+                                    f"點擊 Dock 後 {confirm_sec:g} 秒內找不到 Log Solution，未送出快捷鍵")
+        if observation.state in (MarkerState.MONITORING, MarkerState.REVIEW):
+            raise _busy(observation.state)
+
+        await kvm.press_command_shift_m()
+        if _has_hid_error(kvm):
+            raise MonitorStartError("hid_failed", f"快捷鍵 HID 錯誤: {_has_hid_error(kvm)}")
+
+        deadline = time.monotonic() + start_timeout_sec
+        while True:
+            decision = await asyncio.to_thread(observe_latest_round_frame, kvm, gate)
+            if decision.state == MarkerState.MONITORING:
+                ok = True
+                return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}
+            if time.monotonic() >= deadline:
+                raise MonitorStartError("monitor_not_started",
+                                        f"送出 Cmd+Shift+M 後 {start_timeout_sec:g} 秒內未見監控中")
+            await asyncio.sleep(POLL_INTERVAL_SEC)
+    except MonitorStartError as exc:
+        log(str(exc))
+        raise
+    finally:
+        diagnostics.finalize(ok, "monitor_start")
