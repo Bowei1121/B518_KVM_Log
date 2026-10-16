@@ -1,64 +1,99 @@
-"""DFU's profile-aware visual state machines.
+"""DFU input 1.0: find every checkbox in the DFU window, then enter SNs by channel.
 
-The TCP/UI layer only supplies a device number and the original input payload.
-This module owns profile lookup, slot validation, visual matching and HID order.
+Channels come from the device list. The window is located with a window template,
+checkboxes with the checked/unchecked templates only, and channels 1..N are the
+checkboxes read top to bottom, then left to right. Any count other than the
+configured channel count refuses the round before a single SN is typed.
 """
 import asyncio
-import json
-from pathlib import Path
 
 import cv2
+import numpy as np
 
 from auto_flow import _load_template, locate
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
 MATCH_THRESHOLD = 0.80
-MATCH_MARGIN = 0.05
+CHECKBOX_THRESHOLD = 0.80
 FOCUS_DELAY = 0.30
-PROFILES = {"4slot": 4, "7slot": 7}
+SN_MAX_LENGTH = 64
+ROW_TOLERANCE = 0.5  # fraction of a checkbox height that still counts as the same row
 
 
-def parse_sn_payload(payload, slot_count):
-    """Return sorted ``[(slot, serial_number)]`` or fail before any HID action."""
-    text = str(payload or "").strip()
-    if not text:
-        raise ValueError("DFU input 缺少 slot:SN payload")
+class DfuInputError(Exception):
+    """A refused or failed input. ``code`` is a protocol error code; ``entered`` lists slots typed so far."""
+
+    def __init__(self, code, message, entered=()):
+        super().__init__(message)
+        self.code = code
+        self.entered = sorted(entered)
+
+
+def parse_items(items, channels):
+    """Return sorted ``[(slot, sn)]``; raise ``DfuInputError(invalid_argument)`` before any HID action."""
+    if not isinstance(items, list) or not items:
+        raise DfuInputError("invalid_argument", "items must be a non-empty list")
     parsed = {}
-    for item in text.split(","):
-        item = item.strip()
-        if item.count(":") != 1:
-            raise ValueError("DFU SN 格式錯誤，應為 slot:SN")
-        slot_text, sn = (part.strip() for part in item.split(":", 1))
-        if not slot_text.isdigit() or not sn:
-            raise ValueError("DFU SN 格式錯誤，slot 必須是編號且 SN 不可為空")
-        slot = int(slot_text)
-        if slot < 1 or slot > slot_count:
-            raise ValueError("DFU slot {} 超出 {} profile 範圍".format(slot, slot_count))
+    for entry in items:
+        if not isinstance(entry, dict) or set(entry) != {"slot", "sn"}:
+            raise DfuInputError("invalid_argument", "each item needs exactly slot and sn")
+        slot, sn = entry["slot"], entry["sn"]
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= channels:
+            raise DfuInputError("invalid_argument", f"slot must be an integer 1..{channels}")
         if slot in parsed:
-            raise ValueError("DFU slot {} 重複指定".format(slot))
+            raise DfuInputError("invalid_argument", f"slot {slot} is repeated")
+        if not isinstance(sn, str) or not 1 <= len(sn) <= SN_MAX_LENGTH:
+            raise DfuInputError("invalid_argument", f"sn must be 1..{SN_MAX_LENGTH} characters")
         parsed[slot] = sn
     return sorted(parsed.items())
 
 
-def load_profile(template_root, device_no):
-    """Load the explicit station-to-DFU-profile map, never infer from the screen."""
-    path = Path(template_root) / "device_profiles.json"
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        profile = data["DFU"][str(device_no)]
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        raise ValueError("DFU profile 設定無效或缺少設備 {}：{}".format(device_no, path)) from exc
-    if profile not in PROFILES:
-        raise ValueError("DFU profile 必須為 4slot 或 7slot，實際為 {}".format(profile))
-    return profile, PROFILES[profile]
+def _find_matches(gray, template, threshold):
+    """Non-overlapping peaks of ``template`` in ``gray`` at or above ``threshold``, best first."""
+    th, tw = template.shape[:2]
+    scores = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+    ys, xs = np.where(scores >= threshold)
+    peaks = sorted(zip(scores[ys, xs], xs, ys), reverse=True)
+    kept = []
+    for score, x, y in peaks:
+        if any(abs(x - kx) < tw / 2 and abs(y - ky) < th / 2 for _s, kx, ky in kept):
+            continue
+        kept.append((float(score), int(x), int(y)))
+    return [(score, x, y, tw, th) for score, x, y in kept]
 
 
-def validate_input_request(template_root, device_no, payload):
-    """Validate the external request before the UI opens a KVM/HID session."""
-    profile, slot_count = load_profile(template_root, device_no)
-    return profile, parse_sn_payload(payload, slot_count)
+def _intersects(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_THRESHOLD):
+    """Every checkbox inside the window as ``[{state, score, box}]`` in channel order (1..N)."""
+    wx, wy, ww, wh = window_box
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[wy:wy + wh, wx:wx + ww]
+    found = []
+    for state, template in (("checked", checked), ("unchecked", unchecked)):
+        for score, x, y, w, h in _find_matches(gray, template, threshold):
+            found.append({"state": state, "score": score, "box": (wx + x, wy + y, w, h)})
+    # A single box cannot be both states; the stronger match wins.
+    found.sort(key=lambda box: box["score"], reverse=True)
+    kept = []
+    for candidate in found:
+        if not any(_intersects(candidate["box"], other["box"]) for other in kept):
+            kept.append(candidate)
+    kept.sort(key=lambda box: (box["box"][1], box["box"][0]))
+
+    ordered, row, row_y = [], [], None
+    for candidate in kept:
+        y, h = candidate["box"][1], candidate["box"][3]
+        if row_y is None or y - row_y > ROW_TOLERANCE * h:
+            ordered.extend(sorted(row, key=lambda box: box["box"][0]))
+            row, row_y = [], y
+        row.append(candidate)
+    ordered.extend(sorted(row, key=lambda box: box["box"][0]))
+    return ordered
 
 
 def _center(box):
@@ -71,68 +106,17 @@ def _has_hid_error(kvm):
     return errors[-1] if errors else None
 
 
-def _frame(kvm, diagnostics, threshold, log):
-    if kvm.frame is None:
-        note = "沒有 JetKVM 影格"
-        diagnostics.record("frame", None, threshold, note=note)
-        log(note)
-        return None
-    return kvm.frame.copy()
-
-
-def _match(frame, template, downscale=False):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return locate(gray, template, downscale=downscale)
-
-
-def _record(diagnostics, key, value, threshold, frame, box, note="", color=(0, 200, 255)):
-    diagnostics.record(key, value, threshold, frame, box, note=note, color=color)
+def _frame(kvm):
+    frame = getattr(kvm, "frame", None)
+    return None if frame is None else frame.copy()
 
 
 def _window_match(frame, template, diagnostics, key, threshold):
-    value, left, top, width, height = _match(frame, template, downscale=True)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    value, left, top, width, height = locate(gray, template, downscale=True)
     box = (left, top, width, height) if left is not None else None
-    _record(diagnostics, key, value, threshold, frame, box, color=(0, 255, 0))
+    diagnostics.record(key, value, threshold, frame, box, color=(0, 255, 0))
     return value, box
-
-
-def _slot_rows(frame, window_box, templates, profile, prefix, diagnostics, threshold):
-    """Find every explicitly named slot anchor and return the row to its right."""
-    wx, wy, ww, wh = window_box
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    window_gray = gray[wy:wy + wh, wx:wx + ww]
-    rows = {}
-    for slot in range(1, PROFILES[profile] + 1):
-        key = "{}slot{}_{}".format(prefix, slot, profile)
-        value, left, top, width, height = locate(window_gray, templates[key], downscale=False)
-        global_box = (wx + left, wy + top, width, height) if left is not None else None
-        _record(diagnostics, key, value, threshold, frame, global_box)
-        if left is None or value < threshold:
-            raise ValueError("找不到 {}（相似度 {:.2f}）".format(key, value))
-        # The row begins at the anchor and extends to the right edge of the matched window.
-        row_y = max(wy, wy + top - max(12, height // 2))
-        row_h = min(wy + wh, wy + top + height + max(12, height // 2)) - row_y
-        row_x = wx + left
-        rows[slot] = (row_x, row_y, wx + ww - row_x, row_h)
-    return rows
-
-
-def _best_state(frame, row_box, checked, unchecked, diagnostics, slot, threshold):
-    x, y, width, height = row_box
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    row = gray[y:y + height, x:x + width]
-    options = []
-    for state, template in (("checked", checked), ("unchecked", unchecked)):
-        value, left, top, w, h = locate(row, template, downscale=False)
-        box = (x + left, y + top, w, h) if left is not None else None
-        _record(diagnostics, "checkbox_slot{}_{}".format(slot, state), value, threshold, frame, box)
-        options.append((value, state, box))
-    options.sort(reverse=True, key=lambda entry: entry[0])
-    best, state, box = options[0]
-    second = options[1][0]
-    if box is None or best < threshold or best - second < MATCH_MARGIN:
-        raise ValueError("slot {} checkbox 狀態不明確（{:.2f}/{:.2f}）".format(slot, best, second))
-    return state, box, best, second
 
 
 def _locate_control(frame, window_box, template, key, diagnostics, threshold):
@@ -140,25 +124,26 @@ def _locate_control(frame, window_box, template, key, diagnostics, threshold):
     roi = cv2.cvtColor(frame[wy:wy + wh, wx:wx + ww], cv2.COLOR_BGR2GRAY)
     value, left, top, width, height = locate(roi, template, downscale=False)
     box = (wx + left, wy + top, width, height) if left is not None else None
-    _record(diagnostics, key, value, threshold, frame, box)
+    diagnostics.record(key, value, threshold, frame, box)
     if box is None or value < threshold:
-        raise ValueError("找不到 {}（相似度 {:.2f}）".format(key, value))
+        raise DfuInputError("hid_failed", f"找不到 {key}（相似度 {value:.2f}）")
     return box
 
 
-async def _focus_dock(kvm, template, diagnostics, key, threshold, log):
-    frame = _frame(kvm, diagnostics, threshold, log)
+async def _focus_dock(kvm, template, diagnostics, threshold):
+    frame = _frame(kvm)
     if frame is None:
-        raise ValueError("沒有 JetKVM 影格")
-    value, left, top, width, height = _match(frame, template, downscale=False)
+        raise DfuInputError("hid_failed", "沒有 JetKVM 影格")
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    value, left, top, width, height = locate(gray, template, downscale=False)
     box = (left, top, width, height) if left is not None else None
-    _record(diagnostics, key, value, threshold, frame, box)
+    diagnostics.record("dock_icon", value, threshold, frame, box)
     if box is None or value < threshold:
-        raise ValueError("找不到 {}（相似度 {:.2f}）".format(key, value))
+        raise DfuInputError("hid_failed", f"找不到 dock_icon（相似度 {value:.2f}）")
     await kvm.click(*_center(box))
     await asyncio.sleep(FOCUS_DELAY)
     if _has_hid_error(kvm):
-        raise ValueError("Dock HID 錯誤: {}".format(_has_hid_error(kvm)))
+        raise DfuInputError("hid_failed", f"Dock HID 錯誤: {_has_hid_error(kvm)}")
 
 
 def _load(catalog, keys, diagnostics, threshold, log):
@@ -166,87 +151,103 @@ def _load(catalog, keys, diagnostics, threshold, log):
     for key in keys:
         image = _load_template(catalog, "DFU", key, log, diagnostics, threshold)
         if image is None:
-            raise ValueError("缺少必要 DFU 模板")
+            raise DfuInputError("hid_failed", f"缺少必要 DFU 模板 {key}")
         loaded[key] = image
     return loaded
 
 
-async def run_dfu_input(kvm, device_no, payload, template_root=None, threshold=MATCH_THRESHOLD, log=print):
-    """Correct all profile checkboxes, enter indexed SNs, click OK once, then shortcut Log."""
+def _boxes_or_fail(frame, window, templates, channels, diagnostics):
+    boxes = find_checkboxes(frame, window, templates["checkbox_checked"], templates["checkbox_unchecked"])
+    diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
+                       note="expected {}".format(channels))
+    if len(boxes) != channels:
+        raise DfuInputError("hid_failed", f"DFU 視窗找到 {len(boxes)} 個 checkbox，設備設定為 {channels} 個通道")
+    return boxes
+
+
+def _mismatches(boxes, wanted):
+    """Checkboxes whose state differs from the request: checked for requested channels, unchecked otherwise."""
+    result = []
+    for channel, box in enumerate(boxes, 1):
+        desired = "checked" if channel in wanted else "unchecked"
+        if box["state"] != desired:
+            result.append((channel, box["box"]))
+    return result
+
+
+async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATCH_THRESHOLD,
+                        log=print, diagnostics_key="DFU"):
+    """Set checkboxes for the requested channels, type each SN, press OK once, then the Log shortcut.
+
+    Returns ``{"entered": [slot, ...]}``. Raises ``DfuInputError`` with the protocol error code;
+    no SN is typed unless every checkbox was found and set correctly.
+    """
+    serials = parse_items(items, channels)
+    wanted = {slot for slot, _sn in serials}
     catalog = TemplateCatalog(template_root)
-    diagnostics = MatchDiagnostics(catalog.root, "DFU")
-    result = {"ok": False}
-
-    def finish(note=""):
-        if note:
-            result["error"] = note
-            log(note)
-        diagnostics.finalize(result["ok"], "dfu_input")
-        return result
-
+    diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
+    entered = []
+    ok = False
     try:
-        profile, serials = validate_input_request(catalog.root, device_no, payload)
-        count = PROFILES[profile]
-        templates = _load(catalog, ["dock_icon", "window", "checkbox_checked", "checkbox_unchecked", "input", "button"] +
-                          ["slot{}_{}".format(i, profile) for i in range(1, count + 1)], diagnostics, threshold, log)
+        templates = _load(catalog, ["dock_icon", "window", "checkbox_checked", "checkbox_unchecked",
+                                    "input", "button"], diagnostics, threshold, log)
         if hasattr(kvm, "rpc_errors"):
             kvm.rpc_errors.clear()
-        await _focus_dock(kvm, templates["dock_icon"], diagnostics, "dock_icon", threshold, log)
-        frame = _frame(kvm, diagnostics, threshold, log)
+        await _focus_dock(kvm, templates["dock_icon"], diagnostics, threshold)
+
+        frame = _frame(kvm)
         if frame is None:
-            raise ValueError("Dock 前景化後沒有 JetKVM 影格")
+            raise DfuInputError("hid_failed", "Dock 前景化後沒有 JetKVM 影格")
         _, window = _window_match(frame, templates["window"], diagnostics, "window", threshold)
         if window is None:
-            raise ValueError("找不到 DFU_window")
-        rows = _slot_rows(frame, window, templates, profile, "", diagnostics, threshold)
-        wanted = {slot for slot, _sn in serials}
-        mismatches = []
-        for slot, row in rows.items():
-            current, box, _best, _second = _best_state(frame, row, templates["checkbox_checked"], templates["checkbox_unchecked"], diagnostics, slot, threshold)
-            if current != ("checked" if slot in wanted else "unchecked"):
-                mismatches.append((slot, box))
-        for _slot, box in mismatches:
+            raise DfuInputError("hid_failed", "找不到 DFU_window")
+        boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
+
+        for _channel, box in _mismatches(boxes, wanted):
             await kvm.click(*_center(box))
         if _has_hid_error(kvm):
-            raise ValueError("checkbox HID 錯誤: {}".format(_has_hid_error(kvm)))
+            raise DfuInputError("hid_failed", f"checkbox HID 錯誤: {_has_hid_error(kvm)}")
         await asyncio.sleep(FOCUS_DELAY)
 
-        # Verify, then make exactly one retry for the slots still out of state.
+        # Verify; allow exactly one correction pass for boxes still out of state.
         for attempt in range(2):
-            verify = _frame(kvm, diagnostics, threshold, log)
+            verify = _frame(kvm)
             if verify is None:
-                raise ValueError("checkbox 複驗沒有 JetKVM 影格")
-            _, verified_window = _window_match(verify, templates["window"], diagnostics, "window_verify{}".format(attempt + 1), threshold)
+                raise DfuInputError("hid_failed", "checkbox 複驗沒有 JetKVM 影格")
+            _, verified_window = _window_match(verify, templates["window"], diagnostics,
+                                               f"window_verify{attempt + 1}", threshold)
             if verified_window is None:
-                raise ValueError("checkbox 複驗找不到 DFU_window")
-            verified_rows = _slot_rows(verify, verified_window, templates, profile, "", diagnostics, threshold)
-            remaining = []
-            for slot, row in verified_rows.items():
-                current, box, _best, _second = _best_state(verify, row, templates["checkbox_checked"], templates["checkbox_unchecked"], diagnostics, slot, threshold)
-                if current != ("checked" if slot in wanted else "unchecked"):
-                    remaining.append((slot, box))
+                raise DfuInputError("hid_failed", "checkbox 複驗找不到 DFU_window")
+            boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics)
+            remaining = _mismatches(boxes, wanted)
             if not remaining:
                 frame, window = verify, verified_window
                 break
             if attempt == 1:
-                raise ValueError("checkbox 第二次複驗仍不符")
-            for _slot, box in remaining:
+                raise DfuInputError("hid_failed", "checkbox 第二次複驗仍不符")
+            for _channel, box in remaining:
                 await kvm.click(*_center(box))
             if _has_hid_error(kvm):
-                raise ValueError("checkbox 重試 HID 錯誤: {}".format(_has_hid_error(kvm)))
+                raise DfuInputError("hid_failed", f"checkbox 重試 HID 錯誤: {_has_hid_error(kvm)}")
             await asyncio.sleep(FOCUS_DELAY)
 
         input_box = _locate_control(frame, window, templates["input"], "input", diagnostics, threshold)
         button_box = _locate_control(frame, window, templates["button"], "button", diagnostics, threshold)
         await kvm.click(*_center(input_box))
-        for _slot, sn in serials:
+        for slot, sn in serials:
             await kvm.type_text(sn)
             await kvm.press_enter()
+            if _has_hid_error(kvm):
+                raise DfuInputError("hid_failed", f"SN 輸入 HID 錯誤: {_has_hid_error(kvm)}", entered)
+            entered.append(slot)
         await kvm.click(*_center(button_box))
         await kvm.press_command_shift_m()
         if _has_hid_error(kvm):
-            raise ValueError("HID 錯誤: {}".format(_has_hid_error(kvm)))
-        result.update(ok=True, profile=profile, serials=serials)
-        return finish()
-    except ValueError as exc:
-        return finish(str(exc))
+            raise DfuInputError("hid_failed", f"HID 錯誤: {_has_hid_error(kvm)}", entered)
+        ok = True
+        return {"entered": entered}
+    except DfuInputError as exc:
+        log(str(exc))
+        raise
+    finally:
+        diagnostics.finalize(ok, "dfu_input")

@@ -114,7 +114,7 @@ def _load_template(catalog, device, template_key, log, diagnostics=None, thresho
 
 
 async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, annotate_path=None,
-                    freeze_guard=None, inspection_window=None):
+                    freeze_guard=None, inspection_window=None, device_id=None, check_liveness=True):
     """check 指令: 找視窗 -> 若有 testing 模板則回 testing;
     否則由上而下找所有 pass / fail 模板，回每列結果。
     回傳 dict: {ok, window, testing(bool), rows:[(index, 'pass'/'fail'), ...]}"""
@@ -124,7 +124,9 @@ async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, a
     except ValueError as exc:
         log(str(exc))
         return {"ok": False}
-    diagnostics = MatchDiagnostics(catalog.root, device)
+    # Templates are per station; freeze state and diagnostics are per device ID.
+    unit_key = str(device_id) if device_id else device
+    diagnostics = MatchDiagnostics(catalog.root, unit_key)
 
     def finish(payload):
         diagnostics.finalize(payload.get("ok", False), "check")
@@ -132,14 +134,14 @@ async def run_check(kvm, device, template_root=None, threshold=0.8, log=print, a
 
     # Frame Freeze Guard: 驗證 WebRTC Presentation Timestamp 是否正常遞增
     pts = extract_pts(kvm)
-    if freeze_guard is not None or pts is not None:
+    if check_liveness and (freeze_guard is not None or pts is not None):
         guard = freeze_guard if freeze_guard is not None else (
             FrameFreezeGuard(freeze_threshold=inspection_window or 1.0)
             if FrameFreezeGuard is not None else None
         )
         if guard is not None:
             is_live, freeze_err = await guard.verify_liveness(
-                kvm, device_id=device, threshold_window=inspection_window
+                kvm, device_id=unit_key, threshold_window=inspection_window
             )
             if not is_live:
                 err_msg = (freeze_err or {}).get("message", "Frame presentation timestamp is static / frozen")

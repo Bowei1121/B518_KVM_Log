@@ -1,52 +1,64 @@
 # DFU 設備工作流程
 
-更新日期：2026-09-03（Asia/Shanghai）
+更新日期：2026-10-15（Asia/Taipei）
 
 本文件是 DFU 工作流程的單一來源。JetKVM 專案只以 HDMI 串流畫面判讀並經 USB HID 操作；本機 Log 的讀取仍由獨立專案負責。本 repo 只會送出 `Command+Shift+M` 快捷鍵要求該程式開始監控，不讀取或比對任何本機 Log。
 
-## 對外 TCP 方法
+協定細節見 [TCP JSON 介面規格 1.0](PROTOCOL.md)，設備設定見 [README](../README.md) 的「設備清單與通訊協定」。
 
-- `DFU,<device_no>,<KVM_IP>,input,1:SN123,2:SN456`
-- `DFU,<device_no>,<KVM_IP>,check`
-- 通用 `stream` 工具保留。
+## 對外 TCP 指令
 
-`input` 的 payload 必須是以逗號分隔的 `slot:SN`。slot 可稀疏、輸入順序可任意，但程式會按 slot 由小到大輸入。空 payload、重複 slot、空 SN、格式錯誤及不在 profile 範圍內的 slot一律在送 HID 前拒絕。DFU 不支援對外 `button`；OK 已整合在 `input` 最後一步。
+- `input`：輸入本輪 SN。`items` 為 `[{"slot": 1, "sn": "SN123"}, ...]`，slot 為通道 1..N，N 取自設備清單的 `channels`。
+- `check`：讀取 Log Solution 本輪狀態與結果，`timeout_sec` 必填（0 讀一次，>0 長輪詢，最長 3600 秒）。
+- `inspect`：僅供 Monitor UI 的唯讀檢視，不上鎖、不消耗本輪結果。LabVIEW 不得使用。
 
-設備編號對應的外部 DFU 輸入版型只從 `~/Documents/template/device_profiles.json` 讀取，例如：
+DFU 不支援 `button`；OK 已整合在 `input` 最後一步。
 
-```json
-{"DFU": {"1": "4slot", "2": "7slot"}}
-```
-
-僅接受 `4slot`、`7slot`。此設定只描述 DFU 輸入視窗的實體欄位，不代表 B518 Log Solution 的結果容量；沒有對應、JSON 無效或 profile 不合法時，輸入操作 fail closed，不從畫面猜測欄位數。
+通道數只來自設備清單（`~/Documents/template/devices.json` 的 `channels`）。舊的 `device_profiles.json` 與 4／7 格 profile 已淘汰，不再讀取。
 
 ## 模板
 
 正式模板根目錄為 `~/Documents/template/DFU/`：
 
-- 主程式：`DFU_dock_icon.png`、`DFU_window.png`、`DFU_checkbox_checked.png`、`DFU_checkbox_unchecked.png`、`DFU_input.png`、`DFU_button.png`。
-- 主程式 slot 錨點：`DFU_slot1_4slot.png`～`DFU_slot4_4slot.png`，以及 `DFU_slot1_7slot.png`～`DFU_slot7_7slot.png`。
-Log 結果不再使用 DFU 專屬視窗或 slot 模板。上位機直接讀取 B518 Log Solution 的 JetKVM frame，依 App repo 的 `docs/refactoring/KVM_DISPLAY_CONTRACT.md`（版本 1.1）定位點、黑白狀態標記與最多二十格色帶判讀。兩 repo 維持獨立，透過版號契約及受控樣本同步。
+- `DFU_dock_icon.png`、`DFU_window.png`、`DFU_input.png`、`DFU_button.png`
+- `DFU_checkbox_checked.png`、`DFU_checkbox_unchecked.png`
 
-## Input 狀態機
+checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板。
 
-1. 取影格，以 `DFU_dock_icon.png` 定位並用絕對滑鼠點擊，等待 0.3 秒。
-2. 重新取影格，定位 DFU window、profile 專屬 slot 錨點、checkbox、input 與 button。
-3. payload 有 SN 的 slot 必須 checked；其餘 profile slot 必須 unchecked。
-4. 每槽分別匹配 checked/unchecked；最高分必須至少 0.80，且高於另一狀態至少 0.05。
-5. 只點擊狀態不符的 checkbox，等待 0.3 秒再以新影格逐槽複驗；仍不符的槽只重試一次。
-6. 第二次複驗不符或狀態不明確即停止，絕不輸入 SN 或點 OK。
-7. 以複驗影格重新定位 input/button，點 input，依 slot 升冪逐筆輸入 SN，每筆後按 Enter。
-8. 所有 SN 都填入後只點一次 OK，接著送 `Command+Shift+M`，成功才回覆 `action_done`。
+Log 結果不使用 DFU 專屬視窗或 slot 模板。上位機直接讀取 B518 Log Solution 的 JetKVM frame，依 App repo 的 `docs/refactoring/KVM_DISPLAY_CONTRACT.md`（版本 1.1）定位點、黑白狀態標記與最多二十格色帶判讀。兩 repo 維持獨立，透過版號契約及受控樣本同步。
 
-## Check 狀態機
+## `input` 狀態機
 
-1. 讀取 `JetKVMClient.latest_frame()` 的 BGR 影格、遞增序號、單調接收時間及來源呈現時間戳；過期、來源時間戳缺少／倒退、無序、裁切或無法定位畫面一律不取用。
-2. 以兩個不對稱定位點確認方向與比例，再辨識 2×2 狀態標記及一至二十格結果色帶。容量由連續有效色格及其後容量外黑格判定，不讀取 4／7 格輸入 profile。
-3. 每個設備需先在本連線觀察到「監控中」才會接受後續完成畫面。待確認回覆 `action_paused,review`；待命、監控中、未知或尚在確認一致性的畫面回覆 `action_waiting,...`。
-4. Monitoring 畫面會鎖定本輪容量；容量變更時要求重新觀察 Monitoring。完成候選的來源呈現時間戳也必須晚於已觀察的 Monitoring，才能排除晚到的舊輪 frame。只有「本輪完成」標記、容量內全部為 PASS／FAIL／NOTEST／TIMEOUT，且兩張不同 frame sequence 的狀態與結果一致，才一次回覆 `action_done,1::PASS,2::FAIL,...`。這個畫面契約不含 SN，因此此介面只回傳位置與狀態，不聲稱 OCR 或 SN 追查已整合；外部 TCP 呼叫端仍待定位與相容確認。
-5. 同一設備重複 check 不會重複取用。重連會清除監控 armed 狀態，必須重新看到監控中；各設備閘門互相隔離。結果回覆遺失後重複 check 只回 `action_waiting,already_taken`，不自動重做。
+1. 驗證 `items`：slot 為 1..N 的整數、不可重複，SN 為 1–64 字元（可含逗號與冒號）。不合法回 `invalid_argument`，不送 HID。
+2. 讀取 Log Solution 狀態。待命（standby），或完成（complete）且本輪結果已由 `check` 取用，才允許輸入。監控中（monitoring）或待確認（review）回 `log_solution_busy`；完成但尚未取用也回 `log_solution_busy`；狀態無法讀取回 `hid_failed`。以上皆不送 HID。
+3. 以 `DFU_dock_icon.png` 定位並點擊，等待 0.3 秒。找不到或 HID 錯誤回 `hid_failed`。
+4. 找 DFU window，並在視窗內找出全部 checkbox（只用兩種狀態模板）。數量必須等於通道數，否則回 `hid_failed`，不輸入任何 SN。
+5. 排序：依 y 分列（同列容許半個 checkbox 高的差距），同列依 x 由左到右。排序後第 1 個為通道 1，依此類推。
+6. 請求的通道應為 checked，其餘為 unchecked。只點擊狀態不符的 checkbox，等待 0.3 秒後以新影格複驗；仍不符的只重試一次。第二次仍不符回 `hid_failed`，不輸入 SN。
+7. 以複驗影格定位 input 與 button，點 input，依 slot 由小到大逐筆輸入 SN，每筆後按 Enter。`data.entered` 記錄已輸入的 slot。
+8. 所有 SN 輸入後只點一次 OK，接著送 `Command+Shift+M`。HID 錯誤回 `hid_failed`，`data.entered` 列出中途已輸入的 slot。
 
-DFU input 仍會覆寫 `~/Documents/template/_captures/match_diagnostics/DFU/latest/` 的最近一次模板診斷資料，可由主畫面「匹配結果」查看。Round check 的可重現 frame 證據及逐格辨識報告由 `tools/verify_ticket16_app_frames.py` 產生至指定隔離輸出路徑；所有未知、逾時、定位失敗及格式不一致均 fail closed。實際 JetKVM 影格／壓縮容差尚未驗收。
+## `check` 狀態機
 
-契約 1.1 要求獨立排數標記（黑白一排、白黑兩排）：單排只取樣十格，雙排須讀完整二十格並確認第十一格起有有效位置。缺少標記的舊 1.0、雙排第二排遮擋／裁切或容量矛盾一律拒判。
+1. 讀取 `JetKVMClient.latest_frame()` 的 BGR 影格、遞增序號、單調接收時間及來源呈現時間戳。過期、時間戳缺少或倒退、無序、裁切或無法定位的畫面一律不取用。
+2. 以兩個不對稱定位點確認方向與比例，辨識 2×2 狀態標記與一至二十格結果色帶。容量由連續有效色格及其後的容量外黑格判定。
+3. 每個設備需先在連線中觀察到「監控中」，才會接受後續的完成畫面。
+4. 完成的畫面必須是「本輪完成」標記、容量內全部為 PASS／FAIL／NOTEST／TIMEOUT（STOPPED 視為終局，原樣回傳；COMPLETING 視為等待），且兩張不同 frame sequence 的狀態與結果一致，才回 `kind: taken`。
+5. 回覆的 `data` 為 `kind`、`state`、`reason`、`capacity`、`results[{slot, status}]`，不含總結果。
+   - `taken`：格數必須等於通道數，否則回 `capacity_mismatch`，不交付結果。
+   - `paused`：待確認，立即回覆，LabVIEW 應暫停設備動作。
+   - `already_taken`：本輪結果已取用過，不重做。
+   - `waiting`、`unknown`：長輪詢繼續等待。`unknown` 不得當作產品 FAIL。
+6. 長輪詢逾時回 `status: timeout`，`data` 帶最後觀察到的狀態。
+7. 判讀在工作執行緒進行，單張上限預設 200 ms；超過上限記為 `unknown`（`inspection_timeout`），不阻塞其他設備。
+8. 同一設備重複 `check` 不會重複取用。重連會清除監控 armed 狀態，必須重新看到監控中；各設備的閘門互相隔離。
+
+## `inspect`（僅 Monitor UI）
+
+Monitor UI 的手動檢查。欄位與回覆與 `check` 相同，但不上鎖，也不改變本輪閘門狀態。它讀取目前畫面，完整畫面須連續兩次一致才回 `taken`，代表「此刻畫面上的結果可靠」，不代表已交給 LabVIEW。
+
+## 診斷與驗證
+
+- `input` 與 `check` 會覆寫 `~/Documents/template/_captures/match_diagnostics/<DEVICE_ID>/latest/` 的最近一次診斷資料，可由主畫面「匹配結果」查看。診斷資料僅供追查問題，不影響 TCP 回覆。
+- Round check 的可重現影格證據及逐格辨識報告由 `tools/verify_ticket16_app_frames.py` 產生至指定隔離輸出路徑。所有未知、逾時、定位失敗及格式不一致均 fail closed。
+- 實際 JetKVM 影格的壓縮容差與現場驗收尚未完成。壓測方法見 [LOAD_TEST.md](LOAD_TEST.md)。

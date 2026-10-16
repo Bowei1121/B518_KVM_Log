@@ -9,7 +9,7 @@
 - grilling 架構候選 1「統一設備 ID 與 Device Lock」（Q1–Q36）：設備 ID `<站別>-<兩位數>`、上位機 `devices.json` 為唯一設備清單、協定只帶設備 ID、測試通道數、Monitor UI 設定頁、長輪詢 0.5 秒與判讀移出事件迴圈等。
 - 產出：`docs/PROTOCOL.md`（協定 1.0）、ADR-0007（Proposed）、CONTEXT.md 新詞彙、spec #1（本機 `docs/specs/0001-…`）、開發票 #2～#13（本機 `.scratch/device-identity-protocol-1.0/issues/`）。
 - PR #14 fail-closed 修正（`check` 沒看到結果不再回 PASS）、PR #15 文件，皆已合併 main（`43706bf`）並同步 Gitea。
-- 以 implement-spec 實作 #2～#12，整合分支 `feat/device-identity-protocol-1.0`，PR #16 已 ready、可合併，**尚未合併**。#13（LabVIEW）為人工票，使用者決定延後驗收。
+- 以 implement-spec 實作 #2～#12，整合分支 `feat/device-identity-protocol-1.0`，PR #16 已於 2026-10-16 合併 main（`ef49a62`）並同步 Gitea，#2～#12 自動關閉。#13（LabVIEW）為人工票，使用者決定延後驗收。
 
 ## 尚未決定／留待後續的事項
 
@@ -23,7 +23,7 @@
 | 6 | 架構候選 3：Frame Freeze Guard 未區分重連串流（stream_id） | 10-14 架構評估 | 需確認 PR #16 後是否仍存在 |
 | 7 | 架構候選 4：KVM Connection Pool 閒置淘汰可能關掉使用中的連線 | 10-14 架構評估 | 需確認 PR #16 後是否仍存在 |
 | 8 | 架構候選 5：Monitor UI 通訊排程（共用 socket lock、status thread 累積） | 10-14 架構評估 | 需確認 PR #16 後是否仍存在 |
-| 9 | ADR-0007 由 Proposed 改 Accepted | 10-15 | 使用者確認 |
+| 9 | ADR-0007 由 Proposed 改 Accepted | 10-15 | 已完成（PR #16 已改為 Accepted） |
 | 10 | 雙語介面 | 10-15 A23 | 後續 |
 | 11 | LabVIEW 端改版（#13） | 10-15 | 使用者延後 |
 
@@ -73,3 +73,79 @@
 - A16／A18：採 Log Solution 修改方案（人工停止顯示 Complete、視窗前景時機），完整建議見 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md`。
 - A17：FCT 治具推入不由 LabVIEW 控制；將與設備端協調改為推入前發訊號，LabVIEW 先 `monitor_start`。Log Solution FCT profile 的 start 期限需涵蓋訊號到首次寫檔的時間（建議先設 120 秒）。
 - A19：Log Solution 的開票由其開發者依建議文件自行處理，本 repo 不開票。
+
+## grilling：FCT／BT 判讀方式（第 5 輪，A20–A23）與共同理解
+
+- A20：`check` 期間連續 60 秒看不到 Log Solution 才點一次 Dock 圖示、再等 5 秒；同一 `check` 最多 3 次，仍看不到回 `log_solution_not_visible`。
+- A21：Log Solution Dock 圖示三站共用一張模板（同一支程式）。
+- A22：已看過 monitoring 後出現 standby → `check` 立即回 `round_lost`。
+- A23：先合併 PR #16（已於 2026-10-16 合併 `ef49a62`、同步 Gitea），再以 to-spec 寫 spec #2 並拆票。
+
+待使用者確認的共同理解（spec #2 範圍）：
+
+1. 三站 `check` 統一用 Log Solution 顯示契約判讀（RoundFrameGate 防呆：先見 monitoring、兩張新鮮完整畫面、格數 = 通道數）；淘汰模板判讀結果程式與 `testing`／`pass`／`fail` 模板。
+2. 新指令 `monitor_start`（三站）：Dock 找 Log Solution 圖示並點擊 → 確認畫面有 Log Solution → Cmd+Shift+M → 10 秒內見 monitoring；錯誤 `log_solution_not_found`、`monitor_not_started`、`log_solution_busy`。
+3. 新指令 `start_test`（DFU 點 OK、BT 點 Start All；FCT 回 `unsupported_command`）；需先 monitoring，否則 `monitor_not_ready`；取代 `button`。
+4. DFU `input` 只勾選 checkbox、填 SN，不點 OK、不送快捷鍵。
+5. `check` 看不到 Log Solution 的恢復（60 秒／點 Dock／最多 3 次）→ `log_solution_not_visible`；monitoring 後出現 standby → `round_lost`。
+6. 共用 Dock 圖示模板 `log_solution_dock_icon`；「創建 Pattern」移除結果模板。
+7. LabVIEW 呼叫順序：DFU `input` → `monitor_start` → `start_test` → `check`；BT `monitor_start` → `start_test` → `check`；FCT 推入前訊號 → `monitor_start` → `check`。
+8. 協定仍為 1.0（未上線，直接修改）。Log Solution 端依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 自行開票；橋接不依賴 1.2 也能運作（1.1 下人工停止的輪次會回 `round_lost`）。
+
+## 附錄：implement-spec session 的 2026-10-15 實作摘要（PR #16 帶入）
+
+
+本摘要整理 2026-10-15 一整天的工作（spec #1「統一設備 ID、設備清單與 LabVIEW TCP JSON 協定 1.0」的實作），供日後查閱。
+
+### 結論
+
+- spec #1 的實作票 #2 到 #12 全部完成，已合併進整合分支 `feat/device-identity-protocol-1.0`（HEAD `305c9b1`），全套測試 334 passed。
+- draft PR #16（整合分支 → `main`）已改為 ready for review。尚未合併，也未同步 Gitea 的 `main`。PR 內文的 `Closes #2`～`#12` 會在合併後自動關閉對應 issue。
+- 未完成：spec #1 本身（待 LabVIEW 端完成），以及 #13（LabVIEW VI 與 typedef 改版，人工作業）。
+
+### 票與狀態
+
+| 票 | 內容 | 狀態 |
+| --- | --- | --- |
+| #2 | 設備清單載入與驗證，以設備 ID 取畫面 | 完成 |
+| #3 | 協定 1.0 envelope 與請求驗證 | 完成 |
+| #4 | 所有模組只認設備 ID | 完成 |
+| #5 | check 1.0：逐格結果、待確認立即回、格數核對 | 完成（FCT/BT 仍為模板判讀，見待辦） |
+| #6 | 判讀移出事件迴圈，單張時間上限 | 完成（預設 200 ms） |
+| #7 | DFU input 1.0：items、忙碌拒絕、checkbox 排序 | 完成 |
+| #8 | BT button start_all | 完成 |
+| #9 | Monitor UI 改用設備 ID，手動檢查唯讀 | 完成（唯讀以新指令 `inspect` 實作） |
+| #10 | Monitor UI 設定頁 | 完成（Tk 版面只做過無頭測試） |
+| #11 | 錄影重播壓測工具 | 完成工具與文件；30 分鐘正式驗收尚未執行 |
+| #12 | 文件與部署更新 | 完成 |
+| #13 | LabVIEW 端改版 | 人工，未開始 |
+
+### 過程中的主要決策
+
+- 設備身份：`devices.json` 為唯一來源（ADR-0007，已改為 Accepted）；協定只帶設備 ID，帶 `kvm_ip` 或 `station` 即回 `forbidden_field`。
+- 手動檢查唯讀：使用者選擇新增獨立指令 `inspect`（僅供 Monitor UI，見 `docs/PROTOCOL.md` 5.7）。它不上鎖，也不消耗本輪結果。
+- DFU 輸入：通道數取自設備清單，checkbox 只靠勾選／未勾選模板定位，數量須等於通道數。Log Solution 監控中或待確認時拒絕，且不送 HID。
+- 判讀執行緒化：DFU 與模板判讀在工作執行緒進行，超時記為 `unknown`，不阻塞其他設備。
+- 錄影重播：ReplayKVM 經由與真機相同的 `latest_frame()` 介面提供畫面，模擬設備走真實判讀路徑。
+
+### 程式碼審查（code-review）
+
+- Standards 與 Spec 兩軸各一個子代理審查。
+- 修復已在 `fix/review-1` 完成並合併，包括：重啟防護讀錯欄位（`busy` 應為 `is_busy`，已修正並經核對屬實）、`input` 與 `snapshot` 的驗證移到上鎖與 KVM 連線之前、斷線不回覆、錯誤回覆的 `kind` 與文件一致、死碼移除、settings 頁探測結果綁定到列。
+- 行為變更：`snapshot` 的 `format` 改為精確比對，`"JPEG"` 現在會被拒絕。
+
+### 待辦與未決
+
+1. ADR-0004 衝突：Monitor UI 直接寫 `devices.json`、直接以 socket 連 KVM、直接呼叫 `core_daemon`，與 `CONTEXT.md` 及 ADR-0004「只透過 TCP 與 Core Service 溝通」不符。需決定補記 ADR 或改架構。
+2. `tcp_server.py` 約 1000 行，建議拆出 protocol 模組；命令註冊重複（Repeated Switches／Shotgun Surgery）。審查後決定不併入本輪，留待另案。
+3. `_long_poll` 錯誤回覆仍寫 `kind: "unknown"`，與 PROTOCOL 9.7 範例的 `""` 不一致。
+4. FCT／BT 的 `check` 仍為模板判讀，尚未改為 Log Solution 顯示契約判讀。
+5. STOPPED：人員按停止監控後 Log Solution header 的狀態，待現場確認。
+6. JetKVM 正式版是否支援靜態 IP 設定，待現場確認。
+7. 30 分鐘錄影重播壓測正式驗收尚未執行。
+8. 兩條舊分支 `claude/elated-chaplygin-31da83`、`claude/matt-pocock-skills-setup-b2caf3` 仍在本機與遠端，待確認是否刪除。
+
+### 分支與 worktree
+
+- 遠端只剩 `main`、`feat/device-identity-protocol-1.0`（PR #16 來源）與兩條舊的 `claude/*`。
+- 實作用的 `feat/di-*` 與 `fix/review-1` 已於 2026-10-15 結束時刪除。

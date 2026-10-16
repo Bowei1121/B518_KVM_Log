@@ -19,10 +19,10 @@
 
 1. 接收並驗證 JOB 的設備、KVM IP、動作與 SN。
 2. 取得最新 JetKVM 影格，使用 `~/Documents/template/BT/BT_window.png` 定位 HMI。
-3. 收到既有 TCP `button` 指令時，先使用 `BT_dock_icon.png` 定位並點擊 Dock 上的測試程式 icon，等待 0.5 秒讓 HMI 回到最前方。
+3. 收到 TCP `button` 指令（`action: start_all`）時，先使用 `BT_dock_icon.png` 定位並點擊 Dock 上的測試程式 icon，等待 0.5 秒讓 HMI 回到最前方。
 4. 重新取得影格，以 `BT_window.png` 定位 HMI，再以 `BT_start_all.png` 定位並點擊 Start All。
 5. Dock icon、HMI 或 Start All 未命中，或 HID 回報錯誤時，立即停止後續操作。
-6. TCP `input` 指令不支援 BT，明確回覆錯誤且不送 HID。
+6. TCP `input` 指令不支援 BT，回 `unsupported_command` 且不送 HID。
 7. 測試中以 `BT_testing.png` 判斷，回覆 action_done,testing。
 8. 測試完成後，使用 `BT_pass.png` 與 `BT_fail.png` 尋找所有結果列，依由上而下的畫面順序整理；若 HMI 有可見 SN 欄，使用 OCR 與結果列的垂直位置配對。
 9. 回覆 action_done,index:SN:pass|fail,...。此回覆是本 repo 的正式視覺結果。
