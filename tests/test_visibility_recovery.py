@@ -2,7 +2,9 @@
 
 Each test drives a real Core socket against LogSolutionKVM. The fake records the Dock click and
 the Cmd+Shift+M key, so the tests assert the HID actions as well as the JSON reply.
-The 60 s / 5 s / 3 attempt constants are injected short; no test waits for the production values.
+The 30 s / 5 s / 3 attempt constants are injected short; no test waits for the production values.
+Ticket #31: any unknown reading that is not a picture/stream problem counts as "Log Solution not
+visible" (including a partly covered window); only a reliable reading resets the timer.
 """
 
 import json
@@ -35,6 +37,16 @@ def _save_dock_template(root, kvm):
 def _dock_click(kvm):
     x, y, w, h = kvm.dock_icon_box()
     return ("click", int(x + w / 2), int(y + h / 2))
+
+
+def _neutral_move(kvm):
+    """After a Dock click the pointer is parked at the top edge, mid-screen (no click, no hot corner)."""
+    frame = kvm.latest_frame()[0]
+    return ("move", frame.shape[1] // 2, 1)
+
+
+def _dock_recovery(kvm):
+    return [_dock_click(kvm), _neutral_move(kvm)]
 
 
 @pytest.fixture
@@ -137,7 +149,7 @@ def test_covered_window_is_recovered_by_one_dock_click_and_check_takes_the_round
     assert resp["status"] == "ok"
     assert resp["data"]["kind"] == "taken"
     assert [slot["status"] for slot in resp["data"]["results"]] == ["PASS", "FAIL", "NOTEST", "TIMEOUT"]
-    assert kvm.events == [_dock_click(kvm)]
+    assert kvm.events == _dock_recovery(kvm)
 
 
 def test_covered_window_after_max_dock_clicks_returns_log_solution_not_visible(serve):
@@ -150,7 +162,7 @@ def test_covered_window_after_max_dock_clicks_returns_log_solution_not_visible(s
     assert resp["status"] == "error"
     assert resp["error"] == "log_solution_not_visible"
     assert resp["data"]["kind"] == "unknown"
-    assert kvm.events == [_dock_click(kvm)] * MAX_DOCK_RECOVERIES
+    assert kvm.events == _dock_recovery(kvm) * MAX_DOCK_RECOVERIES
 
 
 def test_inspect_on_covered_window_reports_only_and_never_clicks(serve):
@@ -187,3 +199,90 @@ def test_monitor_start_armed_round_returns_round_lost_when_standby_appears(serve
 
     assert resp["error"] == "round_lost"
     assert resp["data"]["kind"] == "unknown"
+
+
+# --- Ticket #31: partly covered Log Solution -------------------------------------------------------
+
+def _armed_complete_behind_cover(serve, cover):
+    """Arm a round, then show its Complete screen behind an ATE window that covers the left side."""
+    kvm = LogSolutionKVM(state="monitoring")
+    srv = serve(kvm)
+    assert _check(srv, "DFU-01")["data"]["reason"] == "monitoring"
+    kvm.show("complete", ["PASS", "FAIL", "NOTEST", "TIMEOUT"])
+    cover(kvm)
+    return kvm, srv
+
+
+@pytest.mark.parametrize("colour", ["grey", "black", "noise"])
+def test_left_side_covering_only_result_cells_is_recovered_by_a_dock_click(serve, colour):
+    # Cut at 40 units: cells 1-2 hidden, the left locator (x=82) still on screen.
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, colour))
+    kvm.restore_on_dock = True
+
+    resp = _check(srv, "DFU-01", timeout_sec=10)
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["kind"] == "taken"
+    assert [slot["status"] for slot in resp["data"]["results"]] == ["PASS", "FAIL", "NOTEST", "TIMEOUT"]
+    assert kvm.events == _dock_recovery(kvm)
+
+
+def test_covering_only_the_result_band_is_recovered_by_a_dock_click(serve):
+    # The locators and marker row stay visible; only the band (y >= 32 units) is covered.
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(376, "grey", y_range=(32, 110)))
+    kvm.restore_on_dock = True
+
+    resp = _check(srv, "DFU-01", timeout_sec=10)
+
+    assert resp["data"]["kind"] == "taken"
+    assert kvm.events == _dock_recovery(kvm)
+
+
+def test_partly_covered_window_that_never_comes_back_returns_not_visible_with_last_reason(serve):
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, "grey"))
+
+    resp = _check(srv, "DFU-01", timeout_sec=30)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_not_visible"
+    assert resp["data"]["kind"] == "unknown"
+    assert resp["data"]["reason"].startswith("result_cell_unknown_")
+    assert kvm.events == _dock_recovery(kvm) * MAX_DOCK_RECOVERIES
+
+
+def test_inspect_on_partly_covered_window_never_clicks(serve):
+    kvm = LogSolutionKVM(state="complete", statuses=["PASS"] * 4)
+    kvm.cover_left(40, "grey")
+    kvm.restore_on_dock = True
+    srv = serve(kvm)
+
+    resp = _inspect(srv, "DFU-01", timeout_sec=1.5)
+
+    assert resp["data"]["kind"] == "unknown"
+    assert kvm.events == []
+
+
+def test_duplicate_frames_neither_count_as_unseen_nor_reset_the_timer(serve):
+    # A stream that keeps repeating its frame number: no reliable reading, but not "not visible" either.
+    kvm = LogSolutionKVM(state="monitoring")
+    srv = serve(kvm)
+    assert _check(srv, "DFU-01")["data"]["reason"] == "monitoring"
+    kvm.repeat_sequence = True
+
+    resp = _check(srv, "DFU-01", timeout_sec=1.5)
+
+    assert resp["status"] == "timeout"
+    assert kvm.events == []
+
+
+def test_dock_icon_missing_during_check_recovery_is_log_solution_not_found_at_once(serve):
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover())
+    kvm.dock_visible = False
+
+    started = time.monotonic()
+    resp = _check(srv, "DFU-01", timeout_sec=30)
+
+    assert time.monotonic() - started < 5
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_not_found"
+    assert kvm.events == []

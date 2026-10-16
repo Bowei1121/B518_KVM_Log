@@ -65,11 +65,25 @@ CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
 INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
-VISIBILITY_LOST_SEC = 60.0  # continuous "Log Solution not found" readings before a Dock click
+VISIBILITY_LOST_SEC = 30.0  # time "Log Solution not visible" (no reliable reading) before a Dock click
 DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
 MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
-# inspect_app_frame reasons meaning the Log Solution window could not be located on screen.
-LOG_SOLUTION_NOT_FOUND_REASONS = frozenset({"locators_missing_or_ambiguous", "locator_orientation_or_contrast_invalid"})
+# Picture/stream problems: a Dock click cannot fix them, so they neither count as "Log Solution not
+# visible" nor reset the visibility timer. Every other unknown reading counts as not visible
+# (wholly or partly covered, closed, minimised), including reasons added later.
+STREAM_PROBLEM_REASONS = frozenset({
+    "no_frame", "invalid_frame", "stale_frame", "missing_source_frame_time", "out_of_order_source_frame",
+    "duplicate_or_out_of_order_frame", "inspection_busy", "inspection_timeout",
+})
+
+
+def _visibility(obs: Dict[str, Any]) -> str:
+    """'ignore' for a stream problem, 'unseen' for any other unknown reading, 'seen' for a reliable one."""
+    if obs.get("reason") in STREAM_PROBLEM_REASONS:
+        return "ignore"
+    return "unseen" if obs.get("kind") == "unknown" else "seen"
+
+
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
@@ -575,7 +589,8 @@ class TcpJsonServer:
         start_time = time.monotonic()
         last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
         stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
-        # Visibility recovery (check only): start of the current run of "not found" readings, and Dock clicks so far.
+        # Visibility recovery (check only): when Log Solution stopped being visible, and Dock clicks so far.
+        # Only a reliable reading resets the timer; the click count never resets within a request.
         unseen_since: Optional[float] = None
         dock_recoveries = 0
 
@@ -628,7 +643,8 @@ class TcpJsonServer:
                     "data": last,
                 }
             if not read_only:
-                if obs["kind"] == "unknown" and obs["reason"] in LOG_SOLUTION_NOT_FOUND_REASONS:
+                visibility = _visibility(obs)
+                if visibility == "unseen":
                     now = time.monotonic()
                     if unseen_since is None:
                         unseen_since = now
@@ -640,13 +656,16 @@ class TcpJsonServer:
                         unseen_since = None
                         template_root = self._template_root()
                         try:
-                            await bring_log_solution_forward(kvm, template_root=template_root,
-                                                             diagnostics_key=entry.device_id)
+                            clicked = await bring_log_solution_forward(kvm, template_root=template_root,
+                                                                       diagnostics_key=entry.device_id)
                         except MonitorStartError as exc:
                             return _check_error(exc.code, str(exc), last)
+                        if not clicked:
+                            return _check_error("log_solution_not_found",
+                                                "Log Solution Dock icon is not on screen", last)
                         await asyncio.sleep(self.dock_recheck_sec)
                         continue
-                else:
+                elif visibility == "seen":
                     unseen_since = None
             await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, timeout_sec - elapsed)))
 

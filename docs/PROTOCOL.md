@@ -195,8 +195,11 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 #### 可見性與遺失
 
-- 連續 60 秒判讀為「找不到 Log Solution」（`kind = unknown`，`reason` 為定位失敗類：`locators_missing_or_ambiguous`、`locator_orientation_or_contrast_invalid`）：Core 點一次 Log Solution 的 Dock 圖示，等 5 秒後重新判讀。
-- 同一請求最多點 3 次，仍看不到回 `error = "log_solution_not_visible"`。
+- **Log Solution 不可見**：判讀為 `kind = unknown` 且原因不屬於畫面／串流問題，即視為看不到 Log Solution。這包含整個或部分被遮住（例如左側被 ATE 視窗遮住）、已關閉、縮到 Dock。畫面／串流問題（`no_frame`、`invalid_frame`、`stale_frame`、`missing_source_frame_time`、`out_of_order_source_frame`、`duplicate_or_out_of_order_frame`、`inspection_busy`、`inspection_timeout`）不算看不到，也不歸零計時。
+- 計時：從第一次看不到起算；只有讀到可靠畫面（standby／monitoring／review／complete）才歸零，不同 `reason` 交替出現不歸零。
+- 連續 30 秒看不到：Core 點一次 Log Solution 的 Dock 圖示，滑鼠移到中性位置（不點擊），等 5 秒後重新判讀。
+- Dock 上找不到 Log Solution 圖示：立即回 `error = "log_solution_not_found"`，不算一次恢復。這是嚴重異常，需停線檢查。
+- 同一請求最多點 3 次（恢復成功也不重置次數），仍看不到回 `error = "log_solution_not_visible"`，`data.reason` 為最後一次判讀原因（可分辨被遮住或 Log Solution 設定錯誤）。被遮住後約 35 秒內恢復判讀；3 次都失敗約 105 秒回錯誤。
 - 本輪在串流上已見過 Monitoring，之後判讀到 Standby：立即回 `error = "round_lost"`。本輪結果已無法取得，LabVIEW 應暫停並通知人員。
 - 人工停止監控：Log Solution 1.2 下顯示 Complete（`results` 含 `STOPPED`），依一般流程回 `taken` 正常交付；1.1 下顯示 Standby，因此落入 `round_lost`。
 - 以上兩者與其他錯誤一樣是 `status = "error"`，`data.kind` 為 `unknown`。`data` 其餘欄位可能保留最後一次觀察值，LabVIEW 只依 `error` 判斷。
@@ -304,10 +307,10 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格 | 設備異常，暫停 |
-| `log_solution_not_found` | error | `monitor_start`：Dock 上找不到 Log Solution 圖示，或點擊後 3 秒內找不到 Log Solution 視窗；未送快捷鍵 | 環境異常，暫停，請人員開啟或前景化 Log Solution |
+| `log_solution_not_found` | error | `monitor_start`：Dock 上找不到 Log Solution 圖示，或點擊後 3 秒內找不到 Log Solution 視窗；未送快捷鍵。`check`：可見性恢復時 Dock 上找不到 Log Solution 圖示 | 環境異常，暫停，請人員開啟或前景化 Log Solution |
 | `monitor_not_started` | error | `monitor_start`：送出 Cmd+Shift+M 後 10 秒內未見 Monitoring | 設備／環境異常，暫停，不開測 |
 | `monitor_not_ready` | error | `start_test`：Log Solution 非 Monitoring、無法讀取或沒有影格；未送 HID | 先完成 `monitor_start` |
-| `log_solution_not_visible` | error | `check`：連續 60 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 環境異常，暫停，不得判產品 FAIL |
+| `log_solution_not_visible` | error | `check`：連續 30 秒看不到 Log Solution（含部分遮住），點 Dock 3 次仍看不到；`data.reason` 為最後一次判讀原因 | 環境異常，暫停，不得判產品 FAIL |
 | `round_lost` | error | `check`：本輪已見 Monitoring 後 Log Solution 回到 Standby（1.1 下人工停止會落入此處） | 本輪結果已無法取得，暫停，不得判產品 FAIL（見 5.4） |
 | `timeout` | timeout | `check` 長輪詢逾時 | 依流程決定是否再 `check` |
 | `server_shutting_down` | error | Core 正在關閉 | 重連後重試 |
@@ -477,7 +480,7 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 | 回覆欄位 | 固定 envelope＋固定 `data`，不出現 `null` | 已實作 |
 | `input`、`monitor_start`、`start_test` | 正式指令；`button` 移除 | 已實作（DFU `input` 只勾選與填 SN；`monitor_start` 三站；`start_test` 取代 `button`） |
 | 三站判讀 | FCT／BT 的 `check` 與 DFU 同一顯示契約判讀 | 已實作；模板判讀結果與 `testing`／`pass`／`fail` 模板已淘汰 |
-| 可見性與遺失 | 看不到 Log Solution 點 Dock 恢復；Standby 回 `round_lost` | 已實作（60 秒、5 秒、最多 3 次） |
+| 可見性與遺失 | 看不到 Log Solution（含部分遮住）點 Dock 恢復；Standby 回 `round_lost` | 已實作（30 秒、5 秒、最多 3 次；排除法判定看不到；找不到 Dock 圖示回 `log_solution_not_found`） |
 | 共用 Dock 模板 | `COMMON/COMMON_log_solution_dock_icon.png` | 已實作；創建 Pattern 不再建立結果模板 |
 | `check` 長輪詢 | paused 立即回；無總結果欄位 | 已實作；`timeout_sec` 必填 |
 | `check` 格數核對 | 格數 ≠ 通道數回 `capacity_mismatch` | 已實作 |
@@ -488,6 +491,7 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 
 ### 仍待辦
 
+- **Log Solution 1.2 定位方塊移動（等 Log Solution 定座標）**：左定位方塊將移到色帶最左側上方（移除「KVM RESULT」字樣），使左右定位方塊涵蓋整條色帶。橋接過渡期同時支援 1.1 與新位置（以兩定位方塊距離判斷），見 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` C6。
 - **人工停止後的 header 實際標記（現場確認）**：規定行為見 5.4——Log Solution 1.2 下人工停止顯示 Complete（`results` 含 `STOPPED`），`check` 正常回 `taken` 交付；1.1 下人工停止顯示 Standby，`check` 回 `round_lost`。待現場確認的只是實機 header 是否確實如此標記，不改變上述規定。
 - **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
 - **FCT 推入前訊號的現場時序**：訊號到首次寫檔的實際時間，決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。

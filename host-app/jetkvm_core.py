@@ -278,6 +278,11 @@ class JetKVMClient:
         self.call("absMouseReport", {"x": x, "y": y, "buttons": 1}); await asyncio.sleep(0.1)
         self.call("absMouseReport", {"x": x, "y": y, "buttons": 0}); await asyncio.sleep(0.1)
 
+    async def move(self, px, py):
+        """Move the pointer without clicking."""
+        x, y = self._to_abs(px, py)
+        self.call("absMouseReport", {"x": x, "y": y, "buttons": 0}); await asyncio.sleep(0.1)
+
     async def type_text(self, text):
         for ch in text:
             if ch not in _USAGE:

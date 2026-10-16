@@ -37,6 +37,12 @@ def _dock_click(kvm):
     return ("click", int(x + w / 2), int(y + h / 2))
 
 
+def _dock_recovery(kvm):
+    """Dock click, then the pointer parked at the top edge mid-screen (no click)."""
+    frame = kvm.latest_frame()[0]
+    return [_dock_click(kvm), ("move", frame.shape[1] // 2, 1)]
+
+
 @pytest.fixture
 def serve(tmp_path):
     servers = []
@@ -106,7 +112,7 @@ def test_success_clicks_dock_then_shortcut_and_reports_monitoring(serve, device,
 
     assert resp["status"] == "ok"
     assert resp["data"] == {"state": "monitoring", "capacity": 4}
-    assert kvm.events == [_dock_click(kvm), SHORTCUT]
+    assert kvm.events == [*_dock_recovery(kvm), SHORTCUT]
 
 
 @pytest.mark.parametrize("device", STATIONS)
@@ -172,7 +178,7 @@ def test_no_log_solution_after_the_dock_click_is_not_found_and_no_shortcut(serve
 
     assert resp["status"] == "error"
     assert resp["error"] == "log_solution_not_found"
-    assert kvm.events == [_dock_click(kvm)]
+    assert kvm.events == _dock_recovery(kvm)
 
 
 def test_monitoring_after_the_dock_click_is_busy_and_no_shortcut(serve):
@@ -186,7 +192,7 @@ def test_monitoring_after_the_dock_click_is_busy_and_no_shortcut(serve):
 
     assert resp["status"] == "error"
     assert resp["error"] == "log_solution_busy"
-    assert kvm.events == [_dock_click(kvm)]
+    assert kvm.events == _dock_recovery(kvm)
 
 
 def test_closed_log_solution_is_reopened_by_the_dock_click_then_started(serve):
@@ -199,7 +205,7 @@ def test_closed_log_solution_is_reopened_by_the_dock_click_then_started(serve):
 
     assert resp["status"] == "ok"
     assert resp["data"] == {"state": "monitoring", "capacity": 4}
-    assert kvm.events == [_dock_click(kvm), SHORTCUT]
+    assert kvm.events == [*_dock_recovery(kvm), SHORTCUT]
 
 
 def test_shortcut_that_does_nothing_is_monitor_not_started_within_the_timeout(serve):
@@ -212,5 +218,5 @@ def test_shortcut_that_does_nothing_is_monitor_not_started_within_the_timeout(se
     assert resp["status"] == "error"
     assert resp["error"] == "monitor_not_started"
     assert resp["data"]["state"] != "monitoring"
-    assert kvm.events == [_dock_click(kvm), SHORTCUT]
+    assert kvm.events == [*_dock_recovery(kvm), SHORTCUT]
     assert resp["elapsed_sec"] < START_TIMEOUT_SEC + 2.0
