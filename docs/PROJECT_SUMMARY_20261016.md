@@ -162,3 +162,15 @@
 
 - 遠端只剩 `main`、`feat/device-identity-protocol-1.0`（PR #16 來源）與兩條舊的 `claude/*`。
 - 實作用的 `feat/di-*` 與 `fix/review-1` 已於 2026-10-15 結束時刪除。
+
+## 後續：Core 與 Monitor UI 穩定性修正（#17）
+
+- 父票 #17 三張子票已完成並透過 PR #29（`db79503`，merge commit）合併進 main：
+  - #18 凍結檢查區分重新連線後的新串流（freeze_guard）
+  - #19 連線池在指令執行期間租約使用中連線（kvm_pool、tcp_server）
+  - #20 Monitor UI 分流為 status／stream／inspect 三條獨立 Core 連線（ui_app、core_channel）
+- code-review 兩軸審查後的修正：ADR-0005 修訂（換新串流時重新起算凍結判斷）、ADR-0001 補註（使用中連線心跳失敗不派新請求，歸還時心跳恢復則保留）。
+- 測試：全套 359 passed、30 subtests passed（合併前於整合分支驗證）。
+- 驗收後關閉 #17。
+
+Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
