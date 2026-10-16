@@ -46,6 +46,11 @@ try:
 except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
 
+try:
+    from monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC
+except ImportError:
+    from .monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("TcpJsonServer")
 
 PROTOCOL_VERSION = "1.0"
@@ -53,8 +58,6 @@ CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
 INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
-MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
-MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 VISIBILITY_LOST_SEC = 60.0  # continuous "Log Solution not found" readings before a Dock click
 DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
 MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request

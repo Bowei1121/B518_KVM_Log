@@ -20,8 +20,8 @@ from round_frame_consumer import MarkerState, observe_latest_round_frame, read_l
 from template_catalog import TemplateCatalog
 
 MATCH_THRESHOLD = 0.80
-CONFIRM_SEC = 3.0
-START_TIMEOUT_SEC = 10.0
+MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
+MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 POLL_INTERVAL_SEC = 0.05
 
 
@@ -100,7 +100,7 @@ async def bring_log_solution_forward(kvm, template_root=None, threshold=MATCH_TH
 
 
 async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRESHOLD,
-                            confirm_sec=CONFIRM_SEC, start_timeout_sec=START_TIMEOUT_SEC,
+                            confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
                             log=print, diagnostics_key="monitor"):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
