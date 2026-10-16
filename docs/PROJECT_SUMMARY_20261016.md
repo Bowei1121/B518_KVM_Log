@@ -103,6 +103,8 @@
 - 可立即開始：#22（FCT／BT 改用 Log Solution 判讀）、#23（monitor_start）；兩者都改 TCP 伺服器，不建議同時進行。
 - 已在 #13 留言提醒 LabVIEW 改版以 #21 完成後的 PROTOCOL 為準。
 
+- 本日文件分支已開 PR：https://github.com/Bowei1121/B518_KVM_Log/pull/28 （純文件，與 main 無衝突）。
+
 ## 附錄：implement-spec session 的 2026-10-15 實作摘要（PR #16 帶入）
 
 
