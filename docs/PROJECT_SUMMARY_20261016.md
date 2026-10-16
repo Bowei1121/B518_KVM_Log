@@ -92,6 +92,11 @@
 7. LabVIEW 呼叫順序：DFU `input` → `monitor_start` → `start_test` → `check`；BT `monitor_start` → `start_test` → `check`；FCT 推入前訊號 → `monitor_start` → `check`。
 8. 協定仍為 1.0（未上線，直接修改）。Log Solution 端依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 自行開票；橋接不依賴 1.2 也能運作（1.1 下人工停止的輪次會回 `round_lost`）。
 
+## to-spec：spec #2
+
+- 使用者確認共同理解與測試切入點（TCP JSON 協定＋合成 ATE 畫面為唯一主要 seam；模板目錄沿用既有測試）。
+- Spec #2 已發布：https://github.com/Bowei1121/B518_KVM_Log/issues/21 （`ready-for-agent`）；本機副本 `docs/specs/0002-log-solution-judgement-all-stations.md`。
+
 ## 附錄：implement-spec session 的 2026-10-15 實作摘要（PR #16 帶入）
 
 
