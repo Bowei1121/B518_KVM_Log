@@ -1,4 +1,4 @@
-"""check 1.0 must fail closed: no positively observed result means no taken."""
+"""check 1.0 must fail closed on every station: no positively observed result means no taken."""
 import asyncio
 import sys
 from pathlib import Path
@@ -8,7 +8,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-import auto_flow
 import round_frame_consumer
 from round_frame_consumer import TakeDecision
 from protocol_helpers import make_registry
@@ -29,7 +28,7 @@ class RealishKVM:
         self.frame = np.zeros((40, 40, 3), dtype=np.uint8)
 
 
-DEVICE_BY_STATION = {"FCT": "FCT-01", "BT": "BT-01", "DFU": "DFU-01"}
+ALL_STATIONS = ["DFU-01", "FCT-01", "BT-01"]
 
 
 @pytest.fixture
@@ -47,102 +46,23 @@ def run_check_cmd(server, req):
     return asyncio.run(server._handle_check(req))
 
 
-def fake_run_check(result, calls=None):
-    async def _run_check(kvm, device, template_root=None, freeze_guard=None, **kw):
-        if calls is not None:
-            calls.append({"device": device, "template_root": template_root})
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    return _run_check
-
-
-@pytest.mark.parametrize("station", ["FCT", "BT"])
-def test_empty_rows_is_not_taken(server, monkeypatch, station):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "testing": False, "rows": []}))
-    res = run_check_cmd(server, {"device": DEVICE_BY_STATION[station]})
-    assert res["status"] == "ok"
-    assert res["data"]["kind"] == "unknown"
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_check_without_log_solution_frame_is_never_taken_from_templates(server, device):
+    res = run_check_cmd(server, {"device": device})
+    assert res["data"]["kind"] != "taken"
     assert res["data"]["results"] == []
 
 
-def test_window_not_found_is_unknown_not_taken(server, monkeypatch):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": False, "window": 0.12}))
-    res = run_check_cmd(server, {"device": "BT-01"})
-    assert res["status"] == "ok"
-    assert res["data"]["kind"] == "unknown"
-    assert res["data"]["results"] == []
-
-
-def test_window_not_found_with_timeout_times_out_with_last_state(server, monkeypatch):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": False}))
-    res = run_check_cmd(server, {"device": "BT-01", "timeout_sec": 0.2})
-    assert res["status"] == "timeout"
-    assert res["error"] == "timeout"
-    assert res["data"]["kind"] == "unknown"
-
-
-def test_run_check_exception_is_internal_error_not_taken(server, monkeypatch):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check(RuntimeError("boom")))
-    res = run_check_cmd(server, {"device": "BT-01"})
-    assert res["status"] == "error"
-    assert res["error"] == "internal_error"
-    assert res["data"]["results"] == []
-
-
-def test_template_rows_map_to_slot_results(server, monkeypatch):
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass", "SN1"), (2, "fail", "SN2")]}))
-    res = run_check_cmd(server, {"device": "BT-01"})
-    assert res["status"] == "error"  # capacity 2 != 4 configured channels
-    assert res["error"] == "capacity_mismatch"
-    assert res["data"]["results"] == []
-
-
-def test_template_rows_matching_channels_are_taken_per_slot(server, monkeypatch):
-    # Same shape as auto_flow.run_check rows: (index, result, sn).
-    rows = [(1, "pass", "SN1"), (2, "fail", "SN2"), (3, "pass", "SN3"), (4, "pass", "SN4")]
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": rows}))
-    res = run_check_cmd(server, {"device": "BT-01"})
-    assert res["status"] == "ok"
-    assert res["data"]["kind"] == "taken"
-    assert res["data"]["results"] == [
-        {"slot": 1, "status": "PASS"}, {"slot": 2, "status": "FAIL"},
-        {"slot": 3, "status": "PASS"}, {"slot": 4, "status": "PASS"},
-    ]
-    assert "result" not in res["data"]
-
-
-def test_no_template_root_uses_default_catalog_root(monkeypatch):
-    from template_catalog import TemplateCatalog
-
-    calls = []
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": []}, calls))
-    server = TcpJsonServer(device_registry=make_registry(), port=0, freeze_guard=LiveGuard())
-    run_check_cmd(server, {"device": "BT-01"})
-    assert calls == [{"device": "BT", "template_root": TemplateCatalog.default_root()}]
-
-
-def test_request_template_root_overrides_server_root(server, monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": False}, calls))
-    other = str(tmp_path / "other")
-    run_check_cmd(server, {"device": "BT-01", "template_root": other})
-    assert calls[0]["template_root"] == other
-
-
-def test_no_frame_yet_is_error_no_result(server, monkeypatch):
-    calls = []
-    monkeypatch.setattr(auto_flow, "run_check", fake_run_check({"ok": True, "rows": [(1, "pass", "SN1")]}, calls))
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_no_frame_yet_is_error_no_result(server, device):
     kvm = RealishKVM()
     kvm.frame = None
-    res = run_check_cmd(server, {"device": "BT-01", "_kvm_client": kvm})
-    assert calls == []
+    res = run_check_cmd(server, {"device": device, "_kvm_client": kvm})
     assert res["status"] == "error"
     assert res["error"] == "no_frame"
 
 
-def _dfu_decision(monkeypatch, decision):
+def _round_decision(monkeypatch, decision):
     monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", lambda kvm, gate: decision)
 
 
@@ -151,9 +71,10 @@ def _dfu_decision(monkeypatch, decision):
     [("waiting", "monitoring"), ("paused", "confirmation_required"), ("unknown", "out_of_order_source_frame"),
      ("already_taken", "round_already_taken")],
 )
-def test_dfu_single_shot_non_taken_is_not_taken(server, monkeypatch, kind, reason):
-    _dfu_decision(monkeypatch, TakeDecision(kind, "DFU-01", reason=reason))
-    res = run_check_cmd(server, {"device": "DFU-01"})
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_single_shot_non_taken_is_not_taken(server, monkeypatch, kind, reason, device):
+    _round_decision(monkeypatch, TakeDecision(kind, device, reason=reason))
+    res = run_check_cmd(server, {"device": device})
     assert res["status"] == "ok"
     assert res["data"]["kind"] == kind
     assert res["data"]["reason"] == reason
@@ -166,29 +87,32 @@ def test_dfu_single_shot_non_taken_is_not_taken(server, monkeypatch, kind, reaso
      ("PASS", "NOTEST", "PASS", "PASS"), ("TIMEOUT", "PASS", "PASS", "PASS"),
      ("STOPPED", "PASS", "PASS", "PASS")],
 )
-def test_dfu_taken_keeps_each_slot_status_and_never_aggregates(server, monkeypatch, statuses):
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_taken_keeps_each_slot_status_and_never_aggregates(server, monkeypatch, statuses, device):
     rows = tuple((i, s) for i, s in enumerate(statuses, 1))
-    _dfu_decision(monkeypatch, TakeDecision("taken", "DFU-01", capacity=len(rows), results=rows,
-                                            reason="reliable_complete"))
-    res = run_check_cmd(server, {"device": "DFU-01"})
+    _round_decision(monkeypatch, TakeDecision("taken", device, capacity=len(rows), results=rows,
+                                              reason="reliable_complete"))
+    res = run_check_cmd(server, {"device": device})
     assert res["status"] == "ok"
     assert res["data"]["kind"] == "taken"
     assert res["data"]["results"] == [{"slot": i, "status": s} for i, s in rows]
     assert "result" not in res["data"]
 
 
-def test_dfu_frozen_decision_is_frame_frozen_error(server, monkeypatch):
-    _dfu_decision(monkeypatch, TakeDecision("frozen", "DFU-01", reason="frame_frozen"))
-    res = run_check_cmd(server, {"device": "DFU-01"})
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_frozen_decision_is_frame_frozen_error(server, monkeypatch, device):
+    _round_decision(monkeypatch, TakeDecision("frozen", device, reason="frame_frozen"))
+    res = run_check_cmd(server, {"device": device})
     assert res["status"] == "error"
     assert res["error"] == "frame_frozen"
 
 
-def test_dfu_inspection_exception_is_internal_error(server, monkeypatch):
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_inspection_exception_is_internal_error(server, monkeypatch, device):
     def boom(kvm, gate):
         raise RuntimeError("decode failed")
 
     monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", boom)
-    res = run_check_cmd(server, {"device": "DFU-01"})
+    res = run_check_cmd(server, {"device": device})
     assert res["status"] == "error"
     assert res["error"] == "internal_error"

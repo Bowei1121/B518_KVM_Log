@@ -405,18 +405,19 @@ def _kvm_for(kvms, device):
 
 
 class TestTCPJsonServerFreezeGuard:
-    def test_check_frozen_picture_returns_frame_frozen_error(self, freeze_rig):
+    @pytest.mark.parametrize("device", ["DFU-01", "FCT-01", "BT-01"])
+    def test_check_frozen_picture_returns_frame_frozen_error(self, freeze_rig, device):
         server, kvms, address = freeze_rig
-        kvm = _kvm_for(kvms, "DFU-01")
+        kvm = _kvm_for(kvms, device)
         kvm.show("monitoring")
         kvm.freeze()
 
-        res = _check_on(address, "DFU-01", "req-chk-01", 5)
+        res = _check_on(address, device, "req-chk-01", 5)
 
         assert res["req_id"] == "req-chk-01"
         assert res["status"] == "error"
         assert res["error"] == "frame_frozen"
-        assert res["device"] == "DFU-01"
+        assert res["device"] == device
 
     def test_check_live_picture_is_not_reported_frozen(self, freeze_rig):
         server, kvms, address = freeze_rig
@@ -468,90 +469,6 @@ class TestTCPJsonServerFreezeGuard:
         frozen_by_device = {d["device"]: d["frozen"] for d in res["data"]["devices"]}
         assert frozen_by_device["DFU-01"] is True
         assert frozen_by_device["DFU-02"] is False
-
-
-class TestStationVisionChecksFreeze:
-    """Test station-level visual check integration (BT, FCT) with FrameFreezeGuard."""
-
-    def test_bt_run_check_detects_frame_frozen_on_static_pts(self, tmp_path):
-        from auto_flow import run_check
-        import numpy as np
-
-        frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        kvm = MockKVMClient(initial_pts=100.0, frame_data=frame)
-        guard = FrameFreezeGuard(freeze_threshold=0.1)
-
-        result = asyncio.run(run_check(
-            kvm,
-            device="BT",
-            template_root=tmp_path,
-            freeze_guard=guard,
-            inspection_window=0.1,
-        ))
-
-        assert result["ok"] is False
-        assert result["status"] == "error"
-        assert result["error"] == "frame_frozen"
-        assert "Frame presentation timestamp" in result["message"]
-
-    def test_fct_run_check_detects_frame_frozen_on_static_pts(self, tmp_path):
-        from auto_flow import run_check
-        import numpy as np
-
-        frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        kvm = MockKVMClient(initial_pts=200.0, frame_data=frame)
-        guard = FrameFreezeGuard(freeze_threshold=0.1)
-
-        result = asyncio.run(run_check(
-            kvm,
-            device="FCT",
-            template_root=tmp_path,
-            freeze_guard=guard,
-            inspection_window=0.1,
-        ))
-
-        assert result["ok"] is False
-        assert result["status"] == "error"
-        assert result["error"] == "frame_frozen"
-
-    def test_bt_run_check_passes_freeze_guard_when_pts_advances(self, tmp_path):
-        from auto_flow import run_check
-        from template_catalog import TemplateCatalog
-        import numpy as np
-
-        catalog = TemplateCatalog(tmp_path)
-        rng = np.random.RandomState(42)
-        frame = rng.randint(0, 255, (180, 260, 3), dtype=np.uint8)
-        catalog.save_crop(frame, (15, 20, 125, 140), "BT", "window")
-        catalog.save_crop(frame, (40, 50, 75, 80), "BT", "testing")
-
-        kvm = MockKVMClient(initial_pts=10.0, frame_data=frame)
-        guard = FrameFreezeGuard(freeze_threshold=0.5)
-
-        # Background task that advances PTS
-        async def stream():
-            for _ in range(5):
-                await asyncio.sleep(0.02)
-                kvm.advance(0.033)
-
-        async def check():
-            t = asyncio.create_task(stream())
-            try:
-                return await run_check(
-                    kvm,
-                    device="BT",
-                    template_root=catalog.root,
-                    freeze_guard=guard,
-                    inspection_window=0.5,
-                )
-            finally:
-                await t
-
-        result = asyncio.run(check())
-        # Live frame passed freeze guard; then matched window and testing templates!
-        assert result.get("error") != "frame_frozen"
-        assert result["ok"] is True
-        assert result["testing"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -729,23 +646,6 @@ class TestCallerSuppliedStreamID:
 
         assert is_live is False and err["error"] == "frame_frozen"
         assert guard.get_state("BT-01").stream_id == "stream-new"
-
-
-class TestTemplatePathFreeze:
-    def test_template_reading_reports_frame_frozen_on_static_pts(self, tmp_path):
-        import numpy as np
-
-        frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        kvm = MockKVMClient(initial_pts=100.0, stream_id="mock-stream-01", frame_data=frame)
-        server = TcpJsonServer(
-            device_registry=make_registry(),
-            freeze_guard=FrameFreezeGuard(freeze_threshold=0.1),
-        )
-        entry = make_registry().get("BT-01")
-
-        resp = asyncio.run(server._observe_check(kvm, entry, {"template_root": str(tmp_path)}))
-
-        assert resp.get("error") == "frame_frozen", resp
 
 
 class TestStreamReconnectOverTheWire:

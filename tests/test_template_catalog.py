@@ -18,8 +18,27 @@ class TemplateCatalogTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_devices_and_all_keys_have_canonical_paths(self):
+    def test_shared_log_solution_dock_icon_is_one_file_for_every_station(self):
+        self.assertIn("COMMON", self.catalog.devices())
+        self.assertEqual(self.catalog.keys("COMMON"), ("log_solution_dock_icon",))
+        self.assertEqual(
+            self.catalog.path("COMMON", "log_solution_dock_icon"),
+            self.root / "COMMON" / "COMMON_log_solution_dock_icon.png",
+        )
         for device in ("DFU", "FCT", "BT"):
+            self.assertNotIn("log_solution_dock_icon", self.catalog.keys(device))
+            self.assertFalse(any(key.startswith("log_") for key in self.catalog.keys(device)))
+
+    def test_shared_dock_icon_can_be_created_and_read_back(self):
+        image = np.zeros((40, 40, 3), dtype=np.uint8)
+        image[:, :] = (200, 30, 90)
+        target = self.catalog.save_crop(image, (0, 0, 36, 36), "COMMON", "log_solution_dock_icon")
+        self.assertEqual(target.parent, self.root / "COMMON")
+        self.assertTrue(target.exists())
+        self.assertEqual(self.catalog.path("COMMON", "log_solution_dock_icon"), target)
+
+    def test_devices_and_all_keys_have_canonical_paths(self):
+        for device in ("DFU", "FCT", "BT", "COMMON"):
             for key in self.catalog.keys(device):
                 self.assertEqual(
                     self.catalog.path(device, key),
@@ -30,18 +49,29 @@ class TemplateCatalogTests(unittest.TestCase):
         self.assertNotIn("group_label", self.catalog.keys("DFU"))
         self.assertFalse(any(key.startswith("slot") for key in self.catalog.keys("DFU")))
         self.assertFalse(any(key.startswith("log_") for key in self.catalog.keys("DFU")))
-        self.assertEqual(
-            self.catalog.keys("BT"),
-            ("window", "testing", "pass", "fail", "start_all", "dock_icon"),
-        )
-        self.assertEqual(
-            self.catalog.keys("FCT"),
-            ("window", "testing", "pass", "fail", "dock_icon"),
-        )
+        self.assertEqual(self.catalog.keys("BT"), ("window", "start_all", "dock_icon"))
+        self.assertEqual(self.catalog.keys("FCT"), ("window", "dock_icon"))
         self.assertEqual(self.catalog.path("BT", "start_all"), self.root / "BT" / "BT_start_all.png")
         self.assertEqual(self.catalog.path("BT", "dock_icon"), self.root / "BT" / "BT_dock_icon.png")
         self.assertNotIn("input", self.catalog.keys("BT"))
         self.assertIn(("Start All", "start_all"), self.catalog.selection_options("BT"))
+
+    def test_retired_result_templates_are_not_offered_or_accepted(self):
+        for device in ("DFU", "FCT", "BT"):
+            labels = [key for _, key in self.catalog.selection_options(device)]
+            for retired in ("testing", "pass", "fail"):
+                self.assertNotIn(retired, labels)
+                with self.assertRaises(ValueError):
+                    self.catalog.path(device, retired)
+
+    def test_leftover_retired_template_file_is_ignored(self):
+        image = np.full((20, 20, 3), 99, dtype=np.uint8)
+        self.catalog.save_crop(image, (2, 2, 18, 18), "BT", "dock_icon")
+        leftover = self.root / "BT" / "BT_testing.png"
+        leftover.parent.mkdir(parents=True, exist_ok=True)
+        leftover.write_bytes(b"not a png")
+        self.assertEqual(self.catalog.keys("BT"), ("window", "start_all", "dock_icon"))
+        self.assertTrue(self.catalog.path("BT", "dock_icon").exists())
 
     def test_invalid_device_key_and_traversal_are_rejected(self):
         for device, key in (("UNKNOWN", "window"), ("FCT", "not_a_role"), ("../FCT", "window"),

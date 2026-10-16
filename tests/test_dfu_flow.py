@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dfu_flow  # noqa: E402
-from dfu_flow import DfuInputError  # noqa: E402
+from dfu_flow import DfuError  # noqa: E402
 from dfu_helpers import SyntheticDfuKVM, checkbox_templates, save_templates  # noqa: E402
 
 FOUR = [(40, 50), (120, 50), (40, 90), (120, 90)]
@@ -52,7 +52,7 @@ def test_sn_may_contain_commas_and_colons():
     ["1:A"],
 ])
 def test_invalid_items_are_refused_as_invalid_argument(items):
-    with pytest.raises(DfuInputError) as excinfo:
+    with pytest.raises(DfuError) as excinfo:
         dfu_flow.parse_items(items, 4)
     assert excinfo.value.code == "invalid_argument"
 
@@ -84,7 +84,8 @@ def test_items_set_only_requested_channels_and_type_in_slot_order(root):
     first_type = kvm.events.index(types[0])
     assert all(event[0] != "click" or kvm.events.index(event) < first_type
                for event in kvm.events[:first_type])
-    assert kvm.events[-1] == ("log_shortcut",)
+    assert kvm.events[-1] == ("enter",)
+    assert not any(event[0] == "log_shortcut" for event in kvm.events)
 
 
 def test_a_checkbox_count_other_than_channels_refuses_before_any_sn(root):
@@ -92,7 +93,7 @@ def test_a_checkbox_count_other_than_channels_refuses_before_any_sn(root):
     save_templates(root, three)
     kvm = SyntheticDfuKVM(three)
 
-    with pytest.raises(DfuInputError) as excinfo:
+    with pytest.raises(DfuError) as excinfo:
         _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
 
     assert excinfo.value.code == "hid_failed"
@@ -116,7 +117,7 @@ def test_a_second_mismatch_stops_before_typing(root):
     kvm = SyntheticDfuKVM(FOUR)
     kvm.lost_clicks = [1, 1]  # the click and its retry both fail
 
-    with pytest.raises(DfuInputError) as excinfo:
+    with pytest.raises(DfuError) as excinfo:
         _run(kvm, 4, [{"slot": 2, "sn": "SN2"}], root)
 
     assert excinfo.value.code == "hid_failed"
@@ -128,7 +129,7 @@ def test_hid_error_while_typing_reports_the_slots_already_entered(root):
     kvm = SyntheticDfuKVM(FOUR)
     kvm.hid_error_after_types = 1
 
-    with pytest.raises(DfuInputError) as excinfo:
+    with pytest.raises(DfuError) as excinfo:
         _run(kvm, 4, [{"slot": 1, "sn": "SN1"}, {"slot": 2, "sn": "SN2"}], root)
 
     assert excinfo.value.code == "hid_failed"
@@ -140,7 +141,7 @@ def test_missing_template_is_hid_failed_before_any_click(root):
     (root / "DFU" / "DFU_checkbox_unchecked.png").unlink()
     kvm = SyntheticDfuKVM(FOUR)
 
-    with pytest.raises(DfuInputError) as excinfo:
+    with pytest.raises(DfuError) as excinfo:
         _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
 
     assert excinfo.value.code == "hid_failed"

@@ -17,9 +17,6 @@ _COMMON_SPECS = (
     TemplateSpec("window", "視窗定位"),
     TemplateSpec("input", "輸入欄位"),
     TemplateSpec("button", "確認按鈕"),
-    TemplateSpec("testing", "測試中"),
-    TemplateSpec("pass", "通過結果"),
-    TemplateSpec("fail", "失敗結果"),
 )
 
 _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
@@ -31,18 +28,16 @@ _DEVICE_SPECS: Dict[str, Tuple[TemplateSpec, ...]] = {
     ),
     "FCT": (
         TemplateSpec("window", "視窗定位"),
-        TemplateSpec("testing", "測試中"),
-        TemplateSpec("pass", "通過結果"),
-        TemplateSpec("fail", "失敗結果"),
         TemplateSpec("dock_icon", "Dock Icon"),
     ),
     "BT": (
         TemplateSpec("window", "視窗定位"),
-        TemplateSpec("testing", "測試中"),
-        TemplateSpec("pass", "通過結果"),
-        TemplateSpec("fail", "失敗結果"),
         TemplateSpec("start_all", "Start All"),
         TemplateSpec("dock_icon", "Dock Icon"),
+    ),
+    # Templates shared by every station live in their own folder; the Log Solution Dock icon is the same program on all stations.
+    "COMMON": (
+        TemplateSpec("log_solution_dock_icon", "Log Solution Dock 圖示"),
     ),
 }
 

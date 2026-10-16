@@ -273,6 +273,18 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
                             app_origin=(x0, y0))
 
 
+def read_latest_app_frame(kvm):
+    """Gate-less reading of the newest frame: ``(frame, observation)``, or ``(None, None)`` with no frame yet."""
+    if hasattr(kvm, "latest_frame"):
+        snapshot = kvm.latest_frame()
+        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
+    else:
+        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+    if frame is None:
+        return None, None
+    return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
+
+
 class RoundFrameGate:
     """Require monitoring then a stable complete frame, and take each device round once."""
 
@@ -358,10 +370,15 @@ class RoundFrameGate:
             return TakeDecision("paused", self.device_id, observation.state,
                                 observation.capacity, reason="confirmation_required")
         if observation.state == MarkerState.STANDBY:
+            # Standby after this round was seen in Monitoring (and not yet taken) means the round is gone.
+            round_lost = self.armed
             self.armed = False
             self.armed_capacity = None
             self._candidate_signature = None
             self._candidate_count = 0
+            if round_lost:
+                return TakeDecision("round_lost", self.device_id, observation.state,
+                                    observation.capacity, reason="round_lost")
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="standby")
         if observation.state == MarkerState.MONITORING:
