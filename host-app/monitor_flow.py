@@ -75,9 +75,11 @@ async def click_dock_icon(kvm, frame, catalog, diagnostics, threshold=MATCH_THRE
     return True, value
 
 
-async def bring_log_solution_forward(kvm, template_root=None, threshold=MATCH_THRESHOLD,
-                                     diagnostics_key="check"):
-    """check's visibility recovery: one Dock click, no keys. Returns False when the Dock icon is not on screen."""
+async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD):
+    """check's visibility recovery: one Dock click, no keys. Returns False when the Dock icon is not on screen.
+
+    ``diagnostics_key`` is the device ID; match diagnostics are kept per device (ADR-0007).
+    """
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
     ok = False
@@ -91,13 +93,14 @@ async def bring_log_solution_forward(kvm, template_root=None, threshold=MATCH_TH
         diagnostics.finalize(ok, "check_dock_recovery")
 
 
-async def run_monitor_start(kvm, gate, template_root=None, threshold=MATCH_THRESHOLD,
+async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
-                            log=print, diagnostics_key="monitor"):
+                            log=print):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
-    ``gate`` is the device's RoundFrameGate; the Monitoring reading arms it. Raises
-    ``MonitorStartError`` with the protocol error code otherwise.
+    ``gate`` is the device's RoundFrameGate; the Monitoring reading arms it. ``diagnostics_key`` is the
+    device ID; match diagnostics are kept per device (ADR-0007). Raises ``MonitorStartError`` with the
+    protocol error code otherwise.
     """
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
