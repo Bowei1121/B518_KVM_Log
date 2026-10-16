@@ -63,3 +63,13 @@
 - 完成後標記停在 `complete`，直到下一次開始監控才直接進 `monitoring`。快捷鍵是全域、只能開始不能切換；監控中或待確認時按下會被忽略。
 - 視窗在右上角，**沒有設定最上層**；只在單格出現 PASS／FAIL／NOTEST 時拉到前景，`TIMEOUT`、`STOPPED` 與整輪完成時不會。監控中可能被 ATE 視窗蓋住。
 - 預期通道數來自 Log Solution 機台 profile（預設 DFU 7、FCT 6、BT 4），須與橋接 `devices.json` 通道數一致，否則 `capacity_mismatch`。
+
+## grilling：FCT／BT 判讀方式（第 3、4 輪，A12–A19）
+
+- A12：三站呼叫順序 — DFU：`input`（只填 SN）→ `monitor_start` → `start_test`（OK）→ `check`；BT：`monitor_start` → `start_test`（Start All）→ `check`；FCT：收到訊號 → `monitor_start` → `check`。
+- A13：`start_test` 取代 PR #16 的 BT `button`；1.0 未上線，直接修改不升版。
+- A14：`monitor_start` 先在 Dock 找 Log Solution 圖示，點擊後確認畫面上有 Log Solution 才送快捷鍵；找不到回 `log_solution_not_found`，送出後 10 秒未見 monitoring 回 `monitor_not_started`。
+- A15：ATE 視窗不遮擋右側列入設備 SOP（與對方 TE 溝通）；`check` 長時間看不到 Log Solution 時先點 Dock 圖示拉回前面再判斷，仍看不到才回 `log_solution_not_visible`。
+- A16／A18：採 Log Solution 修改方案（人工停止顯示 Complete、視窗前景時機），完整建議見 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md`。
+- A17：FCT 治具推入不由 LabVIEW 控制；將與設備端協調改為推入前發訊號，LabVIEW 先 `monitor_start`。Log Solution FCT profile 的 start 期限需涵蓋訊號到首次寫檔的時間（建議先設 120 秒）。
+- A19：Log Solution 的開票由其開發者依建議文件自行處理，本 repo 不開票。
