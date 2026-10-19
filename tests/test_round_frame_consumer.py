@@ -7,9 +7,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from fake_kvm import FakeKVM  # noqa: E402
+from log_solution_reader import MarkerState, inspect_app_frame
 from round_frame_consumer import (
-    MarkerState, RoundFrameGate, inspect_app_frame, observe_latest_round_frame,
-    tcp_round_reply,
+    RoundFrameGate, observe_latest_round_frame, tcp_round_reply,
 )
 
 

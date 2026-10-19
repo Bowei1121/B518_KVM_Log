@@ -8,7 +8,8 @@ import sys
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-from round_frame_consumer import CONTRACT_VERSION, RoundFrameGate, tcp_round_reply
+from log_solution_reader import CONTRACT_VERSION
+from round_frame_consumer import RoundFrameGate, tcp_round_reply
 
 
 def verify(directory):
