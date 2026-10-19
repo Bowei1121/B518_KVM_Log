@@ -65,9 +65,9 @@ def test_replay_kvm_plays_in_real_time_and_loops_with_advancing_timestamps(recor
     now["t"] += 4.0 + 0.05  # one full loop later
     later = kvm.latest_frame()
 
-    assert later[4] > first[4]
-    assert later[1] > first[1]
-    assert first[3] == "replay:x"
+    assert later.pts > first.pts
+    assert later.sequence > first.sequence
+    assert first.stream_id == "replay:x"
     assert all(0.0 <= age < 0.2 for age in kvm.frame_ages)
 
 
@@ -75,7 +75,7 @@ def test_replay_kvm_speed_scales_the_timeline(recording_dir):
     now = {"t": 0.0}
     slow = rl.ReplayKVM(rl.load_recording(recording_dir), clock=lambda: now["t"], speed=0.5)
     now["t"] = 1.0
-    stamp = slow.latest_frame()[4]
+    stamp = slow.latest_frame().pts
     assert abs(stamp - 100.0 - 0.5) < 0.15  # half speed: one second of wall time is half a second of picture
 
 

@@ -20,6 +20,7 @@ from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
 from bt_flow import BtStartError, run_start_all  # noqa: E402
+from fake_kvm import FakeKVM, beside, make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from protocol_helpers import make_registry, render_log_solution  # noqa: E402
@@ -43,9 +44,9 @@ def _save_templates(root, frame):
     return catalog
 
 
-class FakeKvm:
+class FakeKvm(FakeKVM):
     def __init__(self, frame):
-        self.frame = frame
+        super().__init__(frame)
         self.rpc_errors = []
         self.clicks = []
 
@@ -60,7 +61,9 @@ class BtKvm(FakeKvm):
 
     def latest_frame(self):
         now = time.monotonic()
-        return (render_log_solution(self.log_state, ["WAITING"] * 4), 1, now, "synthetic", now)
+        app = render_log_solution(self.log_state, ["WAITING"] * 4)
+        return make_snapshot(beside(self.frame, app), sequence=1, received_monotonic=now,
+                             stream_id="synthetic", pts=now)
 
 
 class FailingKvm(BtKvm):

@@ -37,9 +37,9 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
 
 try:
-    from freeze_guard import FrameFreezeGuard, extract_stream_id
+    from freeze_guard import FrameFreezeGuard
 except ImportError:
-    from .freeze_guard import FrameFreezeGuard, extract_stream_id  # type: ignore[import-not-found,no-redef]
+    from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
 
 try:
     from device_registry import DeviceRegistry
@@ -164,10 +164,10 @@ def _inspect_round(kvm: Any, box: Dict[str, Any]) -> Dict[str, Any]:
     """
     from round_frame_consumer import MarkerState, confirm_activity, read_app_frame
 
-    frame, obs, sequence, received_at = read_app_frame(kvm)
-    if frame is None:
+    snapshot, obs = read_app_frame(kvm)
+    if snapshot is None:
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
-    prev, rows = confirm_activity(box.get("prev"), sequence, received_at, obs, 1.0)
+    prev, rows = confirm_activity(box.get("prev"), snapshot.sequence, snapshot.received_monotonic, obs, 1.0)
     box["prev"] = prev
     active = [{"slot": slot, "evidence": evidence} for slot, evidence in rows]
     if not obs.reliable:
@@ -380,26 +380,15 @@ class TcpJsonServer:
                 "device": device_id,
             }
 
-        # Extract frame and PTS
-        frame = None
-        pts = None
-        if hasattr(kvm, "latest_frame"):
-            latest = kvm.latest_frame()
-            if latest is not None and isinstance(latest, (tuple, list)) and len(latest) >= 5:
-                frame = latest[0]
-                pts = latest[4]
-        if frame is None and hasattr(kvm, "frame"):
-            frame = kvm.frame
-        if pts is None and hasattr(kvm, "frame_presentation_time"):
-            pts = kvm.frame_presentation_time
-
-        if frame is None:
+        latest = kvm.latest_frame()
+        if latest is None:
             return {
                 "status": "error",
                 "error": "no_frame",
                 "message": "No frame received from KVM yet",
                 "device": device_id,
             }
+        frame, pts = latest.image, latest.pts
 
         # Encode to JPEG/PNG base64
         fmt = req["format"]
@@ -679,7 +668,6 @@ class TcpJsonServer:
                 kvm,
                 device_id=entry.device_id,
                 poll_interval=0.05,
-                stream_id=extract_stream_id(kvm),
             )
             if not is_live:
                 return {

@@ -15,6 +15,7 @@ from core_protocol import PROTOCOL_VERSION, build_request, dumps_request, read_r
 from device_registry import DeviceRegistry  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
+from fake_kvm import FakeKVM, make_snapshot  # noqa: E402
 
 PROTOCOL = PROTOCOL_VERSION
 
@@ -97,7 +98,7 @@ DOCK_COLOR = (150, 150, 150)
 DOCK_ICON_BOX = (40, 6, 36, 36)
 
 
-class LogSolutionKVM:
+class LogSolutionKVM(FakeKVM):
     """KVM stub whose latest_frame() is a synthetic ATE screen with a Log Solution window and Dock strip.
 
     The Log Solution window (contract 1.1) sits at the top; the Dock strip below carries the
@@ -119,6 +120,7 @@ class LogSolutionKVM:
     """
 
     def __init__(self, state="standby", statuses=()):
+        super().__init__()
         import threading
         import numpy as np
         self._lock = threading.Lock()
@@ -237,7 +239,8 @@ class LogSolutionKVM:
                 strip[y:y + h, x:x + w] = self._dock_icon
             frame = np.vstack([window, strip])
             pts = None if self.omit_presentation_time else self._pts
-            return (frame, self._seq, _time.monotonic(), "synthetic-stream", pts)
+            return make_snapshot(frame, sequence=self._seq, received_monotonic=_time.monotonic(),
+                                 stream_id="synthetic-stream", pts=pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}

@@ -31,7 +31,7 @@ SHORTCUT = ("key", "cmd+shift+m")
 
 
 def _save_dock_template(root, kvm):
-    frame = kvm.latest_frame()[0]
+    frame = kvm.latest_frame().image
     x, y, w, h = kvm.dock_icon_box()
     TemplateCatalog(root).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "COMMON",
                                     "log_solution_dock_icon")
@@ -44,7 +44,7 @@ def _dock_click(kvm):
 
 def _dock_recovery(kvm):
     """Dock click, then the pointer parked at the top edge mid-screen (no click)."""
-    frame = kvm.latest_frame()[0]
+    frame = kvm.latest_frame().image
     return [_dock_click(kvm), ("move", frame.shape[1] // 2, 1)]
 
 

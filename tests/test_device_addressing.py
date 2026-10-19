@@ -22,6 +22,7 @@ from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
 from device_registry import DeviceRegistry
+from fake_kvm import FakeKVM as SharedFakeKVM
 from kvm_pool import KVMConnectionPool
 from protocol_helpers import wire
 from tcp_server import TcpJsonServer
@@ -34,12 +35,11 @@ DEVICES = {
 }
 
 
-class FakeKVM:
+class FakeKVM(SharedFakeKVM):
     """Minimal KVM client exposing one frame to snapshot."""
 
     def __init__(self) -> None:
-        self.frame = b"frame-bytes"
-        self.frame_presentation_time = 12.5
+        super().__init__(b"frame-bytes", pts=12.5)
 
 
 @pytest.fixture
