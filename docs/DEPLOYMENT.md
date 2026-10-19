@@ -74,7 +74,8 @@ python host-app/core_daemon.py restart --port 5000
 ## 6. 上線前檢查清單
 
 1. 設備清單儲存成功，設定頁沒有錯誤列。
-2. Core 啟動成功（`status` 回報 running）。
+2. Core 啟動成功（`core_daemon.py status` 回報 running）。
+   Monitor UI 的 `python host-app/ui_app.py --headless-check` 印出的是協定回覆攤平後的 JSON：`status` 為 `ok`（不再是 `running`），並帶 `error`、`message`、`elapsed_sec`、`req_id`、`device`。現場腳本不要再 grep 這個輸出裡的 `running`。
 3. Monitor UI 設備下拉選單列出九台。
 4. 設定頁「全部測試」九台皆成功（連線到各 KVM 網頁埠）。
 5. 逐台以 Monitor UI 的快照與手動檢查確認畫面可讀。

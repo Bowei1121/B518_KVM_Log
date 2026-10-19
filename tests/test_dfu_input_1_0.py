@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
+
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dfu_helpers import BUTTON, SyntheticDfuKVM, save_templates  # noqa: E402
@@ -49,14 +52,8 @@ def _input(srv, device, items, req_id="in-1"):
     if items is not None:
         payload["items"] = items
     with socket.create_connection((host, port), timeout=10.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(payload))
+        return recv_reply(sock)
 
 
 def _hid_events(kvm):
@@ -161,14 +158,8 @@ def _cmd(srv, device, cmd, extra, req_id):
     host, port = srv.server_address
     payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": cmd, **extra}
     with socket.create_connection((host, port), timeout=10.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(payload))
+        return recv_reply(sock)
 
 
 def test_complete_round_not_yet_taken_refuses_input(rig):
