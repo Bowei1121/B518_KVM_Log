@@ -98,3 +98,8 @@
 使用者同意用monitor_start確認Log監控就緒、check_start確認ATE可信測試活動、check_finish確認完整結果；check_start不能只看MONITORING或HID成功。TESTING／COMPLETING或本輪有效PASS／FAIL等結果可為活動證據；回報實際通道及證據類型，不推論全通道開始。若已取得完整可交付結果，可直接交付，不再強迫等待check_finish；NOTEST／TIMEOUT／STOPPED不當開測證據。每請求只回一次，活動回覆不消耗最終結果。
 
 唯讀查核KVM_Log PROTOCOL.md已文件化人工停止state=manual_stop_complete、缺監控就緒證據回manual_verification_required，程式仍待實作；交接文件同步引用此方向，未改寫現行TCP1.0。新命令完整欄位／版本、舊check遷移、精確幾何及配對實作驗收仍待完成。本次只更新兩專案交接文件、詞彙及摘要。
+
+
+## Log Solution 正式規格與驗收責任交接
+
+2026-10-19 使用者確認Log Solution只驗收本程式能驗證的輪次／保存／真正App輸出；KVM相關由本專案自行驗收、有問題再發需求，不作為Log Solution完成門檻。兩邊狀態辨識交接快照已加入此責任說明，先橋接後App的部署順序不變。Log Solution父規格已發布至Bowei1121/B518_205_207_ATE #77（ready-for-agent），採88故事／25實作／17測試決策；本次未修改本專案程式或現行TCP規格。

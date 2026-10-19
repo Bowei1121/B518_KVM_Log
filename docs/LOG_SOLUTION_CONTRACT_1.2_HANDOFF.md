@@ -278,6 +278,8 @@ check_start 的判定：
 
 ## 11. 配對部署與驗收清單
 
+**驗收責任更新（2026-10-19，使用者於 to-spec 明確確認）：** 下列為跨專案協作檢查項，不全部屬於 Log Solution 的完成門檻。Log Solution 只驗收自己的輪次行為、保存重建、真正 App／Tk 輸出與幾何，並交付清楚契約；KVM frame replay、辨識、傳輸、JetKVM、Dock 自動化與 LabVIEW 由 KVM_Log 自行驗收，有問題再提出回饋需求。Log Solution 不必等待 KVM 驗收回報才判定本專案規格完成；先橋接、後 App 的配對部署順序仍保留。
+
 先完成支援舊 1.1 與新 1.2 幾何／圖樣的橋接，再部署 Log Solution 1.2。新圖樣與新定位點對舊 consumer 都不相容。
 
 - [ ] 六種圖樣與未知／低對比／缺格逐一回放，尤其 PREPARING 不得當成 MONITORING。
