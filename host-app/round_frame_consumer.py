@@ -278,16 +278,61 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
                             app_origin=(x0, y0))
 
 
-def read_latest_app_frame(kvm):
-    """Gate-less reading of the newest frame: ``(frame, observation)``, or ``(None, None)`` with no frame yet."""
+def _frame_snapshot(kvm):
+    """``(frame, sequence, received_at)`` from the newest picture, or Nones."""
     if hasattr(kvm, "latest_frame"):
         snapshot = kvm.latest_frame()
-        frame, received_at = (snapshot[0], snapshot[2]) if snapshot else (None, None)
-    else:
-        frame, received_at = getattr(kvm, "frame", None), time.monotonic()
+        if not snapshot:
+            return None, None, None
+        return snapshot[0], snapshot[1], snapshot[2]
+    frame = getattr(kvm, "frame", None)
     if frame is None:
-        return None, None
-    return frame, inspect_app_frame(frame, received_at, now=time.monotonic())
+        return None, None, None
+    return frame, getattr(kvm, "frame_sequence", 1), time.monotonic()
+
+
+def read_app_frame(kvm):
+    """``(frame, observation, sequence, received_at)``. Frame is None when nothing has arrived."""
+    frame, sequence, received_at = _frame_snapshot(kvm)
+    if frame is None:
+        return None, None, None, None
+    return frame, inspect_app_frame(frame, received_at, now=time.monotonic()), sequence, received_at
+
+
+def read_latest_app_frame(kvm):
+    """Gate-less reading of the newest frame: ``(frame, observation)``, or ``(None, None)`` with no frame yet."""
+    frame, observation, _sequence, _received_at = read_app_frame(kvm)
+    return frame, observation
+
+
+def confirm_activity(previous, sequence, received_at, observation, max_gap=1.0):
+    """Pair two fresh frames and return ``(new_previous, [(slot, evidence), ...])``.
+
+    TESTING/COMPLETING are ``testing``. PASS/FAIL are ``result``. Any other status is
+    not activity. A slot counts only when both frames are active; testing on either
+    frame wins. An unreliable frame resets the pair. A repeated sequence does not.
+    """
+    if observation is None or not observation.reliable or sequence is None or received_at is None:
+        return None, []
+    current = {}
+    for index, status in enumerate(observation.statuses, 1):
+        if status in ("TESTING", "COMPLETING"):
+            current[index] = "testing"
+        elif status in ("PASS", "FAIL"):
+            current[index] = "result"
+    active = []
+    if previous is not None and sequence > previous[0]:
+        gap = received_at - previous[1]
+        if 0 <= gap <= max_gap:
+            for slot, evidence in sorted(current.items()):
+                if slot not in previous[2]:
+                    continue
+                if "testing" in (evidence, previous[2][slot]):
+                    evidence = "testing"
+                active.append((slot, evidence))
+    if previous is None or sequence > previous[0]:
+        previous = (sequence, received_at, current)
+    return previous, active
 
 
 class RoundFrameGate:
@@ -317,6 +362,8 @@ class RoundFrameGate:
         self.delivered_results = ()
         self._candidate_signature = None
         self._candidate_count = 0
+        self._activity_prev = None
+        self.last_active = ()
 
     def forget_delivered_round(self):
         """A new monitor_start drops the previous delivery. Monitoring must be seen again."""
@@ -327,6 +374,8 @@ class RoundFrameGate:
         self.delivered_results = ()
         self._candidate_signature = None
         self._candidate_count = 0
+        self._activity_prev = None
+        self.last_active = ()
 
     def observe(self, frame, sequence, received_at, now=None, stream_id=None,
                 presentation_time=None, accept_round=True):
@@ -347,7 +396,10 @@ class RoundFrameGate:
             self.delivered_results = ()
             self._candidate_signature = None
             self._candidate_count = 0
+            self._activity_prev = None
+            self.last_active = ()
         if self.last_sequence is not None and sequence <= self.last_sequence:
+            self.last_active = ()
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")
         self.last_sequence = sequence
         if self.require_presentation_time and presentation_time is None:
@@ -378,6 +430,13 @@ class RoundFrameGate:
         previous_received_at = self.last_received_at
         self.last_received_at = received_at
         observation = inspect_app_frame(frame, received_at, now, self.max_age)
+        if not observation.reliable:
+            self._activity_prev = None
+            self.last_active = ()
+        else:
+            self._activity_prev, rows = confirm_activity(
+                self._activity_prev, sequence, received_at, observation, self.max_frame_gap)
+            self.last_active = tuple(rows)
         if not observation.reliable:
             self._candidate_signature = None
             self._candidate_count = 0
