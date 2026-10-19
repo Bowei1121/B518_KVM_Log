@@ -91,3 +91,10 @@
 使用者同意啟動前配置／路徑失敗及接受後來源準備失敗均BUSY／待確認；沿用REVIEW1010作異常訊號，橋接通知上位機報警並暫停。前者不造新輪／不錯掛上一輪，後者保留失敗輪次；不產生假產品FAIL或人工停止完成。人員排除問題、確認後復位：結束失敗請求或取消失敗輪次，保留紀錄，才回READY；下一次明確觸發才開新輪，不自動重試。
 
 使用者同意維持到期先判deadline再讀來源；若期限前尚未接受可信證據，不以該次後讀資料或來源自報早期時間挽回到期狀態。這取代前文故障流程及期限臨界點待定事項；兩專案文件與詞彙相同規則已同步，產品尚未修改／驗收。
+
+
+## check_start／check_finish 確認（2026-10-19，後續更新）
+
+使用者同意用monitor_start確認Log監控就緒、check_start確認ATE可信測試活動、check_finish確認完整結果；check_start不能只看MONITORING或HID成功。TESTING／COMPLETING或本輪有效PASS／FAIL等結果可為活動證據；回報實際通道及證據類型，不推論全通道開始。若已取得完整可交付結果，可直接交付，不再強迫等待check_finish；NOTEST／TIMEOUT／STOPPED不當開測證據。每請求只回一次，活動回覆不消耗最終結果。
+
+唯讀查核KVM_Log PROTOCOL.md已文件化人工停止state=manual_stop_complete、缺監控就緒證據回manual_verification_required，程式仍待實作；交接文件同步引用此方向，未改寫現行TCP1.0。新命令完整欄位／版本、舊check遷移、精確幾何及配對實作驗收仍待完成。本次只更新兩專案交接文件、詞彙及摘要。

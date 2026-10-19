@@ -130,8 +130,9 @@ Log READY（STANDBY，或保留上輪的可交付畫面）
   → 準備完成後才發布 BUSY／MONITORING
   → 橋接確認本次 MONITORING
   → 上位機觸發 ATE 開始測試
-  → 各通道觀察到可信活動，HMI／色帶顯示 TESTING
-  → 結果逐格更新
+  → check_start 等待可信通道活動（不能只看 MONITORING）
+  → 觀察到 TESTING／COMPLETING 或有效測試結果，回報實際通道
+  → 若尚未完整交付，check_finish 等待結果逐格完成
   → 全部配置位置終局、無待確認
   → READY／COMPLETE 或 READY／MANUAL_STOP_COMPLETE
   → 橋接確認本輪、容量、完整結果與穩定影格
@@ -221,10 +222,52 @@ Log READY（STANDBY，或保留上輪的可交付畫面）
 
 看到 PREPARING 只證明正在準備，不能取代 MONITORING 的開測確認，也不能用來放寬第 9.2／9.3 節的交付保護。
 
-### 9.5 尚未定稿，不可自行猜測
+### 9.5 check_start／check_finish 兩階段確認：已確認
 
-- **人工停止回覆格式**：必須回報明確原因，建議獨立的完成種類資訊；實際 TCP 欄位／版本由橋接與 LabVIEW 規格定稿。本文件不宣稱現有 JSON 已有這個欄位。
-- **TESTING 回報方式**：保留通道位置；是否新增命令／事件或擴充既有回覆，須與橋接／LabVIEW 協定對齊，不能在長輪詢連線任意插入未定義訊息。
+2026-10-19 使用者同意採用以下指令命名及職責，取代以單一 check 同時表達開始／結束確認的設計。這是待實作的新協定方向，並非現行 TCP 1.0 已支援的命令。
+
+| 指令 | 確認內容 | 不能代表什麼 |
+| --- | --- | --- |
+| monitor_start | Log Solution 已完成來源準備，橋接可靠觀察到本次 MONITORING | 不能證明 ATE 已開始測試 |
+| check_start | 已觀察到本輪至少一個通道的可信測試活動；回報實際通道及證據類型 | 不能僅憑 MONITORING／HID 點擊成功宣稱 ATE 已開始，也不能推論全部通道已開始 |
+| check_finish | 本輪全部配置格位結果完整、可交付、無待確認，並通過同輪及影格驗證 | 不能將 REVIEW、殘留上輪結果或不可靠畫面當成完整結果 |
+
+標準呼叫順序：
+
+```text
+monitor_start 成功（本次 MONITORING）
+  → 上位機依站別觸發 ATE
+  → check_start 等待可信測試活動
+  → 回報已觀察到的通道及活動來源
+  → check_finish 等待整輪可交付結果
+  → 回報完整結果及一般完成／人工停止種類
+```
+
+check_start 的判定：
+
+1. 可靠觀察到本輪通道 TESTING／COMPLETING：可以回覆已開始；只列確實觀察到的通道。
+2. 未看到 TESTING，但已可靠觀察到本輪 PASS／FAIL 等有效測試結果：也可作為該通道已有活動的證據，回報時區分「看到測試中」與「從結果確認已有活動」。
+3. WAITING、NOTEST、TIMEOUT、STOPPED、單獨 MONITORING 及 start_test 操作成功都不是 ATE 已開始的證據。
+4. MONITORING 可能在 ATE 當機、完全未產生 Log 時持續顯示，因此只看到它必須繼續等待，不能把 Log 就緒改名為 ATE 已開始。
+5. 若已取得符合完整交付條件的結果，可直接交付，LabVIEW 不必再等一次 check_finish。完整結果種類仍須保留：人工停止結果不得因此偽稱測試曾開始；全 NOTEST 等完整結果也不等於曾觀察到活動。
+6. 看到 REVIEW 立即回報異常待確認，讓上位機報警並暫停；缺少本次 MONITORING 的中止／逾時仍依第 9.2／9.3 節處理。
+
+傳輸約束：每筆請求只回一筆回覆。開始確認完成後，LabVIEW 用新的 req_id 送出結束確認；不在同一 req_id 上先推 TESTING、稍後再推完成結果。開始活動回覆不消耗整輪最終結果；只有直接交付完整結果時，才走一次性結果取用／保存規則。
+
+### 9.6 人工停止回覆：沿用 KVM_Log 已有文件定案
+
+截至本次唯讀查核，KVM_Log 的 docs/PROTOCOL.md 已定義下列方向，程式仍待對應實作：
+
+- 本次已見 MONITORING、全部格位終局、容量相符且完成穩定影格確認後，人工停止回覆 kind=taken、state=manual_stop_complete，附原始通道結果。
+- 缺少本次 MONITORING 證據時，回 error=manual_verification_required，不附可供自動交付的結果。
+- REVIEW 沿用 kind=paused、state=review 的語意，通知上位機報警並暫停。
+
+以上是既有 check 格式中的已文件化方向；轉至 check_start／check_finish 時須保留語意，但完整資料結構及版本仍需更新橋接／LabVIEW 規格。本文件未改寫現行 PROTOCOL.md，不宣稱這些新命令已上線。
+
+### 9.7 尚未定稿，不可自行猜測
+
+- **TCP 完整格式與版本**：check_start 的活動回覆種類、通道欄位、證據類型、timeout 參數及 check_finish 的完整範例須具體化；明確區分傳輸等待逾時與 Log Solution 的測試期限。不能直接把顯示契約 1.2 當成 TCP 協定版本。
+- **既有 check 遷移**：舊命令是否移除或暫保留別名、LabVIEW typedef／VI 如何配對改版仍待安排，不擅自保留或取消相容性。
 - **精確幾何及實際圖像驗收**：左定位點座標仍待驗證；準備期間畫面已定為 PREPARING／BUSY，六種圖樣仍須完成跨專案 fixtures 與驗收，才能凍結可部署契約。
 
 ## 10. 視窗前景：已確認
@@ -242,7 +285,10 @@ Log READY（STANDBY，或保留上輪的可交付畫面）
 - [ ] 排除問題、人工確認並復位後才 READY；不自動重試、不沿用失敗輪次，不因復位清除原有紀錄。
 - [ ] 一排／兩排、容量 1／10／11／20，容量外黑格不算產品結果。
 - [ ] 準備中顯示 PREPARING／BUSY，準備完成後才 MONITORING；重複開始不建立新輪；橋接未見 PREPARING 但已可靠見 MONITORING 不應卡住。
-- [ ] TESTING 逐通道回報；沒有 TESTING 但已有可信完整結果仍可交付。
+- [ ] check_start 只以可信 TESTING／COMPLETING／有效測試結果確認活動；MONITORING＋全部 WAITING 不得回已開始。
+- [ ] 開始回覆附實際通道及活動來源，不宣稱全部位置已開始；NOTEST／TIMEOUT／STOPPED 不當活動證據。
+- [ ] check_start 已見完整可交付結果時直接交付，不強迫再 check_finish，也不重複消耗結果。
+- [ ] check_start 回一般活動後，新的 check_finish 仍能取完整結果；每請求只回一筆，不能未定義中途推播。
 - [ ] 全輪 120 秒無可信活動／結果：NOTEST、REVIEW、確認後才交付。
 - [ ] 期限前已接受證據、恰好到期才讀到證據、到期後新資料三類案例；到期先判、不以來源自報時間回填已到期狀態。
 - [ ] 人工停止含混合結果、全 STOPPED、全部已有終局但仍人工停止、待確認後解除。
