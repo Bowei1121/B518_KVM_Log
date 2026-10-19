@@ -147,11 +147,15 @@
 
 | 票 | 內容 | 相依 |
 | --- | --- | --- |
-| #54 | refactor：Log Solution 畫面讀取 module（C2） | — |
+| #54 | refactor：Log Solution 畫面讀取 module（C2） | #57 |
 | #55 | refactor：設備輪次 module（C1） | #54 |
 | #56 | bug：KVM 重連後同輪重問回 `monitor_not_ready` | #55 |
 | #57 | refactor：KVM 影格具名快照（C3_1） | — |
 | #58 | bug：KVM 斷線無法偵測（C3_2） | #57 |
 | #59 | refactor：Core 協定收發 module（C4） | — |
 
-可平行起跑：#54、#57、#59。#54 與 #57 都動 `round_frame_consumer.py`，#57 與 #59 都動 `tests/protocol_helpers.py`，合併時留意衝突。
+修正（同日）：原判 #54 與 #57 可平行有誤。`read_app_frame`／`read_latest_app_frame` 是取影格（#57）與讀畫面（#54）的交界，`tcp_server.py`、`monitor_flow.py` 的呼叫點兩票都要改寫，屬語意衝突；已設 #54 blocked by #57（原生相依），並更新兩張票的相依說明。
+
+建議順序：第 1 波 #57＋#59 → 第 2 波 #54＋#58 → 第 3 波 #55 → 第 4 波 #56。#57 與 #59 只在 `tests/protocol_helpers.py` 不同段落重疊。
+
+- #59 交由 Grok 實作，已於 issue 留言提醒：`CoreChannel` 的 `_lock`／`_gen`／`_detached`／`abort` 不准動、測試用主 repo venv、push 兩個 remote。
