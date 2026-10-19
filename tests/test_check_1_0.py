@@ -4,7 +4,6 @@ The fake KVM renders contract 1.1 frames; the device is a DFU device so the roun
 (monitoring, then a stable complete screen) decides the result.
 """
 
-import json
 import socket
 import sys
 import threading
@@ -89,7 +88,7 @@ def test_removed_check_command_is_unknown_command(rig):
                "timeout_sec": 0}
     with socket.create_connection((host, port), timeout=3.0) as sock:
         sock.sendall(dumps_request(payload))
-        resp = json.loads(sock.makefile().readline())
+        resp = recv_reply(sock)
 
     assert resp["status"] == "error"
     assert resp["error"] == "unknown_command"
@@ -314,7 +313,7 @@ def test_timeout_out_of_range_or_wrong_type_is_invalid_argument(rig, timeout_sec
         payload["timeout_sec"] = timeout_sec
     with socket.create_connection((host, port), timeout=3.0) as sock:
         sock.sendall(dumps_request(payload))
-        resp = json.loads(sock.makefile().readline())
+        resp = recv_reply(sock)
 
     assert resp["status"] == "error"
     assert resp["error"] == "invalid_argument"
