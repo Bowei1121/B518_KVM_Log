@@ -33,16 +33,21 @@ TERMINAL = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
 class MarkerState(str, Enum):
     STANDBY = "standby"
+    PREPARING = "preparing"
     MONITORING = "monitoring"
     REVIEW = "review"
     COMPLETE = "complete"
+    MANUAL_STOP_COMPLETE = "manual_stop_complete"
 
 
+# Left-top, right-top, left-bottom, right-bottom. 1 = black. Two black and two white only.
 PATTERNS = {
     MarkerState.STANDBY: (1, 0, 0, 1),
+    MarkerState.PREPARING: (0, 1, 0, 1),
     MarkerState.MONITORING: (1, 1, 0, 0),
     MarkerState.REVIEW: (1, 0, 1, 0),
     MarkerState.COMPLETE: (0, 1, 1, 0),
+    MarkerState.MANUAL_STOP_COMPLETE: (0, 0, 1, 1),
 }
 
 # BGR values copied from App KVM_DISPLAY_CONTRACT / STATUS_COLOURS.
@@ -369,6 +374,12 @@ class RoundFrameGate:
             self._candidate_count = 0
             return TakeDecision("paused", self.device_id, observation.state,
                                 observation.capacity, reason="confirmation_required")
+        if observation.state == MarkerState.PREPARING:
+            # Reliable reading: resets the visibility timer and must not be treated as occluded.
+            self._candidate_signature = None
+            self._candidate_count = 0
+            return TakeDecision("waiting", self.device_id, observation.state,
+                                observation.capacity, reason="preparing")
         if observation.state == MarkerState.STANDBY:
             # Standby after this round was seen in Monitoring (and not yet taken) means the round is gone.
             round_lost = self.armed

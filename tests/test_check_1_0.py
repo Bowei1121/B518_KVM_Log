@@ -72,6 +72,18 @@ def _settle(seconds=0.7):
     time.sleep(seconds)
 
 
+def test_preparing_screen_is_waiting_and_reliable(rig):
+    srv, kvm = rig
+    kvm.show("preparing")
+
+    resp = _check(srv, 0)
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["kind"] == "waiting"
+    assert resp["data"]["state"] == "preparing"
+    assert resp["data"]["results"] == []
+
+
 def test_single_read_on_standby_returns_waiting_without_results(rig):
     srv, kvm = rig
     kvm.show("standby")

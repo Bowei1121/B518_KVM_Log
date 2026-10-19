@@ -90,6 +90,18 @@ def test_input_never_clicks_ok_or_sends_the_shortcut(rig):
     assert kvm.events[-1] == ("enter",)
 
 
+def test_preparing_refuses_input_without_any_hid_action(rig):
+    srv, kvm = rig
+    kvm.log_state = "preparing"
+
+    resp = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN1"}])
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_busy"
+    assert resp["data"]["entered"] == []
+    assert _hid_events(kvm) == []
+
+
 def test_monitoring_refuses_input_without_any_hid_action(rig):
     srv, kvm = rig
     kvm.log_state = "monitoring"

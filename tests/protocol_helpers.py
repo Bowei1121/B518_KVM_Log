@@ -130,7 +130,7 @@ class LogSolutionKVM:
 
     def show(self, state, statuses=()):
         """Show a state. Standby/monitoring/review screens default to four waiting slots."""
-        if not statuses and state in ("standby", "monitoring", "review"):
+        if not statuses and state in ("standby", "monitoring", "review", "preparing"):
             statuses = ["WAITING"] * 4
         with self._lock:
             self._state = state
@@ -195,12 +195,13 @@ class LogSolutionKVM:
     async def press_command_shift_m(self):
         with self._lock:
             self.events.append(("key", "cmd+shift+m"))
-            if self.shortcut_enabled and not self._hidden and self._state in ("standby", "complete"):
+            if self.shortcut_enabled and not self._hidden and self._state in (
+                    "standby", "complete", "manual_stop_complete"):
                 self._set_state_locked("monitoring")
 
     def _set_state_locked(self, state):
         self._state = state
-        if state in ("standby", "monitoring", "review"):
+        if state in ("standby", "monitoring", "review", "preparing"):
             self._statuses = ["WAITING"] * 4
 
     def latest_frame(self):
@@ -254,13 +255,14 @@ _LOG_COLORS = {
 def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
     """Render contract 1.1 (App layout). state None renders a blank screen."""
     import numpy as np
-    from round_frame_consumer import MarkerState
 
     patterns = {
-        MarkerState.STANDBY: (1, 0, 0, 1),
-        MarkerState.MONITORING: (1, 1, 0, 0),
-        MarkerState.REVIEW: (1, 0, 1, 0),
-        MarkerState.COMPLETE: (0, 1, 1, 0),
+        "standby": (1, 0, 0, 1),
+        "preparing": (0, 1, 0, 1),
+        "monitoring": (1, 1, 0, 0),
+        "review": (1, 0, 1, 0),
+        "complete": (0, 1, 1, 0),
+        "manual_stop_complete": (0, 0, 1, 1),
     }
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
@@ -276,7 +278,7 @@ def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
     for x, inset in ((82, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
-    for index, black in enumerate(patterns[MarkerState(state)]):
+    for index, black in enumerate(patterns[state]):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
     rows = 2 if len(statuses) > 10 else 1

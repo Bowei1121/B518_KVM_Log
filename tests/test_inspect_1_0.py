@@ -67,6 +67,25 @@ def _background(fn):
     return th, out
 
 
+def test_inspect_reports_preparing_and_manual_stop_complete(rig):
+    srv, kvm = rig
+    kvm.show("preparing")
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "prep", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        preparing = _recv(ui)
+    kvm.show("manual_stop_complete", ["STOPPED", "PASS", "FAIL", "NOTEST"])
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "stop", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        stopped = _recv(ui)
+
+    assert preparing["status"] == "ok"
+    assert preparing["data"]["kind"] == "waiting"
+    assert preparing["data"]["state"] == "preparing"
+    assert stopped["data"]["kind"] == "waiting"
+    assert stopped["data"]["state"] == "manual_stop_complete"
+    assert stopped["data"]["results"] == []
+
+
 def test_inspect_is_not_blocked_by_a_labview_lock(rig):
     srv, kvm = rig
     kvm.show("monitoring")

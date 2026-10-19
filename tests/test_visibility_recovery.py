@@ -136,6 +136,47 @@ def test_standby_without_monitoring_this_round_is_just_waiting(serve):
     assert resp["data"]["reason"] == "standby"
 
 
+def test_preparing_resets_the_visibility_timer_and_does_not_click_the_dock(tmp_path):
+    # Lost budget is longer than one 0.5 s poll, so the preparing frame can be seen and reset the timer.
+    kvm = LogSolutionKVM(state="standby")
+    kvm.blank()
+    root = tmp_path / "template"
+    _save_dock_template(root, LogSolutionKVM())
+    srv = TcpJsonServer(
+        device_registry=make_registry(),
+        host="127.0.0.1",
+        port=0,
+        kvm_pool=make_log_solution_pool(kvm),
+        freeze_guard=FrameFreezeGuard(freeze_threshold=3.0),
+        template_root=root,
+        visibility_lost_sec=1.0,
+        dock_recheck_sec=0.2,
+        max_dock_recoveries=MAX_DOCK_RECOVERIES,
+    )
+    srv.start()
+    try:
+        import threading
+        out = {}
+
+        def run():
+            out["resp"] = _check(srv, "DFU-01", timeout_sec=1.6)
+
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        time.sleep(0.15)
+        kvm.show("preparing")
+        th.join(timeout=5)
+        resp = out["resp"]
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+    assert resp["status"] == "timeout"
+    assert resp["data"]["kind"] == "waiting"
+    assert resp["data"]["state"] == "preparing"
+    assert kvm.events == []
+
+
 def test_covered_window_is_recovered_by_one_dock_click_and_check_takes_the_round(serve):
     kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)

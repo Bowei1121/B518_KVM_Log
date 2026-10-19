@@ -26,7 +26,8 @@ PATTERNS = {
 }
 
 
-def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247)):
+def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247),
+                 pattern=None):
     """Render contract 1.1 with the real App's one- or two-row layout."""
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
@@ -41,7 +42,7 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
     for x, inset in ((82, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
-    for index, black in enumerate(PATTERNS[state]):
+    for index, black in enumerate(pattern if pattern is not None else PATTERNS[state]):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10,
              (0, 0, 0) if black else (255, 255, 255))
@@ -59,6 +60,29 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
 
 
 class RoundFrameConsumerTests(unittest.TestCase):
+    def test_preparing_and_manual_stop_patterns_are_recognized_and_other_patterns_are_unknown(self):
+        preparing = inspect_app_frame(
+            render_frame(MarkerState.STANDBY, ["WAITING"] * 4, pattern=(0, 1, 0, 1)), 10, 10)
+        self.assertTrue(preparing.reliable, preparing.reason)
+        self.assertEqual(preparing.state, "preparing")
+        stopped = inspect_app_frame(
+            render_frame(MarkerState.STANDBY, ["STOPPED", "PASS", "FAIL", "NOTEST"],
+                         pattern=(0, 0, 1, 1)), 10, 10)
+        self.assertTrue(stopped.reliable, stopped.reason)
+        self.assertEqual(stopped.state, "manual_stop_complete")
+        self.assertEqual(stopped.statuses, ("STOPPED", "PASS", "FAIL", "NOTEST"))
+        for bits in ((0, 0, 0, 0), (1, 1, 1, 1), (1, 0, 0, 0), (1, 1, 1, 0)):
+            with self.subTest(bits=bits):
+                unknown = inspect_app_frame(
+                    render_frame(MarkerState.STANDBY, ["WAITING"] * 4, pattern=bits), 10, 10)
+                self.assertFalse(unknown.reliable, bits)
+                self.assertEqual(unknown.reason, "unknown_marker_pattern")
+        grey = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
+        grey[31 + 4:31 + 20, 23 + 280 * 2:23 + 296 * 2] = (128, 128, 128)
+        low = inspect_app_frame(grey, 10, 10)
+        self.assertFalse(low.reliable)
+        self.assertEqual(low.reason, "marker_low_contrast_or_occluded")
+
     def test_real_single_row_layout_completes_without_a_hidden_second_row(self):
         gate = RoundFrameGate("single-row", stable_complete_frames=2)
         for capacity in (1, 10):
