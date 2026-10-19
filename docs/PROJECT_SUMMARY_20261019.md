@@ -31,3 +31,26 @@
 - Q1：1.2 建議文件新增 **C7**：格子顏色表寫進契約、移除未使用的 `STALLED`、NOTEST 以 `#f04bf1` 為準、容許誤差為 RGB 歐氏距離 ≤ 20（任兩色須 > 40；WAITING 與 STOPPED 約 45，餘裕小）。
 - Q2：橋接釘住顏色並開票 **#34**（`ready-for-agent`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/09-pin-status-colours.md`）。
 - Q3：C5 改為「1.2 起上位機先支援新舊兩種畫面，再更新 App」。
+
+## 主資料夾工作階段的 10-19 紀錄（HANDOFF 與第五種圖樣）
+
+
+### 本次接續與範圍
+
+本輪由 Log Solution 討論工作交接文件到 KVM_Log；未變更橋接產品、指令或 GitHub 議題。先讀 AGENTS.md、CONTEXT.md 及相關 ADR，未把提案或歷史測試當成已部署結果。
+
+既有提案為 LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md（2026-10-17 補充 C6）。原始碼查核：consumer 仍為 1.1、四個狀態；能解析 STOPPED 格位，但人工停止的 App 標記落 STANDBY，不能以此可靠交付整輪人工停止原因。
+
+### 已確認的討論結果
+
+- READY 可接受新輪，BUSY 表示本輪工作／待確認；監控就緒要等來源基準完成，上位機再啟動 ATE。
+- 藍框只表示一排／兩排；紅框採五種狀態語意，區分正常與人工停止可交付。新增的第五圖樣仍為建議，不是已核准位元規格。
+- 通道及色帶保留 STOPPED，已取得結果保留，操作員決定重工範圍；整輪人工停止原因須明確傳遞。
+- TESTING 是通道觀察，不是完成結果的必經條件；FCT start 先採120秒，整輪無活動也無有效結果時停止、NOTEST、REVIEW，人員確認後才交付。
+- 視窗事件提升，不永久置頂／不強制焦點；幾何沿用提案方向，精確座標待驗。
+
+### 產物與未定事項
+
+新增 [跨專案狀態辨識交接](LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md)，與 Log Solution 主文件為相同內容快照；同步 CONTEXT.md 的已確認詞彙。
+
+第五圖樣、精確幾何、準備期間畫面、未見 BUSY 就中止／逾時的同輪性，以及人工停止／TESTING 的對外協定格式仍須確認。未修改原提案、已發布1.1或產品程式；本輪只做文件一致性驗證，未跑產品測試。
