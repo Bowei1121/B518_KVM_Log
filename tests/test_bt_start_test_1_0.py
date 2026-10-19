@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from bt_flow import BtStartError, run_start_all  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
@@ -96,7 +97,7 @@ def _start_test(srv, device, req_id="st-bt"):
     payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "start_test"}
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall(dumps_request(payload))
-        return read_reply(sock)
+        return recv_reply(sock)
 
 
 def test_start_all_clicks_dock_then_start_all_and_reports_action(rig):

@@ -23,7 +23,8 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from freeze_guard import FrameFreezeGuard, extract_pts, extract_frame_sequence
 from round_frame_consumer import RoundFrameGate, tcp_round_reply
@@ -121,7 +122,7 @@ def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
 
 def recv_json(sock: socket.socket, timeout: float = 3.0) -> Dict[str, Any]:
     sock.settimeout(timeout)
-    return read_reply(sock)
+    return recv_reply(sock)
 
 
 # ---------------------------------------------------------------------------

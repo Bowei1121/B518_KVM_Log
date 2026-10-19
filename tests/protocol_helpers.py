@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Dict
 
@@ -16,6 +17,16 @@ from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 PROTOCOL = PROTOCOL_VERSION
+
+# Leftover bytes per open test connection. Weak keys: a closed socket drops its buffer, and a
+# new socket never inherits another one's bytes.
+_REPLY_BUFFERS: "weakref.WeakKeyDictionary[Any, bytearray]" = weakref.WeakKeyDictionary()
+
+
+def recv_reply(sock: Any) -> Any:
+    """Next reply on ``sock``. Keeps bytes after the newline for the following call on it."""
+    buf = _REPLY_BUFFERS.setdefault(sock, bytearray())
+    return read_reply(sock, buf=buf)
 
 
 def make_registry(routes=None) -> DeviceRegistry:

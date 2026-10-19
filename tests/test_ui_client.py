@@ -29,7 +29,8 @@ _HOST_APP_DIR = _REPO_ROOT / "host-app"
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from device_lock import DeviceLockManager
 from device_registry import DeviceRegistry
@@ -105,7 +106,7 @@ def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
 
 def recv_json(sock: socket.socket, timeout: float = 5.0) -> Dict[str, Any]:
     sock.settimeout(timeout)
-    return read_reply(sock)
+    return recv_reply(sock)
 
 
 @pytest.fixture
@@ -407,7 +408,7 @@ class _FakeCore:
     def _serve(self, conn: socket.socket, idx: int) -> None:
         try:
             while True:
-                req = read_reply(conn)
+                req = recv_reply(conn)
                 with self._lock:
                     self.requests.append(req)
                 reply = self._behaviour(req, idx)
@@ -743,7 +744,7 @@ class TestMonitorUIChannels:
 
         def serve():
             try:
-                req = read_reply(right)
+                req = recv_reply(right)
             except ConnectionError:
                 return
             reply = {

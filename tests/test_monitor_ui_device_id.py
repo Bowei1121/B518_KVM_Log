@@ -13,7 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from ui_app import CoreServiceClient  # noqa: E402
 
@@ -39,7 +40,7 @@ class RecordingCore:
                 return
             with conn:
                 try:
-                    request = read_reply(conn)
+                    request = recv_reply(conn)
                 except ConnectionError:
                     continue
                 self.requests.append(request)

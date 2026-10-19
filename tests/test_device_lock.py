@@ -12,7 +12,8 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from device_lock import DeviceBusyError, DeviceLockManager
 from protocol_helpers import make_pool, make_registry, wire, numbered
@@ -26,7 +27,7 @@ def send_json(sock: socket.socket, obj: dict) -> None:
 def recv_json(sock: socket.socket, timeout: float = 3.0) -> dict:
     """Receive a newline-delimited JSON line and parse it."""
     sock.settimeout(timeout)
-    return read_reply(sock)
+    return recv_reply(sock)
 
 
 @pytest.fixture

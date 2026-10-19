@@ -18,9 +18,6 @@ ENVELOPE_KEYS = frozenset({
 })
 
 _FLATTEN_OVERLAY = ("status", "error", "message", "elapsed_sec", "req_id", "device")
-# Bytes after the first newline in one recv. Keyed by socket so the next read
-# returns the following frame instead of dropping it.
-_pending: Dict[int, bytearray] = {}
 
 
 def build_request(
@@ -54,13 +51,16 @@ def dumps_request(req: Dict[str, Any]) -> bytes:
     return (json.dumps(req) + "\n").encode("utf-8")
 
 
-def read_frame(sock: Any, recv_size: int = 65536) -> bytes:
+def read_frame(sock: Any, recv_size: int = 65536, buf: Optional[bytearray] = None) -> bytes:
     """One newline-delimited frame. The peer closing first is an error, even with buffered bytes.
 
-    An empty frame (a bare newline) is ConnectionError, matching the old daemon client.
+    Bytes after the newline stay in ``buf``. Without one they are dropped, which is right for a
+    client that sends one request and reads one reply. A caller reading several frames from one
+    connection passes the same ``buf`` on every read of that connection, and never shares it
+    with another connection. An empty frame (a bare newline) is ConnectionError.
     """
-    key = id(sock)
-    buf = _pending.pop(key, bytearray())
+    if buf is None:
+        buf = bytearray()
     while b"\n" not in buf:
         chunk = sock.recv(recv_size)
         if not chunk:
@@ -68,17 +68,15 @@ def read_frame(sock: Any, recv_size: int = 65536) -> bytes:
         buf.extend(chunk)
     nl = buf.index(b"\n")
     line = bytes(buf[:nl])
-    rest = buf[nl + 1:]
-    if rest:
-        _pending[key] = bytearray(rest)
+    del buf[:nl + 1]
     if not line:
         raise ConnectionError("Empty response received from Core Service")
     return line
 
 
-def read_reply(sock: Any, recv_size: int = 65536) -> Any:
-    """Parse one reply frame. Does not check req_id."""
-    return json.loads(read_frame(sock, recv_size).decode("utf-8"))
+def read_reply(sock: Any, recv_size: int = 65536, buf: Optional[bytearray] = None) -> Any:
+    """Parse one reply frame. Does not check req_id. ``buf`` as in read_frame."""
+    return json.loads(read_frame(sock, recv_size, buf).decode("utf-8"))
 
 
 def req_id_matches(reply: Any, req_id: str) -> bool:

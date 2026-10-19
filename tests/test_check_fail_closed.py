@@ -12,7 +12,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
@@ -55,7 +56,7 @@ def _check(srv, device, timeout_sec=0, req_id="fc"):
                "cmd": "check_finish", "timeout_sec": timeout_sec}
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall(dumps_request(payload))
-        return read_reply(sock)
+        return recv_reply(sock)
 
 
 @pytest.mark.parametrize("device", ALL_STATIONS)
@@ -214,7 +215,7 @@ def _round_cmd(srv, device, cmd, timeout_sec=0, req_id="ie"):
                "cmd": cmd, "timeout_sec": timeout_sec}
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall(dumps_request(payload))
-        return read_reply(sock)
+        return recv_reply(sock)
 
 
 @pytest.mark.parametrize("cmd", ["check_finish", "check_start"])

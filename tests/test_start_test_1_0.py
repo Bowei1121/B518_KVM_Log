@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dfu_helpers import BUTTON, SyntheticDfuKVM, save_templates  # noqa: E402
@@ -79,7 +80,7 @@ def _send(srv, payload):
     host, port = srv.server_address
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall(dumps_request(payload))
-        return read_reply(sock)
+        return recv_reply(sock)
 
 
 def _start_test(srv, device, **extra):

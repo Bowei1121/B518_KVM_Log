@@ -28,7 +28,8 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-from core_protocol import dumps_request, read_reply  # noqa: E402
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
 
 from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
@@ -343,7 +344,7 @@ def send_json(sock: socket.socket, obj: dict) -> None:
 
 def recv_json(sock: socket.socket, timeout: float = 3.0) -> dict:
     sock.settimeout(timeout)
-    return read_reply(sock)
+    return recv_reply(sock)
 
 
 def test_tcp_server_kvm_pool_reuse_and_status() -> None:
