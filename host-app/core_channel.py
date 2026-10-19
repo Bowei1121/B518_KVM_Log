@@ -6,12 +6,13 @@ Tk window; this module owns the sockets, so it can be tested without a display.
 
 from __future__ import annotations
 
-import json
 import logging
 import socket
 import threading
 import uuid
 from typing import Any, Dict, Optional
+
+from core_protocol import build_request, dumps_request, read_reply, req_id_matches
 
 log = logging.getLogger(__name__)
 
@@ -49,16 +50,6 @@ def _hard_close(sock: Optional[socket.socket]) -> None:
         sock.close()
     except Exception:
         pass
-
-
-def _read_line(sock: socket.socket) -> bytes:
-    buf = bytearray()
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("Core Service closed connection")
-        buf.extend(chunk)
-    return bytes(buf.split(b"\n", 1)[0])
 
 
 def client_error(req_id: str, error: str, message: str) -> Dict[str, Any]:
@@ -147,10 +138,7 @@ class CoreChannel:
 
     def request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float) -> Dict[str, Any]:
         req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        req: Dict[str, Any] = {"protocol_version": "1.0", "req_id": req_id, "device": "", "cmd": cmd}
-        if payload:
-            req.update(payload)
-        data = (json.dumps(req) + "\n").encode("utf-8")
+        data = dumps_request(build_request(cmd, req_id, "", payload))
         # Sample before the lock so a request already queued behind an in-flight
         # one is cancelled, instead of reconnecting and sending after abort().
         gen = self._gen
@@ -189,14 +177,14 @@ class CoreChannel:
         try:
             sock.settimeout(timeout)
             sock.sendall(data)
-            reply = json.loads(_read_line(sock).decode("utf-8"))
+            reply = read_reply(sock)
         except Exception as exc:
             self._drop_locked(sock)
             if gen != self._gen:
                 return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
             return client_error(req_id, "communication_error", f"Communication error with Core Service: {exc}")
 
-        if not isinstance(reply, dict) or reply.get("req_id") != req_id:
+        if not req_id_matches(reply, req_id):
             # Stale or foreign reply: never hand it to the UI; start clean on the next request.
             self._drop_locked(sock)
             return client_error(

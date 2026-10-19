@@ -62,6 +62,7 @@ if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
 from core_channel import CoreChannel, channel_name_for
+from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -125,17 +126,6 @@ def format_manual_check(res: Dict[str, Any]) -> str:
         return "診斷結果: BUSY (設備忙碌中/LabVIEW測試中)"
     err = res.get("message") or res.get("error") or "未知錯誤"
     return f"診斷錯誤: {err}"
-
-
-def _flatten(res: Dict[str, Any]) -> Dict[str, Any]:
-    """Merge a 1.0 reply's ``data`` into the top level so UI code reads one dict."""
-    if not isinstance(res.get("data"), dict):
-        return res
-    merged = dict(res["data"])
-    for key in ("status", "error", "message", "elapsed_sec", "req_id", "device"):
-        if key in res:
-            merged[key] = res[key]
-    return merged
 
 
 class CoreServiceClient:
@@ -222,22 +212,11 @@ class CoreServiceClient:
 
     def get_status(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query real-time Core Service status."""
-        return self._core_status(timeout, default_status="running")
+        return flatten_reply(self.send_request("core_status", timeout=timeout))
 
     def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
         """Query configured stations status."""
-        return self._core_status(timeout, default_status="ok")
-
-    def _core_status(self, timeout: float, default_status: str) -> Dict[str, Any]:
-        """core_status reply flattened; default_status fills "status" when the Core omits it."""
-        res = self.send_request("core_status", timeout=timeout)
-        if res.get("status") == "ok" and isinstance(res.get("data"), dict):
-            merged = dict(res["data"])
-            merged["req_id"] = res.get("req_id")
-            if "status" not in merged:
-                merged["status"] = default_status
-            return merged
-        return res
+        return flatten_reply(self.send_request("core_status", timeout=timeout))
 
     def get_snapshot(
         self,
@@ -252,7 +231,7 @@ class CoreServiceClient:
             "format": format,
             "quality": quality,
         }
-        return _flatten(self.send_request("snapshot", payload, timeout=timeout))
+        return flatten_reply(self.send_request("snapshot", payload, timeout=timeout))
 
     def manual_check(
         self,
@@ -265,7 +244,7 @@ class CoreServiceClient:
             "timeout_sec": timeout_sec,
         }
         # inspect is the Monitor UI's read-only check: no device lock, never consumes the round.
-        return _flatten(self.send_request("inspect", payload, timeout=timeout_sec + 4.0))
+        return flatten_reply(self.send_request("inspect", payload, timeout=timeout_sec + 4.0))
 
 
 _BaseToplevel: Any = tk.Toplevel if _TK_OK else object
@@ -689,7 +668,7 @@ class AtlasUI(_BaseTk):
         self.after(1500, self._poll_status)
 
     def _update_status_ui(self, status_res: Dict[str, Any]) -> None:
-        if status_res.get("status") in ("running", "ok"):
+        if status_res.get("status") == "ok":
             uptime = status_res.get("uptime_seconds", 0)
             active_conns = status_res.get("active_connections", 0)
             busy_devs = status_res.get("busy_devices", [])
@@ -771,7 +750,7 @@ class AtlasUI(_BaseTk):
             res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=10.0)
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
-        ok = res.get("status") in ("running", "ok")
+        ok = res.get("status") == "ok"
         return {"status": "ok" if ok else "error", "message": res.get("message", res)}
 
     def on_toggle_connect(self) -> None:
@@ -1054,7 +1033,7 @@ def main() -> None:
         client = CoreServiceClient(host=args.host, port=args.port)
         status = client.get_status(timeout=3.0)
         print(json.dumps(status, indent=2))
-        sys.exit(0 if status.get("status") in ("running", "ok") else 1)
+        sys.exit(0 if status.get("status") == "ok" else 1)
 
     app = AtlasUI(core_host=args.host, core_port=args.port)
     app.mainloop()

@@ -177,7 +177,7 @@ class TestLightweightMonitorUIClient:
         assert client.ping(timeout=2.0) is True
 
         status = client.get_status(timeout=2.0)
-        assert status.get("status") == "running"
+        assert status.get("status") == "ok"
         assert "uptime_seconds" in status
         assert "active_connections" in status
         assert "stations" in status

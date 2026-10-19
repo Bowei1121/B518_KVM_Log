@@ -231,7 +231,7 @@ class DeviceSettingsWindow(tk.Toplevel):
                 status = self._client.get_status(timeout=2.0)
             except Exception:
                 status = {"status": "error"}
-            connected = status.get("status") in ("running", "ok")
+            connected = status.get("status") == "ok"
             refusal = editor.restart_refusal(status.get("stations") or []) if connected else None
             if refusal:
                 self._post(lambda: self._status(refusal, ERROR_COLOR))
