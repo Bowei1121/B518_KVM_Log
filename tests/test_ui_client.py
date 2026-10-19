@@ -29,6 +29,9 @@ _HOST_APP_DIR = _REPO_ROOT / "host-app"
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from device_lock import DeviceLockManager
 from device_registry import DeviceRegistry
 from fake_kvm import FakeKVM
@@ -77,26 +80,12 @@ class MockKVMClient(FakeKVM):
 
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
-    payload = json.dumps(wire(data)) + "\n"
-    sock.sendall(payload.encode("utf-8"))
+    sock.sendall(dumps_request(wire(data)))
 
 
 def recv_json(sock: socket.socket, timeout: float = 5.0) -> Dict[str, Any]:
     sock.settimeout(timeout)
-    chunks: list[bytes] = []
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        if b"\n" in chunk:
-            break
-    raw = b"".join(chunks).decode("utf-8")
-    for line in raw.splitlines():
-        line = line.strip()
-        if line:
-            return json.loads(line)
-    raise TimeoutError("No valid newline-delimited JSON received")
+    return recv_reply(sock)
 
 
 @pytest.fixture
@@ -156,7 +145,7 @@ class TestLightweightMonitorUIClient:
         assert client.ping(timeout=2.0) is True
 
         status = client.get_status(timeout=2.0)
-        assert status.get("status") == "running"
+        assert status.get("status") == "ok"
         assert "uptime_seconds" in status
         assert "active_connections" in status
         assert "stations" in status
@@ -169,7 +158,7 @@ class TestLightweightMonitorUIClient:
 
         # 1. Initial state: all stations idle/disconnected
         st_res = client.get_stations(timeout=2.0)
-        assert st_res.get("status") in ("running", "ok")
+        assert st_res.get("status") == "ok"
         stations = {s["station"]: s for s in reversed(st_res.get("stations", []))}
         assert "DFU" in stations
         assert "FCT" in stations
@@ -235,7 +224,7 @@ class TestLightweightMonitorUIClient:
 
             ui_client = CoreServiceClient(host=host, port=port)
             assert ui_client.connect() is True
-            assert ui_client.get_status().get("status") in ("running", "ok")
+            assert ui_client.get_status().get("status") == "ok"
             ui_client.disconnect()
             time.sleep(0.1)
 
@@ -251,7 +240,7 @@ class TestLightweightMonitorUIClient:
 
             ui_client2 = CoreServiceClient(host=host, port=port)
             assert ui_client2.connect() is True
-            assert ui_client2.get_status().get("status") in ("running", "ok")
+            assert ui_client2.get_status().get("status") == "ok"
             ui_client2.disconnect()
 
     def test_ui_manual_diagnostic_check(self, running_core_service):
@@ -336,7 +325,7 @@ class TestLightweightMonitorUIClient:
         )
 
         assert proc.returncode == 0, f"Process failed: {proc.stderr}"
-        assert "running" in proc.stdout or "ok" in proc.stdout
+        assert json.loads(proc.stdout)["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -396,14 +385,13 @@ class _FakeCore:
             threading.Thread(target=self._serve, args=(conn, idx), daemon=True).start()
 
     def _serve(self, conn: socket.socket, idx: int) -> None:
-        reader = conn.makefile("rb")
         try:
-            for line in reader:
-                req = json.loads(line.decode("utf-8"))
+            while True:
+                req = recv_reply(conn)
                 with self._lock:
                     self.requests.append(req)
                 reply = self._behaviour(req, idx)
-                conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+                conn.sendall(dumps_request(reply))
         except OSError:
             pass
 
@@ -446,7 +434,7 @@ class TestMonitorUIChannels:
         t0 = time.monotonic()
         st = client.get_status(timeout=2.0)
         assert time.monotonic() - t0 < 1.0, "get_status waited behind the in-flight inspect"
-        assert st.get("status") in ("running", "ok")
+        assert st.get("status") == "ok"
 
         snap = client.get_snapshot(device="DFU-01", timeout=3.0)
         assert snap.get("status") == "ok", f"snapshot blocked or failed: {snap}"
@@ -477,7 +465,7 @@ class TestMonitorUIChannels:
 
             release.set()
             assert _wait_until(lambda: len(results) == 1), "poll callback never fired"
-            assert results[0].get("status") in ("running", "ok")
+            assert results[0].get("status") == "ok"
 
             assert client.start_status_poll(results.append) is True
             assert _wait_until(lambda: len(results) == 2)
@@ -498,12 +486,12 @@ class TestMonitorUIChannels:
         client = CoreServiceClient(host="127.0.0.1", port=core.port)
         try:
             stale = client.get_status(timeout=2.0)
-            assert stale.get("status") != "running"
+            assert stale.get("status") == "error"
             assert stale.get("error") == "req_id_mismatch"
             assert "uptime_seconds" not in stale
 
             fresh = client.get_status(timeout=2.0)
-            assert fresh.get("status") in ("running", "ok")
+            assert fresh.get("status") == "ok"
             assert fresh.get("req_id") == core.requests[1]["req_id"]
             assert core.connections == 2
         finally:
@@ -734,19 +722,16 @@ class TestMonitorUIChannels:
         monkeypatch.setattr(core_channel.socket, "create_connection", lambda *a, **k: left)
 
         def serve():
-            buf = b""
-            while b"\n" not in buf:
-                chunk = right.recv(4096)
-                if not chunk:
-                    return
-                buf += chunk
-            req = json.loads(buf.split(b"\n", 1)[0])
+            try:
+                req = recv_reply(right)
+            except ConnectionError:
+                return
             reply = {
                 "protocol_version": "1.0", "req_id": req["req_id"], "device": "",
                 "cmd": req["cmd"], "status": "ok", "error": "", "message": "",
                 "elapsed_sec": 0, "data": {},
             }
-            right.sendall((json.dumps(reply) + "\n").encode())
+            right.sendall(dumps_request(reply))
 
         threading.Thread(target=serve, daemon=True).start()
         ch = core_channel.CoreChannel("status", "127.0.0.1", 1)
@@ -795,7 +780,7 @@ class TestMonitorUIChannels:
                     "cmd": "inspect", "status": "ok", "error": "", "message": "",
                     "elapsed_sec": 0, "data": {"kind": "waiting"},
                 }
-                return (json.dumps(reply) + "\n").encode()
+                return dumps_request(reply)
 
             def shutdown(self, how):
                 pass
@@ -843,7 +828,7 @@ class TestMonitorUIChannels:
             client.set_target("127.0.0.1", other.port)
             assert time.monotonic() - t0 < 0.5, "set_target waited on the in-flight request"
 
-            assert client.get_status(timeout=2.0).get("status") in ("running", "ok")
+            assert client.get_status(timeout=2.0).get("status") == "ok"
         finally:
             release.set()
             client.disconnect()

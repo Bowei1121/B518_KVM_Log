@@ -18,6 +18,9 @@ import pytest
 _HOST_APP_DIR = Path(__file__).resolve().parents[1] / "host-app"
 sys.path.insert(0, str(_HOST_APP_DIR))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from device_registry import DeviceRegistry
 from fake_kvm import FakeKVM as SharedFakeKVM
 from kvm_pool import KVMConnectionPool
@@ -62,14 +65,8 @@ def running_server():
 def _roundtrip(server, payload: dict) -> dict:
     host, port = server.server_address
     with socket.create_connection((host, port), timeout=3.0) as sock:
-        sock.sendall((json.dumps(wire(payload)) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(wire(payload)))
+        return recv_reply(sock)
 
 
 def test_snapshot_by_device_id_connects_to_registry_ip(running_server):

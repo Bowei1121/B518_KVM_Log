@@ -32,6 +32,7 @@ from kvm_pool import KVMConnectionPool, _default_client_factory  # noqa: E402
 from replay_load import (  # noqa: E402
     ReplayKVM, RunStats, load_recording, markdown_report, summarise,
 )
+from core_protocol import build_request, dumps_request, encode_request, read_reply  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 SIM_IP_PREFIX = "10.255"
@@ -92,15 +93,18 @@ class LoadClient(threading.Thread):
                     timeout = self.args.check_timeout
                     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 300:
                         timeout = 8
-                    payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
-                               "cmd": "monitor_start", "timeout_sec": timeout}
+                    payload = build_request(
+                        "monitor_start", req_id, self.device, {"timeout_sec": timeout},
+                    )
                 else:
-                    payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
-                               "cmd": "check_finish", "timeout_sec": self.args.check_timeout}
+                    payload = build_request(
+                        "check_finish", req_id, self.device,
+                        {"timeout_sec": self.args.check_timeout},
+                    )
                 started = time.monotonic()
-                sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+                sock.sendall(dumps_request(payload))
                 sock.settimeout(self.args.check_timeout + 15.0)
-                reply = read_line(sock)
+                reply = read_reply(sock)
                 latency = time.monotonic() - started
                 kind = (reply.get("data") or {}).get("kind", "")
                 self.stats.add_reply(latency, reply.get("status", "?"), reply.get("error", ""), kind)
@@ -122,16 +126,6 @@ class LoadClient(threading.Thread):
             sock.close()
 
 
-def read_line(sock):
-    buf = bytearray()
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("closed by Core")
-        buf.extend(chunk)
-    return json.loads(bytes(buf).partition(b"\n")[0].decode("utf-8"))
-
-
 class Pinger(threading.Thread):
     def __init__(self, host, port, stats, stop, interval=1.0):
         super().__init__(daemon=True, name="pinger")
@@ -143,8 +137,8 @@ class Pinger(threading.Thread):
                 with socket.create_connection((self.host, self.port), timeout=5.0) as sock:
                     sock.settimeout(5.0)
                     started = time.monotonic()
-                    sock.sendall(b'{"protocol_version": "1.0", "req_id": "ping", "device": "", "cmd": "ping"}\n')
-                    read_line(sock)
+                    sock.sendall(encode_request("ping", "ping"))
+                    read_reply(sock)
                     self.stats.ping_latencies.append(time.monotonic() - started)
             except (OSError, ValueError, ConnectionError):
                 pass

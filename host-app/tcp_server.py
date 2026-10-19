@@ -62,7 +62,11 @@ except ImportError:
 
 logger = logging.getLogger("TcpJsonServer")
 
-PROTOCOL_VERSION = "1.0"
+try:
+    from core_protocol import COMMON_FIELDS, ENVELOPE_KEYS, PROTOCOL_VERSION
+except ImportError:
+    from .core_protocol import COMMON_FIELDS, ENVELOPE_KEYS, PROTOCOL_VERSION  # type: ignore[import-not-found,no-redef]
+
 CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
@@ -86,7 +90,6 @@ def _visibility(obs: Dict[str, Any]) -> str:
     return "unseen" if obs.get("kind") == "unknown" else "seen"
 
 
-COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
 COMMAND_FIELDS: Dict[str, frozenset] = {
@@ -98,9 +101,6 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "check_finish": frozenset({"timeout_sec"}),
     "check_start": frozenset({"timeout_sec"}),
 }
-ENVELOPE_KEYS = frozenset({
-    "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
-})
 ERROR_CODE_MAP = {
     "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
@@ -156,32 +156,31 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
     }
 
 
-def _inspect_round(kvm: Any, box: Dict[str, Any]) -> Dict[str, Any]:
+def _inspect_round(kvm: Any, tracker: Any) -> Tuple[Dict[str, Any], Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
-    Reports what the screen shows now. Never returns taken and never arms or consumes
-    the device's round gate. Two agreeing fresh frames fill ``active``.
+    Returns ``(reply, state)``. Reports what the screen shows now. Never returns taken and never
+    arms or consumes the device's round gate. Two agreeing fresh frames fill ``active``.
     """
-    from round_frame_consumer import MarkerState, confirm_activity, read_app_frame
+    from log_solution_reader import (
+        CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
+    )
 
     snapshot, obs = read_app_frame(kvm)
     if snapshot is None:
-        return {"error": "no_frame", "message": "No frame received from KVM yet"}
-    prev, rows = confirm_activity(box.get("prev"), snapshot.sequence, snapshot.received_monotonic, obs, 1.0)
-    box["prev"] = prev
-    active = [{"slot": slot, "evidence": evidence} for slot, evidence in rows]
-    if not obs.reliable:
-        unknown = _unknown(obs.reason)
-        unknown["active"] = []
-        return unknown
-    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity),
-            "active": active}
-    if obs.state == MarkerState.REVIEW:
-        return {**base, "kind": "paused", "reason": "confirmation_required", "results": [], "active": []}
-    # inspect never delivers. A finished screen is waiting with empty results and no "started" channels.
-    if obs.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
-        return {**base, "kind": "waiting", "reason": obs.state.value, "results": [], "active": []}
-    return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
+        return {"error": "no_frame", "message": "No frame received from KVM yet"}, None
+    rows = tracker.observe(obs, snapshot.sequence, snapshot.received_monotonic)
+    kind = screen_kind(obs)
+    if kind is ScreenKind.UNKNOWN:
+        return _unknown(obs.reason), None
+    state = obs.state
+    # Key order matches the 1.0 reply on main: state, capacity, active, kind, reason, results.
+    # Finished screens report no started channels (reportable_active), so active stays [] there.
+    active = [{"slot": slot, "evidence": evidence} for slot, evidence in reportable_active(state, rows)]
+    base = {"state": state.value, "capacity": int(obs.capacity), "active": active}
+    if kind is ScreenKind.PAUSED:
+        return {**base, "kind": "paused", "reason": CONFIRMATION_REQUIRED, "results": [], "active": []}, state
+    return {**base, "kind": "waiting", "reason": state.value, "results": []}, state
 
 
 def _kvm_lost(req: Dict[str, Any]) -> Dict[str, Any]:
@@ -233,7 +232,7 @@ class TcpJsonServer:
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._round_gates: Dict[str, Any] = {}
         self._rounds: Dict[str, RoundTrack] = {}
-        self._inspect_activity: Dict[str, Dict[str, Any]] = {}
+        self._inspect_activity: Dict[str, Any] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
         self.visibility_lost_sec = float(visibility_lost_sec)
@@ -431,8 +430,8 @@ class TcpJsonServer:
         }
 
     async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any], read_only: bool = False,
-                             report_activity: bool = False) -> Dict[str, Any]:
-        """One reading of the Log Solution screen for a device, as a 1.0 check payload.
+                             report_activity: bool = False) -> Tuple[Dict[str, Any], Any]:
+        """One reading of the Log Solution screen for a device, as ``(1.0 check payload, MarkerState)``.
 
         The reading runs on a worker thread with a per-frame time limit. A reading that
         exceeds the limit is reported as unknown and the poll continues; a device whose
@@ -441,17 +440,17 @@ class TcpJsonServer:
         flight_key = f"inspect:{entry.device_id}" if read_only else entry.device_id
         previous = self._inspections.get(flight_key)
         if previous is not None and not previous.done():
-            return _unknown("inspection_busy")
+            return _unknown("inspection_busy"), None
 
         # Every station reads the Log Solution display contract; the station only affects operations.
         from round_frame_consumer import observe_latest_round_frame
         gate = None
         if read_only:
             # Gate-less reading: never arms, takes or otherwise touches the round.
-            box = self._inspect_box(entry.device_id)
+            tracker = self._inspect_tracker(entry.device_id)
 
             def job():
-                return _inspect_round(kvm, box)
+                return _inspect_round(kvm, tracker)
         else:
             gate = self._round_gate(entry.device_id)
             accept_round = self._round_track(entry.device_id).start_requested
@@ -466,20 +465,21 @@ class TcpJsonServer:
         except asyncio.TimeoutError:
             logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", entry.device_id,
                          self.inspection_timeout_sec)
-            return _unknown("inspection_timeout")
+            return _unknown("inspection_timeout"), None
         except Exception as exc:
             logger.exception("Inspection error for %s", entry.device_id)
-            return {"error": "internal_error", "message": f"inspection error: {exc}"}
+            return {"error": "internal_error", "message": f"inspection error: {exc}"}, None
 
         if read_only:
             return raw
+        from log_solution_reader import reportable_active
+
         mapped = _round_observation(raw)
         # taken / already_taken / paused keep active []. Activity is only for in-progress rounds.
-        if (report_activity and gate is not None and "error" not in mapped
-                and mapped.get("kind") == "waiting"
-                and mapped.get("state") not in ("complete", "manual_stop_complete")):
-            mapped["active"] = [{"slot": slot, "evidence": evidence} for slot, evidence in gate.last_active]
-        return mapped
+        if report_activity and gate is not None and "error" not in mapped and mapped.get("kind") == "waiting":
+            mapped["active"] = [{"slot": slot, "evidence": evidence}
+                                for slot, evidence in reportable_active(raw.state, gate.last_active)]
+        return mapped, raw.state
 
     def _round_track(self, device_id: str) -> "RoundTrack":
         """Per-device round-start request. Lives as long as the server; a timeout does not clear it."""
@@ -489,21 +489,25 @@ class TcpJsonServer:
             self._rounds[device_id] = track
         return track
 
-    def _inspect_box(self, device_id: str) -> Dict[str, Any]:
-        box = self._inspect_activity.get(device_id)
-        if box is None:
-            box = {"prev": None}
-            self._inspect_activity[device_id] = box
-        return box
+    def _inspect_tracker(self, device_id: str) -> Any:
+        """Started-channel tracker of the Monitor UI inspect. Its own instance: check_start/check_finish never share it."""
+        from log_solution_reader import ActivityTracker
 
-    def _account_round_screen(self, device_id: str, obs: Dict[str, Any]) -> None:
+        tracker = self._inspect_activity.get(device_id)
+        if tracker is None:
+            tracker = ActivityTracker(max_gap=1.0)
+            self._inspect_activity[device_id] = tracker
+        return tracker
+
+    def _account_round_screen(self, device_id: str, state: Any) -> None:
         """Preparing or monitoring is a new-round signal. Monitoring counts only while a request exists."""
+        from log_solution_reader import MarkerState
+
         track = self._round_track(device_id)
-        state = obs.get("state")
-        if state == "preparing":
+        if state == MarkerState.PREPARING:
             track.monitoring_seen = False
             track.input_released = False
-        elif state == "monitoring":
+        elif state == MarkerState.MONITORING:
             track.input_released = False
             if track.start_requested:
                 track.monitoring_seen = True
@@ -544,7 +548,7 @@ class TcpJsonServer:
 
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[Tuple[str, str]]:
         """Why SN input must wait, as (code, message): None when the Log Solution is in standby or its round was taken."""
-        from round_frame_consumer import MarkerState, read_latest_app_frame
+        from log_solution_reader import MarkerState, read_latest_app_frame
 
         frame, observation = read_latest_app_frame(kvm)
         if frame is None:
@@ -555,7 +559,7 @@ class TcpJsonServer:
             return None
         # complete and manual_stop_complete are both READY. Input waits until this round
         # was delivered or manual_verification_required was already returned.
-        if observation.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
+        if observation.finished:
             if self._round_track(entry.device_id).input_released:
                 return None
             return "log_solution_busy", "round result not yet taken"
@@ -563,7 +567,7 @@ class TcpJsonServer:
 
     def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
         """Why start_test must wait, as (code, message): None when a reliable Log Solution frame reads Monitoring."""
-        from round_frame_consumer import MarkerState, read_latest_app_frame
+        from log_solution_reader import MarkerState, read_latest_app_frame
 
         frame, observation = read_latest_app_frame(kvm)
         if frame is None:
@@ -646,6 +650,7 @@ class TcpJsonServer:
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
         already_taken or an error, and otherwise times out with the last observed state.
         """
+        from log_solution_reader import FINISHED_STATES
         from monitor_flow import MonitorStartError, bring_log_solution_forward
 
         kvm = req.get("_kvm_client")
@@ -691,14 +696,14 @@ class TcpJsonServer:
                     "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
                 }
 
-            obs = await self._observe_check(kvm, entry, req, read_only=read_only,
-                                            report_activity=report_activity)
+            obs, state = await self._observe_check(kvm, entry, req, read_only=read_only,
+                                                   report_activity=report_activity)
             if "error" in obs:
                 return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
 
             if not read_only:
-                self._account_round_screen(entry.device_id, obs)
+                self._account_round_screen(entry.device_id, state)
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
                 return {
                     "status": "error",
@@ -717,12 +722,11 @@ class TcpJsonServer:
                 if not read_only:
                     self._round_track(entry.device_id).settle()
                 return {"status": "ok", "data": obs}
-            # Complete screens confirm toward taken; never promote them to started.
-            if (report_activity and obs["kind"] == "waiting" and obs.get("active")
-                    and obs.get("state") not in ("complete", "manual_stop_complete")):
+            # Finished screens carry no active channels (reportable_active), so they never become started.
+            if report_activity and obs["kind"] == "waiting" and obs.get("active"):
                 return {"status": "ok", "data": {**obs, "kind": "started", "reason": "activity_confirmed"}}
-            if read_only and obs.get("state") in ("complete", "manual_stop_complete"):
-                return {"status": "ok", "data": {**obs, "active": [], "results": []}}
+            if read_only and state in FINISHED_STATES:
+                return {"status": "ok", "data": obs}
             if timeout_sec == 0:
                 return {"status": "ok", "data": obs}
             if elapsed >= timeout_sec:
