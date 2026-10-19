@@ -151,3 +151,98 @@ def test_frozen_stream_is_frame_frozen_error(rig, device):
     assert res["status"] == "error"
     assert res["error"] == "frame_frozen"
     assert res["data"]["kind"] != "taken"
+
+
+class _BoomAfterArmKVM(LogSolutionKVM):
+    """latest_frame raises after explode(); freeze guard still advances via attributes."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._boom = False
+        self._attr_pts = 9000.0
+        self._attr_seq = 1
+
+    def explode(self):
+        self._boom = True
+
+    def latest_frame(self):
+        if self._boom:
+            raise RuntimeError("decode failed")
+        return LogSolutionKVM.latest_frame(self)
+
+    @property
+    def frame_presentation_time(self):
+        self._attr_pts += 0.05
+        return self._attr_pts
+
+    @property
+    def frame_sequence(self):
+        self._attr_seq += 1
+        return self._attr_seq
+
+    @property
+    def stream_id(self):
+        return "synthetic-stream"
+
+
+@pytest.fixture
+def boom_rig():
+    """One exploding KVM per station IP, for internal_error fail-closed cases."""
+    registry = make_registry()
+    kvms = {device: _BoomAfterArmKVM(state="standby") for device in ALL_STATIONS}
+    by_ip = {registry.get(device).kvm_ip: kvms[device] for device in ALL_STATIONS}
+
+    def client_factory(host, password=""):
+        return by_ip.setdefault(host, _BoomAfterArmKVM())
+
+    srv = TcpJsonServer(
+        device_registry=registry,
+        host="127.0.0.1",
+        port=0,
+        kvm_pool=KVMConnectionPool(client_factory=client_factory),
+        freeze_guard=FrameFreezeGuard(freeze_threshold=0.05),
+        monitor_confirm_sec=0.3,
+    )
+    srv.start()
+    time.sleep(0.05)
+    try:
+        yield srv, kvms
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+
+def _round_cmd(srv, device, cmd, timeout_sec=0, req_id="ie"):
+    host, port = srv.server_address
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device,
+               "cmd": cmd, "timeout_sec": timeout_sec}
+    with socket.create_connection((host, port), timeout=10.0) as sock:
+        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+
+@pytest.mark.parametrize("cmd", ["check_finish", "check_start"])
+@pytest.mark.parametrize("timeout_sec", [0, 1])
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_inspection_exception_is_internal_error(boom_rig, cmd, timeout_sec, device):
+    """Decode failure during observation must never deliver a result (PR #14 fail-closed)."""
+    srv, kvms = boom_rig
+    kvm = kvms[device]
+    arm_round(srv, kvm, device)
+    hid_before = list(kvm.events)
+    kvm.explode()
+
+    res = _round_cmd(srv, device, cmd, timeout_sec=timeout_sec, req_id=f"{cmd}-{timeout_sec}")
+
+    assert res["status"] == "error"
+    assert res["error"] == "internal_error"
+    assert res["data"]["kind"] == "unknown"
+    assert res["data"]["results"] == []
+    assert res["data"]["kind"] != "taken"
+    assert kvm.events == hid_before
