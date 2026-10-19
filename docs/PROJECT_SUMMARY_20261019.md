@@ -159,3 +159,10 @@
 建議順序：第 1 波 #57＋#59 → 第 2 波 #54＋#58 → 第 3 波 #55 → 第 4 波 #56。#57 與 #59 只在 `tests/protocol_helpers.py` 不同段落重疊。
 
 - #59 交由 Grok 實作，已於 issue 留言提醒：`CoreChannel` 的 `_lock`／`_gen`／`_detached`／`abort` 不准動、測試用主 repo venv、push 兩個 remote。
+
+### 第 1 波 review 結果與處置（同日）
+
+- PR #62（#57，Claude）review：可合併，但 `freeze_guard._latest` 吞例外，使 `latest_frame()` 拋錯時錯誤碼由 `internal_error` 變 `frame_frozen`（違反純重構，原測試情境被改掉）。使用者決定修正：不吞例外並補回測試；`read_app_frame` 改回傳 `(snapshot, observation)` 供 #54 沿用。其餘建議（FrameMeta 重複、不變式、7 個 fake 未用 FakeKVM 等）本次不處理。已轉交 #57 session，修完才合併。
+- PR #61（#59，Grok）review：修正後合併。CoreChannel 並行機制未動、525 passed、與 #62 試合併 clean；刪 `default_status` 無行為影響（Core 回覆 `data.status` 本為 `"running"`）。要修：(1) 驗收條件 1 自相矛盾（開票時誤寫整個 `tests/`）→ #59 驗收條件縮為 `host-app/`、`tools/`、`protocol_helpers`，tests 內約 18 處 recv 迴圈另開 **#63**（blocked by #59、#57）；(2) `test_ui_client.py` 9 行失效的 `"running"` 斷言；(3) `ui_app.py --status` 輸出 `status` 由 `running` 變 `ok` 需文件註明。(2)(3) 由使用者交給 Grok。
+- 兩個 review session 都直接在 PR 上貼了 review comment，未依指示先詢問使用者。
+- 合併方針：兩個 PR 都修完再合併；#62 合併後才開始 #54。
