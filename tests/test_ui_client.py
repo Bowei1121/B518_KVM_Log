@@ -566,9 +566,129 @@ class TestMonitorUIChannels:
             release.set()
             core.close()
 
-    def test_disconnect_cancels_inflight_inspect_within_one_second(self):
-        """disconnect() makes an in-flight manual_check return cancelled within 1 second."""
+    def test_abort_wakes_waiter_without_closing_from_caller(self, monkeypatch):
+        """Caller-side close leaves a timeout poll asleep; shutdown lets the request thread close."""
+        import core_channel
+
+        gate, in_recv, park = threading.Event(), threading.Event(), threading.Event()
+
+        class _Sock:
+            def __init__(self):
+                self.shut = self.closed = False
+                self.timeout = None
+                self.close_threads: List[str] = []
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def sendall(self, data):
+                if self.shut or self.closed:
+                    raise BrokenPipeError(32, "EPIPE")
+
+            def recv(self, n):
+                in_recv.set()
+                assert gate.wait(2)
+                if self.closed or not self.shut:
+                    # Caller already close()d, or nobody woke us: stand in for the
+                    # timeout poll. The test releases park in finally.
+                    park.wait()
+                    raise socket.timeout()
+                return b""
+
+            def shutdown(self, how):
+                if self.closed:
+                    raise OSError(9, "EBADF")
+                self.shut = True
+
+            def close(self):
+                self.closed = True
+                self.close_threads.append(threading.current_thread().name)
+
+        fs = _Sock()
+        monkeypatch.setattr(core_channel.socket, "create_connection", lambda *a, **k: fs)
+        ch = core_channel.CoreChannel("inspect", "127.0.0.1", 1)
+        out: Dict[str, Any] = {}
+        th = threading.Thread(
+            target=lambda: out.update(r=ch.request("inspect", {}, 3.0)),
+            name="req",
+            daemon=True,
+        )
+        try:
+            th.start()
+            assert in_recv.wait(2)
+            ch.abort()
+            assert fs.close_threads == [], "abort() closed the in-flight socket on the caller thread"
+            gate.set()
+            th.join(1.0)
+            assert not th.is_alive()
+            assert out["r"]["error"] == "cancelled"
+            assert set(fs.close_threads) == {"req"}
+        finally:
+            gate.set()
+            park.set()
+
+    def test_abort_before_socket_is_published_returns_cancelled(self, monkeypatch):
+        """abort() in the window before _sock is published still cancels the connect."""
+        import core_channel
+
+        attached, release, park = threading.Event(), threading.Event(), threading.Event()
+        real_attach = core_channel.CoreChannel._attach_socket
+
+        def hooked(self, sock):
+            attached.set()
+            assert release.wait(2)
+            real_attach(self, sock)
+
+        monkeypatch.setattr(core_channel.CoreChannel, "_attach_socket", hooked)
+
+        class _Sock:
+            def __init__(self):
+                self.sent = False
+                self.in_recv = threading.Event()
+
+            def settimeout(self, timeout):
+                pass
+
+            def sendall(self, data):
+                self.sent = True
+
+            def recv(self, n):
+                self.in_recv.set()
+                park.wait()
+                raise socket.timeout()
+
+            def shutdown(self, how):
+                pass
+
+            def close(self):
+                pass
+
+        fs = _Sock()
+        monkeypatch.setattr(core_channel.socket, "create_connection", lambda *a, **k: fs)
+        ch = core_channel.CoreChannel("inspect", "127.0.0.1", 1)
+        out: Dict[str, Any] = {}
+        th = threading.Thread(
+            target=lambda: out.update(r=ch.request("inspect", {"device": "DFU-01"}, 30.0)),
+            daemon=True,
+        )
+        try:
+            th.start()
+            assert attached.wait(2)
+            ch.abort()
+            release.set()
+            th.join(1.0)
+            assert not th.is_alive(), out
+            assert out["r"]["error"] == "cancelled"
+            assert fs.sent is False
+            assert not fs.in_recv.is_set()
+        finally:
+            release.set()
+            park.set()
+
+    def test_abort_cancels_request_queued_on_the_lock(self):
+        """A request that sampled the generation and is waiting for the lock is cancelled."""
         release = threading.Event()
+        queued, let_queued_lock = threading.Event(), threading.Event()
 
         def behaviour(req, idx):
             release.wait(10.0)
@@ -577,26 +697,151 @@ class TestMonitorUIChannels:
 
         core = _FakeCore(behaviour)
         client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        inner = client._inspect._lock
+        waiter = {"thread": None}
+
+        class _Gate:
+            def acquire(self, blocking=True, timeout=-1):
+                if blocking and threading.current_thread() is waiter["thread"]:
+                    queued.set()
+                    assert let_queued_lock.wait(2)
+                return inner.acquire(blocking, timeout)
+
+            def release(self):
+                return inner.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self.release()
+
+        client._inspect._lock = _Gate()
+        out_a: Dict[str, Any] = {}
+        out_b: Dict[str, Any] = {}
+        th_a = threading.Thread(
+            target=lambda: out_a.update(res=client.manual_check(device="DFU-01", timeout_sec=30.0)),
+            daemon=True,
+        )
+        th_b = threading.Thread(
+            target=lambda: out_b.update(res=client.manual_check(device="DFU-01", timeout_sec=30.0)),
+            daemon=True,
+        )
+        waiter["thread"] = th_b
+        try:
+            th_a.start()
+            assert _wait_until(lambda: len(core.requests) == 1)
+            th_b.start()
+            assert queued.wait(2)
+            client.disconnect()
+            let_queued_lock.set()
+            th_a.join(1.0)
+            th_b.join(1.0)
+            assert not th_a.is_alive() and not th_b.is_alive(), (out_a, out_b)
+            assert out_a["res"].get("error") == "cancelled"
+            assert out_b["res"].get("error") == "cancelled"
+            assert len(core.requests) == 1
+        finally:
+            release.set()
+            let_queued_lock.set()
+            core.close()
+
+    def test_abort_closes_idle_socket(self, monkeypatch):
+        """abort() with no request in flight closes the fd; it does not wait for a later request."""
+        import core_channel
+
+        left, right = socket.socketpair()
+        monkeypatch.setattr(core_channel.socket, "create_connection", lambda *a, **k: left)
+
+        def serve():
+            buf = b""
+            while b"\n" not in buf:
+                chunk = right.recv(4096)
+                if not chunk:
+                    return
+                buf += chunk
+            req = json.loads(buf.split(b"\n", 1)[0])
+            reply = {
+                "protocol_version": "1.0", "req_id": req["req_id"], "device": "",
+                "cmd": req["cmd"], "status": "ok", "error": "", "message": "",
+                "elapsed_sec": 0, "data": {},
+            }
+            right.sendall((json.dumps(reply) + "\n").encode())
+
+        threading.Thread(target=serve, daemon=True).start()
+        ch = core_channel.CoreChannel("status", "127.0.0.1", 1)
+        try:
+            assert ch.request("ping", None, 2.0).get("status") == "ok"
+            assert left.fileno() >= 0
+            ch.abort()
+            assert left.fileno() == -1
+        finally:
+            right.close()
+
+    def test_abort_does_not_swallow_non_oserror(self):
+        import core_channel
+
+        class _Boom:
+            def shutdown(self, how):
+                raise AttributeError("programmer error")
+
+        ch = core_channel.CoreChannel("status", "127.0.0.1", 1)
+        ch._sock = _Boom()
+        with pytest.raises(AttributeError, match="programmer error"):
+            ch.abort()
+
+    def test_buffered_reply_after_abort_is_cancelled(self, monkeypatch):
+        """A reply already in the receive buffer is cancelled once abort() has bumped the generation."""
+        import core_channel
+
+        in_recv, gate = threading.Event(), threading.Event()
+
+        class _Sock:
+            def __init__(self):
+                self.sent = b""
+
+            def settimeout(self, timeout):
+                pass
+
+            def sendall(self, data):
+                self.sent = data
+
+            def recv(self, n):
+                in_recv.set()
+                assert gate.wait(2)
+                req = json.loads(self.sent.decode().split("\n", 1)[0])
+                reply = {
+                    "protocol_version": "1.0", "req_id": req["req_id"], "device": "",
+                    "cmd": "inspect", "status": "ok", "error": "", "message": "",
+                    "elapsed_sec": 0, "data": {"kind": "waiting"},
+                }
+                return (json.dumps(reply) + "\n").encode()
+
+            def shutdown(self, how):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(core_channel.socket, "create_connection", lambda *a, **k: _Sock())
+        ch = core_channel.CoreChannel("inspect", "127.0.0.1", 1)
         out: Dict[str, Any] = {}
         th = threading.Thread(
-            target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=30.0)),
+            target=lambda: out.update(r=ch.request("inspect", {"device": "DFU-01"}, 3.0)),
             daemon=True,
         )
         try:
             th.start()
-            assert _wait_until(lambda: len(core.requests) == 1)
-
-            started = time.monotonic()
-            client.disconnect()
-            assert time.monotonic() - started < 0.5, "disconnect() waited on the in-flight inspect"
-            th.join(timeout=1.0)
-            assert not th.is_alive(), f"inspect did not return within 1s: {out}"
-            assert time.monotonic() - started < 1.0
-            assert out["res"].get("status") == "error"
-            assert out["res"].get("error") == "cancelled"
+            assert in_recv.wait(2)
+            ch.abort()
+            gate.set()
+            th.join(1.0)
+            assert not th.is_alive(), out
+            assert out["r"]["status"] != "ok"
+            assert out["r"]["error"] == "cancelled"
         finally:
-            release.set()
-            core.close()
+            gate.set()
 
     def test_set_target_does_not_wait_for_inflight_request(self):
         """Switching Core address while an inspect is pending must not block the caller."""

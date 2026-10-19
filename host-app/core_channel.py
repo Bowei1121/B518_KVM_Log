@@ -7,10 +7,13 @@ Tk window; this module owns the sockets, so it can be tested without a display.
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import threading
 import uuid
 from typing import Any, Dict, Optional
+
+log = logging.getLogger(__name__)
 
 # Which connection carries each Core command. Unknown commands have no route.
 CHANNEL_BY_CMD: Dict[str, str] = {
@@ -65,10 +68,11 @@ def client_error(req_id: str, error: str, message: str) -> Dict[str, Any]:
 class CoreChannel:
     """One Core socket; requests on it run strictly in order (ADR-0006).
 
-    The lock serializes request/reply on this socket only. abort() is lock-free so
-    closing the window or switching Core never waits behind an in-flight request.
-    It bumps a generation counter and shutdown()s the socket to wake a blocked
-    recv. The request thread closes that socket; abort() does not.
+    The lock serializes request/reply on this socket only. abort() never waits
+    on that lock. It bumps a generation counter and shutdown()s the socket to
+    wake a blocked recv. The request thread closes that socket. An idle socket
+    (nobody holds the lock) is closed inside abort(); a request still queued
+    on the lock keeps the generation it sampled and returns cancelled.
     """
 
     def __init__(self, name: str, host: str, port: int) -> None:
@@ -78,8 +82,9 @@ class CoreChannel:
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._gen = 0
-        # Sockets abort() detached. Held here so this thread's last reference
-        # does not close them; request() closes them under _lock.
+        # Detached by abort() so this thread does not drop the last reference
+        # while a request is blocked in recv. The request thread closes them
+        # under _lock. If the lock is free, abort() closes the idle fd itself.
         self._detached: list[socket.socket] = []
 
     def is_connected(self) -> bool:
@@ -92,22 +97,28 @@ class CoreChannel:
             self.abort()
 
     def abort(self) -> None:
-        """Cancel any in-flight request. Never waits on the lock and never closes.
+        """Cancel requests that already sampled this generation. Never waits on the lock.
 
-        shutdown() wakes a recv polling this fd. The request thread closes it
-        in _drop_locked. A request that has not started waiting still loses
-        the generation check and returns cancelled.
+        shutdown() wakes a recv polling this fd. close() of that fd stays on
+        the request thread, which holds the lock across the poll. When the
+        lock is free there is no waiter, so the idle fd is closed here.
         """
         self._gen += 1
         sock = self._sock
         self._sock = None
-        if sock is None:
-            return
-        self._detached.append(sock)
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except Exception:
-            pass
+        if sock is not None:
+            self._detached.append(sock)
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError as exc:
+                log.debug("abort shutdown failed errno=%s", exc.errno)
+        # Idle only. blocking=False: a request inside recv keeps the lock and
+        # closes the socket itself. Never block behind that request.
+        if self._lock.acquire(blocking=False):
+            try:
+                self._reap_locked()
+            finally:
+                self._lock.release()
 
     def _reap_locked(self) -> None:
         """Close sockets abort() detached. Caller holds _lock."""
@@ -140,9 +151,11 @@ class CoreChannel:
         if payload:
             req.update(payload)
         data = (json.dumps(req) + "\n").encode("utf-8")
+        # Sample before the lock so a request already queued behind an in-flight
+        # one is cancelled, instead of reconnecting and sending after abort().
+        gen = self._gen
 
         with self._lock:
-            gen = self._gen
             try:
                 return self._request_locked(req_id, data, timeout, gen)
             finally:
@@ -155,7 +168,7 @@ class CoreChannel:
         timeout: float,
         gen: int,
     ) -> Dict[str, Any]:
-        """Send one request. Caller holds _lock. gen is the generation at entry."""
+        """Send one request. Caller holds _lock. gen was sampled before the lock."""
         self._reap_locked()
         sock = self._sock
         if sock is None:
@@ -166,10 +179,12 @@ class CoreChannel:
                     req_id, "connection_failed",
                     f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
                 )
+            # Publish before the generation check. abort() between the check and
+            # the assignment used to see _sock is None and return without shutdown.
+            self._attach_socket(sock)
             if gen != self._gen:
-                _hard_close(sock)
+                self._drop_locked(sock)
                 return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
-            self._sock = sock
 
         try:
             sock.settimeout(timeout)
@@ -188,4 +203,13 @@ class CoreChannel:
                 req_id, "req_id_mismatch",
                 f"Reply req_id did not match request {req_id}; connection reset",
             )
+        # Linux keeps bytes already in the receive buffer across SHUT_RDWR;
+        # BSD/macOS drops them. Treat a reply that lost the race with abort as
+        # cancelled on both, and let finally reap the detached socket.
+        if gen != self._gen:
+            return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
         return reply
+
+    def _attach_socket(self, sock: socket.socket) -> None:
+        """Make sock visible to abort() before the generation check."""
+        self._sock = sock
