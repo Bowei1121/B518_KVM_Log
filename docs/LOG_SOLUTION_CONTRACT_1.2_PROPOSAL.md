@@ -61,7 +61,7 @@ state_for_round_snapshot(snapshot)
 - `result_available`：`COMPLETED`，或「`STOPPED` 且 `completion_reason == manual_stop` 且 `collection_stopped` 且每格皆為終局狀態」時為真。
 - 優先序不變：停止時仍有未處理的衝突或未確認警報，先維持 Review，處理完才變成 MANUAL_STOP_COMPLETE。
 - 整輪人工停止的原因要保留在快照與稽核中；即使每格都已有終局結果、沒有任何 STOPPED 格，也要顯示 MANUAL_STOP_COMPLETE，不能靠「有沒有 STOPPED 格」推測。
-- 五種圖樣都恰好兩黑兩白，任一格翻轉都不會變成另一個合法圖樣；未定義圖樣（例如 0101）、缺格、低對比一律 unknown。
+- 圖樣都恰好兩黑兩白，任一格翻轉都不會變成另一個合法圖樣。後續 HANDOFF 另將 0101 定為 PREPARING（準備中），六種兩黑兩白組合全部使用；其餘圖樣（全黑、全白、一黑三白等）、缺格、低對比一律 unknown。
 - 稽核紀錄保留 `completion_reason = manual_stop` 與原始 `STOPPED` 狀態，不改寫成 FAIL。產品處置由 LabVIEW 依「非 PASS 即不良」處理。
 - **未見本次監控中就人工停止**：Log Solution 照常顯示 MANUAL_STOP_COMPLETE；橋接因為沒有本輪的同輪證據，不自動交付，改回報「需人工核對」（交接文件 9.2）。
 - 舊 1.1 consumer 不認得 0011，**必須先更新橋接，才能部署 Log Solution 1.2**（與 C6 相同）。
