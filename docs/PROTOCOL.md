@@ -1,11 +1,13 @@
 # LabVIEW ↔ JetKVM Log 橋接程式 TCP JSON 介面規格
 
 版本：`protocol_version = "1.0"`
-日期：2026-10-16（Asia/Taipei）
-狀態：已在 Core Service 實作（spec #1 的 #2～#11；spec #2 的 #22～#26：三站統一 Log Solution 判讀、`monitor_start`、`start_test`）。LabVIEW 端的 type definition 與 VI 改版尚待 #13（人工）。實作對照與待辦見第 10 節。
-相關：`CONTEXT.md`、ADR-0002／0003／0006、`docs/LABVIEW_LOG_SOLUTION_INTEGRATION.md`、`docs/specs/0002-log-solution-judgement-all-stations.md`。
+日期：2026-10-19（Asia/Taipei）
+狀態：已在 Core Service 實作（spec #40 的 #41～#47）。LabVIEW 端的 type definition 與 VI 改版仍待 #13（人工）。實作對照與待辦見第 10 節。
+相關：`CONTEXT.md`、ADR-0002／0003／0006、`docs/LABVIEW_HANDOFF.md`、`docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`。
 
-輪次 UUID、結果保存、接收確認（ACK）不在 1.0 範圍，定案後以 1.1 加入。
+輪次 UUID、結果保存、接收確認（ACK）不在 1.0 範圍，定案後以 1.1 加入。`check` 已移除，不留別名；送出 `check` 回 `unknown_command`。
+
+2026-10-19 使用者決定的三點補充（本輪開始請求、判讀順序、DFU 輸入）已納入第 5.4、5.5、5.6 節，與程式一致。
 
 ---
 
@@ -53,7 +55,7 @@ JSON 內不使用 `null`。字串欄位沒有值時為 `""`，數字為 `0`，�
 | `error` | string | `status=ok` 時為 `""`；其他見第 6 節錯誤碼 |
 | `message` | string | 給人看的說明，LabVIEW 不應依此判斷流程 |
 | `elapsed_sec` | number | Core 處理該請求所花秒數 |
-| `data` | object | 該指令固定欄位的物件；**錯誤或逾時時仍會出現**。欄位未取得時為預設值；`check` 的逾時與部分錯誤會帶最後一次觀察值（見 5.4） |
+| `data` | object | 該指令固定欄位的物件；**錯誤或逾時時仍會出現**。欄位未取得時為預設值；`check_start`／`check_finish`／`inspect` 的逾時與部分錯誤會帶最後一次觀察值（見 5.4） |
 
 LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（envelope + 該指令的 `data`）做 Unflatten From JSON，再核對 `req_id`、`device`、`cmd` 三者與請求相同後才採用。
 
@@ -64,16 +66,17 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `ping` | 確認 Core 存活 | 否 | — | — | — |
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
-| `monitor_start` | 從 Dock 喚起 Log Solution，送 Cmd+Shift+M，確認進入監控中 | 是 | ✔ | ✔ | ✔ |
+| `monitor_start` | 喚起 Log Solution 並確認進入監控中，建立本輪開始請求 | 是 | ✔ | ✔ | ✔ |
 | `start_test` | 開始測試：DFU 點 OK、BT 點 Start All | 是 | ✔ | ✘ | ✔ |
-| `check` | 讀取 Log Solution 本輪狀態／結果，可長輪詢 | 是 | ✔ | ✔ | ✔ |
+| `check_start` | 測試開始確認：活動通道，或直接交付已完成的本輪 | 是 | ✔ | ✔ | ✔ |
+| `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
 | `inspect` | Monitor UI 唯讀檢視（僅供 Monitor UI，LabVIEW 不得使用） | 否 | ✔ | ✔ | ✔ |
 | `input` | 勾選通道並輸入本輪 SN（不點 OK、不開始監控） | 是 | ✔ | ✘ | ✘ |
 
-- 「上鎖」指令在同一台設備已有上鎖指令執行中時，立刻回 `device_busy`（ADR-0002 fail-fast）。不同設備互不影響。
+- 「上鎖」指令在同一台設備已有上鎖指令執行中時，立刻回 `device_busy`（ADR-0002 fail-fast）。不同設備互不影響。`inspect` 不上鎖。
 - 站別不支援的指令回 `unsupported_command`（例如 FCT 的 `start_test`、DFU 以外的 `input`）。
-- `button` 已移除，改由 `start_test` 開始測試。送出 `button` 回 `unknown_command`。
-- 三站的 `check`／`inspect` 一律以 Log Solution 顯示契約判讀，站別只影響操作指令。
+- `button` 與 `check` 已移除。送出回 `unknown_command`。
+- 三站的 `check_start`／`check_finish`／`inspect` 一律以 Log Solution 顯示契約判讀，站別只影響操作指令。三者共用同一個 `data`。
 
 ### 4.1 三站呼叫順序
 
@@ -81,14 +84,15 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 
 | 站別 | 呼叫順序 |
 | --- | --- |
-| DFU | `input` → `monitor_start` → `start_test` → `check` |
-| BT | `monitor_start` → `start_test` → `check` |
-| FCT | 治具推入前設備發訊號 → `monitor_start` → `check` |
+| DFU | `input` → `monitor_start` → `start_test` → `check_start`（可省略）→ `check_finish` |
+| BT | `monitor_start` → `start_test` → `check_start`（可省略）→ `check_finish` |
+| FCT | 治具推入前設備發訊號 → `monitor_start` → `check_start`（可省略）→ `check_finish` |
 
 - FCT 沒有 `start_test`。治具推入後由 ATE 自行開測，LabVIEW 必須在推入前完成 `monitor_start`。
-- `monitor_start` 只在 Log Solution 為 Standby 或 Complete 時送出快捷鍵；Monitoring、Review 回 `log_solution_busy`。
-- `input` 只在 Standby，或 Complete 且上一輪已由 `check` 取用時允許（見 5.5）。
-- `check` 必須在本輪見過 Monitoring 之後，才會接受完成畫面。因此 `monitor_start` 成功是取得本輪結果的前提。
+- `monitor_start` 成功只代表 Log Solution 已準備好收集本輪資料，不代表 ATE 已開始測試。每一輪都要重新 `monitor_start`。
+- `check_start` 確認 ATE 真的開始測試，並回已開始的通道。可省略、可重複；重複呼叫不消耗結果。
+- `check_finish` 取得整輪結果。它不回 `started`。
+- 只有 `kind = "taken"` 可以觸發設備動作。`already_taken` 附相同結果，只供重看。
 
 ## 5. 各指令
 
@@ -144,87 +148,108 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `format` | string | 實際格式 |
 | `image_base64` | string | 影像 base64 |
 
-### 5.4 `check`
+### 5.4 `check_start`／`check_finish`／`inspect` 共用回覆
 
-專屬請求欄位：
+三者的專屬請求欄位相同：
 
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
-| `timeout_sec` | number | 是 | `0` = 只讀一次立即回覆；`> 0` = 長輪詢，最多 `3600` |
+| `timeout_sec` | number | 是 | `0` = 只讀一次立即回覆；`> 0` = 長輪詢，最多 `3600`。缺少、布林或超出範圍回 `invalid_argument` |
 
-`timeout_sec` 白話：LabVIEW 願意等多久。
-
-- `0`：「現在畫面是什麼狀態？」看一眼馬上回，通常不到 1 秒。
-- `600`：「有結果再告訴我，最多等 10 分鐘。」Core 會一直盯著畫面，結果出來、待確認、出錯就立刻回；10 分鐘到了還沒結果，回 `status = "timeout"`。
-- LabVIEW 的 TCP Read timeout 必須**大於** `timeout_sec`（建議多 30 秒），否則 LabVIEW 會先斷線。
+`timeout_sec` 白話：LabVIEW 願意等多久。LabVIEW 的 TCP Read timeout 必須**大於** `timeout_sec`（建議多 30 秒）。
 
 長輪詢在下列任一情況**立即回覆**，否則等到逾時：
 
-1. `data.kind = "taken"`：本輪結果已可靠取得，且格數等於該設備測試通道數。
-2. `data.kind = "paused"`：Log Solution 待確認，LabVIEW 應暫停後續設備動作。
-3. `data.kind = "already_taken"`：本輪結果先前已取用過。
-4. 任何錯誤（例如 `frame_frozen`）。
+1. `kind = "taken"`（僅 `check_start`／`check_finish`）。
+2. `kind = "paused"`。
+3. `kind = "already_taken"`。
+4. `kind = "started"`（僅 `check_start`／`inspect`）。
+5. 任何錯誤（例如 `frame_frozen`、`monitor_not_ready`、`manual_verification_required`）。
 
 逾時回覆 `status = "timeout"`、`error = "timeout"`，`data` 帶最後一次觀察到的狀態。
 
-`data`：
+`data` 固定欄位，無 `null`、不省略：
 
 | 欄位 | 型別 | 說明 |
 | --- | --- | --- |
-| `kind` | string | `taken`／`waiting`／`paused`／`already_taken`／`unknown` |
-| `state` | string | Log Solution 標記：`standby`／`monitoring`／`review`／`complete`／`manual_stop_complete`；無法辨識為 `""`。`manual_stop_complete` 是人工停止的完成畫面（Log Solution 1.2 第五種圖樣 0011），橋接 #36 實作後才會出現 |
-| `reason` | string | 細部原因，見下表；僅供記錄 |
+| `kind` | string | `started`／`taken`／`already_taken`／`waiting`／`paused`／`unknown` |
+| `state` | string | `standby`／`preparing`／`monitoring`／`review`／`complete`／`manual_stop_complete`；無法辨識為 `""` |
+| `reason` | string | 細部原因，僅供記錄。LabVIEW 只依 `kind` 與 `error` 分支 |
 | `capacity` | number | 畫面結果格數 1–20；無法辨識為 `0` |
-| `results` | array of object | 僅 `kind = "taken"` 時有內容，其餘為 `[]` |
+| `active` | array of object | 已開始通道。`check_finish` 固定 `[]`。其餘見下 |
+| `active[].slot` | number | 通道 1–20 |
+| `active[].evidence` | string | `testing` 或 `result` |
+| `results` | array of object | 僅 `taken` 與 `already_taken` 有內容，其餘為 `[]` |
 | `results[].slot` | number | 1–20；第一排左至右 1–10，第二排 11–20 |
-| `results[].status` | string | `PASS`／`FAIL`／`NOTEST`／`TIMEOUT`／`STOPPED`（人員手動停止監控，原樣回傳） |
+| `results[].status` | string | `PASS`／`FAIL`／`NOTEST`／`TIMEOUT`／`STOPPED` |
 
 `kind` 與 LabVIEW 動作：
 
-| `kind` | 意義 | LabVIEW 動作 |
+| `kind` | 出現在 | 意義 | `results` | LabVIEW 動作 |
+| --- | --- | --- | --- | --- |
+| `started` | `check_start`、`inspect` | 連續兩張新鮮影格確認有通道開始。`reason` 為 `activity_confirmed` | `[]` | 記錄 `active`，接著 `check_finish`。`inspect` 只顯示，不做設備動作 |
+| `taken` | `check_start`、`check_finish` | 本輪完整結果**第一次**交付 | 完整 | **唯一**可做設備動作的回覆。PASS 良品；FAIL／NOTEST／TIMEOUT／STOPPED 不良。`state = "manual_stop_complete"` 標記人工停止並交作業員重工 |
+| `already_taken` | `check_start`、`check_finish` | 同一輪再次交付，結果與第一次相同 | 與第一次相同 | 只顯示、核對，不再做設備動作 |
+| `waiting` | 三者 | 還沒有可交付結果 | `[]` | 繼續等或再查 |
+| `paused` | 三者 | 畫面是待確認（`state = "review"`） | `[]` | 暫停設備動作，等人員處理後再查 |
+| `unknown` | 三者 | 畫面看不清楚 | `[]` | 設備／通訊異常，不得判產品 FAIL |
+
+`inspect` 不會回 `taken` 或 `already_taken`。
+
+六種整輪圖樣（讀取順序左上、右上、左下、右下，1 = 黑）。其他圖樣、缺格、低對比為 unknown：
+
+| `state` | 圖樣 | 中文 |
 | --- | --- | --- |
-| `taken` | 本輪完整結果已可靠取得 | 依本輪參與清單對應 SN；PASS 良品，FAIL／NOTEST／TIMEOUT 不良品；STOPPED 判不良並交作業員重工 |
-| `waiting` | 監控中／尚未完成 | 繼續 `check` |
-| `paused` | 待確認 | 暫停設備動作，等人員在 Log Solution 處理後再 `check` |
-| `already_taken` | 本輪已取用過 | 不重做設備動作；重傳機制屬 1.1 |
-| `unknown` | 畫面不可辨識 | 視為設備／通訊異常，不得判產品 FAIL |
+| `standby` | 1001 | 待命 |
+| `preparing` | 0101 | 準備中 |
+| `monitoring` | 1100 | 監控就緒 |
+| `review` | 1010 | 待確認 |
+| `complete` | 0110 | 一般完成 |
+| `manual_stop_complete` | 0011 | 人工停止完成 |
 
-`reason` 目前值：`standby`、`monitoring`、`monitoring_not_observed`、`confirming_complete_frame`、`incomplete_or_nonterminal_results`、`round_capacity_changed`、`confirmation_required`、`round_already_taken`、`reliable_complete`、`no_frame`、`missing_source_frame_time`、`out_of_order_source_frame`，以及畫面定位失敗類原因。LabVIEW 不應依 `reason` 分支，只依 `kind`。
+完成種類（一般／人工停止）納入穩定簽章：完成種類＋格數＋每格結果，兩張相同才交付。種類切換重新計數。一般完成與人工停止完成都可交付；人工停止即使每一格都已是終局、沒有 STOPPED，仍以 `state = "manual_stop_complete"` 交付。
 
-**沒有總結果欄位**（舊 `result=PASS` 移除）。產品處置只能依 `results` 逐格判斷，結果色帶不含 SN。
+`active` 的證據：TESTING／COMPLETING 為 `testing`；未見測試中而看到 PASS／FAIL 為 `result`。NOTEST／TIMEOUT／STOPPED／WAITING 不算活動。一個通道要在連續兩張新鮮影格（序號前進、接收間隔 ≤ 1 秒）都有活動才列入；兩張裡任一張是測試中，證據為 `testing`。中間出現看不清楚的畫面就重新計算。
+
+#### 判讀順序
+
+`check_start` 與 `check_finish` 依下列順序，先符合的就回（2026-10-19 決定）：
+
+1. 畫面是待確認（REVIEW）→ `kind = "paused"`。
+2. 畫面簽章和上一次交付完全相同（完成種類＋格數＋每格結果），而且之後沒有出現新一輪的信號 → `kind = "already_taken"`，附相同 `results`。這條排在本輪開始請求檢查之前，所以交付後即使請求已清除，也可以重看。
+3. 畫面看不清楚 → `kind = "unknown"`。可見性恢復仍適用。
+4. 沒有本輪開始請求 → `error = "monitor_not_ready"`，`results` 為 `[]`。
+5. 有請求但沒看到本次監控中，且畫面已可交付 → `error = "manual_verification_required"`，不交付、不點 Dock。此回覆清除本輪開始請求。
+6. 有請求且已見本次監控中 → 正常判讀：兩張穩定的可交付畫面回 `taken`（並清除請求）；`check_start` 的活動通道回 `started`（不清除請求）；否則 `waiting`。
+
+因此，交付後簽章變了、沒有新一輪的信號、請求已清除時，依第 4 步回 `monitor_not_ready`，不會再交付一次。
+
+新一輪的信號是看到準備中或監控中，或收到新的 `monitor_start`。出現任一個，就清掉「上一次交付的簽章」。準備中本身不建立本輪開始請求；只有 `monitor_start` 建立。
+
+`check_start` 在沒有本輪開始請求時，即使已有兩張活動影格，也回 `monitor_not_ready`，不回 `started`。有請求時，可交付畫面優先於 `started`：兩張穩定完成畫面回 `taken`。重複 `check_start` 看到活動通道會一直回 `started`，不消耗本輪，之後的 `check_finish` 仍可 `taken`。
+
+格數與設備通道數不同的可交付畫面回 `capacity_mismatch`，不交付、不清除本輪開始請求。
 
 #### 可見性與遺失
 
-- **Log Solution 不可見**：判讀為 `kind = unknown` 且原因不屬於畫面／串流問題，即視為看不到 Log Solution。這包含整個或部分被遮住（例如左側被 ATE 視窗遮住）、已關閉、縮到 Dock。畫面／串流問題（`no_frame`、`invalid_frame`、`stale_frame`、`missing_source_frame_time`、`out_of_order_source_frame`、`duplicate_or_out_of_order_frame`、`inspection_busy`、`inspection_timeout`）不算看不到，也不歸零計時。
-- 計時：從第一次看不到起算；只有讀到可靠畫面（standby／monitoring／review／complete）才歸零，不同 `reason` 交替出現不歸零。
-- 連續 30 秒看不到：Core 點一次 Log Solution 的 Dock 圖示，滑鼠移到中性位置（不點擊），等 5 秒後重新判讀。
-- Dock 上找不到 Log Solution 圖示：立即回 `error = "log_solution_not_found"`，不算一次恢復。這是嚴重異常，需停線檢查。
-- 同一請求最多點 3 次（恢復成功也不重置次數），仍看不到回 `error = "log_solution_not_visible"`，`data.reason` 為最後一次判讀原因（可分辨被遮住或 Log Solution 設定錯誤）。被遮住後約 35 秒內恢復判讀；3 次都失敗約 105 秒回錯誤。
-- 本輪在串流上已見過 Monitoring，之後判讀到 Standby：立即回 `error = "round_lost"`。本輪結果已無法取得，LabVIEW 應暫停並通知人員。
-- 人工停止監控：Log Solution 1.2 顯示第五種圖樣 MANUAL_STOP_COMPLETE（0011）。本輪已見 Monitoring、全部格位終局、格數 = 通道數、兩張相同畫面時回 `kind = "taken"`、`state = "manual_stop_complete"`，`results` 原樣含 `STOPPED`；LabVIEW 依 `state` 得知是人工停止，產品處置仍依逐格結果（非 PASS 即不良、交作業員重工）。本輪未見 Monitoring 就出現 0011：回 `error = "manual_verification_required"`，不交付、不自動重測，LabVIEW 暫停並請人員核對。現行 1.1 下人工停止顯示 Standby，落入 `round_lost`。橋接支援 0011 前（#36），1.2 的人工停止畫面會判為不可見。
-- 以上兩者與其他錯誤一樣是 `status = "error"`，`data.kind` 為 `unknown`。`data` 其餘欄位可能保留最後一次觀察值，LabVIEW 只依 `error` 判斷。
-- `inspect` 為唯讀，不點 Dock。
+套用於 `check_start`、`check_finish`。`inspect` 不點 Dock。
 
-範例（取得結果）：
-```json
-{"protocol_version":"1.0","req_id":"9a7f...","device":"DFU-01","cmd":"check","status":"ok","error":"","message":"","elapsed_sec":312.4,"data":{"kind":"taken","state":"complete","reason":"reliable_complete","capacity":4,"results":[{"slot":1,"status":"PASS"},{"slot":2,"status":"FAIL"},{"slot":3,"status":"NOTEST"},{"slot":4,"status":"PASS"}]}}
-```
-
-範例（逾時）：
-```json
-{"protocol_version":"1.0","req_id":"9a80...","device":"DFU-01","cmd":"check","status":"timeout","error":"timeout","message":"no reliable result within 600 s","elapsed_sec":600.0,"data":{"kind":"waiting","state":"monitoring","reason":"monitoring","capacity":4,"results":[]}}
-```
+- **Log Solution 不可見**：`kind = unknown` 且原因不屬於畫面／串流問題。畫面／串流問題（`no_frame`、`invalid_frame`、`stale_frame`、`missing_source_frame_time`、`out_of_order_source_frame`、`duplicate_or_out_of_order_frame`、`inspection_busy`、`inspection_timeout`）不算看不到，也不歸零計時。
+- 準備中、待命、監控中、待確認、一般完成、人工停止完成都是可靠讀數，會歸零計時。準備中不會被當成看不到而去點 Dock。
+- 連續 30 秒看不到：點一次 Log Solution 的 Dock 圖示，滑鼠移到中性位置，等 5 秒後重新判讀。同一請求最多 3 次，仍看不到回 `log_solution_not_visible`。
+- Dock 上找不到圖示：立即回 `log_solution_not_found`，不算一次恢復。
+- 本輪已見監控中之後回到待命：立即回 `round_lost`。
 
 ### 5.5 `input`（僅 DFU）
 
-流程：前景化 DFU 視窗（點 DFU Dock 圖示）→ 勾選請求的通道、取消其餘 → 逐筆輸入 SN。**不點 OK、不送 Cmd+Shift+M**。開始監控與開測分別由 `monitor_start`、`start_test` 負責。
+流程：前景化 DFU 視窗（點 DFU Dock 圖示）→ 勾選請求的通道、取消其餘 → 逐筆輸入 SN。**不點 OK、不送 Cmd+Shift+M**。
 
 專屬請求欄位：
 
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `items` | array of object | 是 | 1 筆以上 |
-| `items[].slot` | number | 是 | 測試通道編號 1～N（N = 該設備設定的測試通道數），不可重複；與 Log Solution 通道／Slot 編號一致 |
+| `items[].slot` | number | 是 | 測試通道編號 1～N，不可重複 |
 | `items[].sn` | string | 是 | SN，1–64 字元；可含逗號、冒號 |
 
 `data`：
@@ -233,23 +258,37 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | --- | --- | --- |
 | `entered` | array of number | 實際完成輸入的位置 |
 
-Core 在 DFU 輸入視窗找出所有 checkbox，數量必須等於 N，依由上而下、由左至右排序為通道 1～N；數量不符回 `hid_failed`，不輸入任何 SN。
+是否允許輸入（2026-10-19 決定；一般完成與人工停止完成都屬 READY）：
 
-只有 Log Solution 在 `standby`，或 `complete` 且本輪結果已取用時才允許輸入；`monitoring`／`review` 時回 `log_solution_busy`，不輸入任何 SN。
+| Log 狀態 | 結果 |
+| --- | --- |
+| 待命 | 可以輸入 |
+| 一般完成或人工停止完成，且本輪已 `taken` 或已回過 `manual_verification_required` | 可以輸入下一輪 SN |
+| 一般完成或人工停止完成，但本輪尚未交付、也沒回過 `manual_verification_required` | `log_solution_busy`，不送 HID |
+| 監控中、準備中、待確認 | `log_solution_busy`，不送 HID |
+| 沒有影格或看不清楚 | `hid_failed`，不送 HID |
 
 ### 5.6 `monitor_start`（DFU、FCT、BT）
 
-無專屬請求欄位。上鎖。
+專屬請求欄位：
 
-流程（依序，任一步失敗即停止，未執行的步驟不送 HID）：
+| 欄位 | 型別 | 必填 | 說明 |
+| --- | --- | --- | --- |
+| `timeout_sec` | number | 是 | 等候監控中的秒數，1–300。缺少、布林或超出範圍回 `invalid_argument`，不送 HID |
 
-1. 讀取最新畫面。Log Solution 為 Monitoring 或 Review → `log_solution_busy`，不送 HID。
-2. 定位共用 Dock 圖示模板 `COMMON/COMMON_log_solution_dock_icon.png` 並點擊一次。模板缺失或 HID 錯誤 → `hid_failed`；圖示不在畫面上 → `log_solution_not_found`。
-3. 點擊後 3 秒內須讀到可靠的 Log Solution 畫面，否則 `log_solution_not_found`。讀到 Monitoring 或 Review → `log_solution_busy`，仍不送快捷鍵。
-4. 送出 Cmd+Shift+M。10 秒內該設備的判讀見 Monitoring → 成功；否則 `monitor_not_started`。
-5. 成功時該設備的輪次判讀已視為看過 Monitoring，之後的 `check` 會取得本輪結果。
+上鎖。收到合法的 `monitor_start` 即視為新一輪信號，清掉上一次交付簽章。等候預算是這次請求的 `timeout_sec`，不是固定 10 秒。
 
-Dock 點擊在 Log Solution 已關閉時會讓 macOS 重新開啟它；開啟後為 Standby，流程可繼續。
+流程（依序，任一步失敗即停止）：
+
+1. 沒有影格 → `hid_failed`。
+2. 已在監控中 → `log_solution_busy`，不送 HID，也不建立新的本輪開始請求。
+3. 待確認 → `log_solution_review`，不送 HID。
+4. 準備中 → 不點 Dock、不送快捷鍵，直接等監控中。這一張準備中就建立（或保留）該設備的本輪開始請求。
+5. 其餘（待命、一般完成、人工停止完成，或當時看不清楚）：點共用 Dock 圖示 `COMMON/COMMON_log_solution_dock_icon.png`。模板缺失或 HID 錯誤 → `hid_failed`；圖示不在畫面上 → `log_solution_not_found`。
+6. 點擊後 3 秒內須讀到可靠畫面，否則 `log_solution_not_found`。讀到監控中 → `log_solution_busy`；待確認 → `log_solution_review`；準備中則不送快捷鍵、改為等待。待命、一般完成、人工停止完成才送 Cmd+Shift+M，並建立本輪開始請求。
+7. 在 `timeout_sec` 內：準備中繼續等（並保留請求）；待確認立即 `log_solution_review`；看到監控中即成功。這一次呼叫中看到監控中，視為「已見本次監控就緒」。逾時回 `monitor_not_started`。
+
+`monitor_not_started` 不清除本輪開始請求。只有 `taken` 或 `manual_verification_required` 才清除。因此準備逾時之後，若畫面變成可交付結果，`check_finish` 回 `manual_verification_required`，不交付。
 
 `data`：
 
@@ -260,14 +299,13 @@ Dock 點擊在 Log Solution 已關閉時會讓 macOS 重新開啟它；開啟後
 
 ### 5.7 `start_test`（DFU、BT）
 
-無專屬請求欄位。上鎖。FCT 回 `unsupported_command`（FCT 於治具推入後自行開測）。
+無專屬請求欄位。上鎖。FCT 回 `unsupported_command`。
 
 流程：
 
-1. 讀取最新畫面判讀 Log Solution 標記。非 Monitoring、無法讀取或沒有影格 → `monitor_not_ready`，不送 HID。
-2. DFU：點 DFU Dock 圖示前景化 DFU 視窗，找到 DFU 視窗與 OK 按鈕後點一次 OK。
-   BT：點 BT Dock 圖示前景化 BT 視窗，找到 Start All 後點一次。
-3. 任一模板找不到或 HID 錯誤 → `hid_failed`。
+1. 讀取最新畫面。不是監控中（含準備中、待命、待確認、完成、看不清楚、沒有影格）→ `monitor_not_ready`，不送 HID。
+2. DFU：點 DFU Dock 圖示，找到視窗與 OK 後點一次。BT：點 BT Dock 圖示，找到 Start All 後點一次。
+3. 模板找不到或 HID 錯誤 → `hid_failed`。
 
 `data`：
 
@@ -277,12 +315,12 @@ Dock 點擊在 Log Solution 已關閉時會讓 macOS 重新開啟它；開啟後
 
 ### 5.8 `inspect`（僅供 Monitor UI）
 
-Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必填，0～3600），回覆格式相同（`data` 為同一結構）。
+欄位與共用 `data` 同 5.4。Monitor UI 手動檢查送這個指令，並把 `state` 顯示成中文（待命、準備中、監控就緒、待確認、一般完成、人工停止完成），`active` 顯示成「通道 N 測試中」或「通道 N 已有結果」。
 
-- 不上鎖：同一設備有 LabVIEW 上鎖指令執行中時仍可執行，不回 `device_busy`。
-- 唯讀：不改變本輪狀態，不消耗 LabVIEW 的結果，LabVIEW 之後的 `check` 仍可取得 `taken`。
-- 因為不經過本輪狀態，`inspect` 不會回 `already_taken`。完整畫面須連續兩次讀到相同結果才回 `taken`（`reason=reliable_complete`），僅代表「此刻畫面上的結果可靠」，不代表已交付給 LabVIEW。
-- LabVIEW 不得使用本指令；Core 不保證它與 `check` 的長輪詢結果一致。
+- 不上鎖，不回 `device_busy`。
+- 唯讀：不點 Dock、不消耗本輪、不套用本輪開始請求（因此不回 `monitor_not_ready`／`manual_verification_required`／`taken`）。
+- 兩張新鮮影格確認活動通道時回 `started`，否則依畫面回 `waiting`／`paused`／`unknown`。
+- LabVIEW 不得使用。
 
 ## 6. 錯誤碼
 
@@ -293,38 +331,37 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 | `unsupported_protocol_version` | error | `protocol_version` 不是 `1.0` | 修正程式 |
 | `missing_req_id` | error | 未帶 `req_id` 或為空 | 修正程式 |
 | `missing_command` | error | 未帶 `cmd` | 修正程式 |
-| `unknown_command` | error | `cmd` 不存在 | 修正程式 |
+| `unknown_command` | error | `cmd` 不存在（含已移除的 `check`、`button`） | 修正程式 |
 | `missing_device` | error | 需要設備的指令 `device` 為空 | 修正程式 |
 | `unknown_device` | error | `device` 不在設備清單 | 檢查設備 ID |
 | `unknown_field` | error | 帶了未定義欄位 | 修正程式 |
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
-| `invalid_argument` | error | 指令欄位值不合法（input 的 items 格式或 slot 超出範圍、snapshot 的 format／quality 不合法、timeout 超出範圍等） | 修正程式 |
-| `unsupported_command` | error | 站別不支援此指令（例如 FCT 的 `start_test`、DFU 以外的 `input`） | 修正程式 |
-| `log_solution_busy` | error | `input` 或 `monitor_start` 時 Log Solution 為 `monitoring` 或 `review`；`input` 另含 `complete` 但本輪未取用 | 先完成本輪 `check`／人工確認 |
-| `capacity_mismatch` | error | `check` 畫面結果格數與設定的測試通道數不同 | 檢查 Log Solution 設定，暫停 |
+| `invalid_argument` | error | 欄位值不合法。`check_start`／`check_finish`／`inspect` 的 `timeout_sec` 須為 0–3600；`monitor_start` 須為 1–300 | 修正程式 |
+| `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
+| `log_solution_busy` | error | `monitor_start` 時已在監控中；或 `input` 時為監控中／準備中／待確認，或完成（含人工停止完成）但本輪尚未交付也沒回過 `manual_verification_required` | 先完成本輪或等人工核對 |
+| `log_solution_review` | error | `monitor_start` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
+| `capacity_mismatch` | error | 可交付畫面的格數與設定通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM | 設備／網路異常，暫停 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
-| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格 | 設備異常，暫停 |
-| `log_solution_not_found` | error | `monitor_start`：Dock 上找不到 Log Solution 圖示，或點擊後 3 秒內找不到 Log Solution 視窗；未送快捷鍵。`check`：可見性恢復時 Dock 上找不到 Log Solution 圖示 | 環境異常，暫停，請人員開啟或前景化 Log Solution |
-| `monitor_not_started` | error | `monitor_start`：送出 Cmd+Shift+M 後 10 秒內未見 Monitoring | 設備／環境異常，暫停，不開測 |
-| `monitor_not_ready` | error | `start_test`：Log Solution 非 Monitoring、無法讀取或沒有影格；未送 HID | 先完成 `monitor_start` |
-| `log_solution_not_visible` | error | `check`：連續 30 秒看不到 Log Solution（含部分遮住），點 Dock 3 次仍看不到；`data.reason` 為最後一次判讀原因 | 環境異常，暫停，不得判產品 FAIL |
-| `manual_verification_required` | error | `check`：本輪未見 Monitoring 就出現人工停止完成畫面（0011），沒有同輪證據 | 不交付、不自動重測；暫停，請人員核對該批產品（Log Solution 1.2，#36 實作後） |
-| `round_lost` | error | `check`：本輪已見 Monitoring 後 Log Solution 回到 Standby（1.1 下人工停止會落入此處） | 本輪結果已無法取得，暫停，不得判產品 FAIL（見 5.4） |
-| `timeout` | timeout | `check` 長輪詢逾時 | 依流程決定是否再 `check` |
+| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
+| `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
+| `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
+| `monitor_not_ready` | error | `check_start`／`check_finish` 沒有本輪開始請求（含交付後簽章已變、又沒有新一輪信號）；或 `start_test` 時不是監控中 | 先完成本輪的 `monitor_start` |
+| `log_solution_not_visible` | error | `check_start`／`check_finish` 連續 30 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 暫停，不得判產品 FAIL |
+| `manual_verification_required` | error | 有本輪開始請求，但沒看到本次監控中，畫面卻已可交付（準備逾時、或快捷鍵後直接人工停止） | 不交付、不自動重測；暫停並請人員核對。此回覆清除本輪開始請求 |
+| `round_lost` | error | 本輪已見監控中之後 Log Solution 回到待命 | 本輪結果已無法取得，暫停 |
+| `timeout` | timeout | `check_start`／`check_finish`／`inspect` 長輪詢逾時 | 依 `data.state` 決定再查或交人工 |
 | `server_shutting_down` | error | Core 正在關閉 | 重連後重試 |
 | `internal_error` | error | Core 內部例外 | 記錄並通報 |
 
-`log_solution_not_found`、`monitor_not_started`、`monitor_not_ready`、`log_solution_not_visible`、`round_lost` 是設備、通訊或環境異常，不是產品結果。這些回覆一律 `status = "error"`，不會出現 `kind = "taken"`；LabVIEW 依 `error` 暫停，不得據此判產品 FAIL。`monitor_not_ready` 是流程順序錯誤，同樣未送出任何 HID。
-
-`button` 已移除，送出回 `unknown_command`。
+以上錯誤都不是產品結果，不得據此判產品 FAIL。
 
 ## 7. 連線中斷
 
-- LabVIEW 在長輪詢中斷線時，Core 取消該 `check` 並釋放設備鎖，不回覆。
-- 重連後重新送 `check`。結果重傳、ACK 與重啟恢復屬 1.1。
+- LabVIEW 在長輪詢中斷線時，Core 取消該請求並釋放設備鎖，不回覆。本輪開始請求留在 Core 存活期間，不因這次逾時或斷線清除。
+- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在請求仍在、且簽章未變時，重送 `check_finish` 得到 `already_taken`。
 
 ## 8. LabVIEW typedef 清單（建議）
 
@@ -334,7 +371,9 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 | `PingResp` | Envelope + `data{pong, core_version}` |
 | `StatusResp` | Envelope + `data{core_uptime_sec, devices[]}` |
 | `SnapshotResp` | Envelope + `data{width, height, format, image_base64}` |
-| `CheckResp` | Envelope + `data{kind, state, reason, capacity, results[]{slot, status}}` |
+| `CheckStartResp` | Envelope + `data{kind, state, reason, capacity, active[]{slot, evidence}, results[]{slot, status}}` |
+| `CheckFinishResp` | 與 `CheckStartResp` 相同；`active` 成功時為空陣列，且不會出現 `kind = "started"` |
+| `InspectResp` | 與 `CheckStartResp` 相同；不會出現 `taken`／`already_taken`。僅 Monitor UI |
 | `InputResp` | Envelope + `data{entered[]}` |
 | `MonitorStartResp` | Envelope + `data{state, capacity}` |
 | `StartTestResp` | Envelope + `data{action}` |
@@ -381,8 +420,6 @@ Monitor UI 的手動檢查使用。欄位與 `check` 相同（`timeout_sec` 必�
 
 ### 9.4 `input`（DFU）
 
-SN 可以含逗號、冒號，JSON 字串會自動處理，不需要跳脫。
-
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0004","device":"DFU-01","cmd":"input",
  "items":[{"slot":1,"sn":"F5K2-001"},{"slot":3,"sn":"F5K2:003,B"}]}
@@ -393,22 +430,29 @@ SN 可以含逗號、冒號，JSON 字串會自動處理，不需要跳脫。
  "data":{"entered":[1,3]}}
 ```
 
-Log Solution 仍在監控中時（上一輪尚未結束）：
+Log Solution 仍在準備中時：
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0005","device":"DFU-01","cmd":"input",
- "status":"error","error":"log_solution_busy","message":"Log Solution state is monitoring","elapsed_sec":0.3,
+ "status":"error","error":"log_solution_busy","message":"Log Solution state is preparing","elapsed_sec":0.3,
  "data":{"entered":[]}}
 ```
 
-### 9.5 `monitor_start`（DFU）
+### 9.5 `monitor_start`
 
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0006","device":"DFU-01","cmd":"monitor_start"}
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0006","device":"DFU-01","cmd":"monitor_start","timeout_sec":30}
 ```
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0006","device":"DFU-01","cmd":"monitor_start",
  "status":"ok","error":"","message":"","elapsed_sec":4.2,
  "data":{"state":"monitoring","capacity":4}}
+```
+
+開始前已是待確認：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0013","device":"DFU-01","cmd":"monitor_start",
+ "status":"error","error":"log_solution_review","message":"Log Solution 為待確認（開始前），未繼續開始監控","elapsed_sec":0.2,
+ "data":{"state":"","capacity":0}}
 ```
 
 ### 9.6 `start_test`（BT）
@@ -422,29 +466,51 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
  "data":{"action":"start_all"}}
 ```
 
-### 9.7 `check`
+### 9.7 `check_start` 與 `check_finish`
 
-只看一眼（`timeout_sec = 0`），目前監控中：
+`check_start` 確認通道已開始（`check_finish` 不回這個 `kind`，`active` 為 `[]`）：
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check","timeout_sec":0}
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check_start","timeout_sec":0}
 ```
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check",
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check_start",
  "status":"ok","error":"","message":"","elapsed_sec":0.2,
- "data":{"kind":"waiting","state":"monitoring","reason":"monitoring","capacity":4,"results":[]}}
+ "data":{"kind":"started","state":"monitoring","reason":"activity_confirmed","capacity":4,
+  "active":[{"slot":1,"evidence":"testing"},{"slot":2,"evidence":"result"}],"results":[]}}
 ```
 
-長輪詢等到待確認，立即回：
+`check_finish` 第一次交付：
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0008","device":"DFU-01","cmd":"check","timeout_sec":600}
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0014","device":"DFU-01","cmd":"check_finish","timeout_sec":600}
 ```
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0008","device":"DFU-01","cmd":"check",
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0014","device":"DFU-01","cmd":"check_finish",
+ "status":"ok","error":"","message":"","elapsed_sec":312.4,
+ "data":{"kind":"taken","state":"complete","reason":"reliable_complete","capacity":4,"active":[],
+  "results":[{"slot":1,"status":"PASS"},{"slot":2,"status":"FAIL"},{"slot":3,"status":"NOTEST"},{"slot":4,"status":"PASS"}]}}
+```
+
+同一簽章再查，附相同結果：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0015","device":"DFU-01","cmd":"check_finish",
+ "status":"ok","error":"","message":"","elapsed_sec":0.2,
+ "data":{"kind":"already_taken","state":"complete","reason":"round_already_taken","capacity":4,"active":[],
+  "results":[{"slot":1,"status":"PASS"},{"slot":2,"status":"FAIL"},{"slot":3,"status":"NOTEST"},{"slot":4,"status":"PASS"}]}}
+```
+
+待確認立即回：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0008","device":"DFU-01","cmd":"check_finish",
  "status":"ok","error":"","message":"","elapsed_sec":145.3,
- "data":{"kind":"paused","state":"review","reason":"confirmation_required","capacity":4,"results":[]}}
+ "data":{"kind":"paused","state":"review","reason":"confirmation_required","capacity":4,"active":[],"results":[]}}
 ```
 
-取得結果與逾時範例見 5.4。
+沒有本輪開始請求：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0016","device":"DFU-01","cmd":"check_finish",
+ "status":"error","error":"monitor_not_ready","message":"no round-start request; result was not taken","elapsed_sec":0.1,
+ "data":{"kind":"unknown","state":"complete","reason":"reliable_complete","capacity":4,"active":[],"results":[]}}
+```
 
 ### 9.8 常見錯誤
 
@@ -455,46 +521,49 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
  "data":{"entered":[]}}
 ```
 
-設備 ID 大小寫錯誤：
+設備 ID 大小寫錯誤（`check_finish` 的錯誤 `data` 仍含 `active`）：
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0010","device":"dfu-01","cmd":"check",
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0010","device":"dfu-01","cmd":"check_finish",
  "status":"error","error":"unknown_device","message":"device 'dfu-01' is not configured","elapsed_sec":0.0,
- "data":{"kind":"","state":"","reason":"","capacity":0,"results":[]}}
+ "data":{"kind":"","state":"","reason":"","capacity":0,"active":[],"results":[]}}
 ```
 
 帶了 `kvm_ip`：
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0011","device":"DFU-01","cmd":"check",
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0011","device":"DFU-01","cmd":"check_finish",
  "status":"error","error":"forbidden_field","message":"field 'kvm_ip' is not allowed","elapsed_sec":0.0,
- "data":{"kind":"","state":"","reason":"","capacity":0,"results":[]}}
+ "data":{"kind":"","state":"","reason":"","capacity":0,"active":[],"results":[]}}
+```
+
+已移除的 `check`：
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0017","device":"DFU-01","cmd":"check","timeout_sec":0}
+```
+```json
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0017","device":"DFU-01","cmd":"check",
+ "status":"error","error":"unknown_command","message":"unknown command 'check'","elapsed_sec":0.0,
+ "data":{}}
 ```
 
 ## 10. 實作對照與待辦
 
-第 10 節原為 1.0 立案時的落差表。下表為目前 Core Service 的狀態。
-
 | 項目 | 1.0 規定 | 目前實作 |
 | --- | --- | --- |
-| 設備身份 | 只帶設備 ID；KVM IP 與站別由設備清單決定 | 已實作。`kvm_ip`、`station` 回 `forbidden_field` |
-| `req_id` | 必填，不自動補 | 已實作。缺少回 `missing_req_id` |
-| `protocol_version`、`unknown_field` | 必檢 | 已實作 |
-| 回覆欄位 | 固定 envelope＋固定 `data`，不出現 `null` | 已實作 |
-| `input`、`monitor_start`、`start_test` | 正式指令；`button` 移除 | 已實作（DFU `input` 只勾選與填 SN；`monitor_start` 三站；`start_test` 取代 `button`） |
-| 三站判讀 | FCT／BT 的 `check` 與 DFU 同一顯示契約判讀 | 已實作；模板判讀結果與 `testing`／`pass`／`fail` 模板已淘汰 |
-| 可見性與遺失 | 看不到 Log Solution（含部分遮住）點 Dock 恢復；Standby 回 `round_lost` | 已實作（30 秒、5 秒、最多 3 次；排除法判定看不到；找不到 Dock 圖示回 `log_solution_not_found`） |
-| 共用 Dock 模板 | `COMMON/COMMON_log_solution_dock_icon.png` | 已實作；創建 Pattern 不再建立結果模板 |
-| `check` 長輪詢 | paused 立即回；無總結果欄位 | 已實作；`timeout_sec` 必填 |
-| `check` 格數核對 | 格數 ≠ 通道數回 `capacity_mismatch` | 已實作 |
-| 長輪詢間隔與判讀 | 0.5 秒；判讀不在事件迴圈，單張上限 | 已實作；單張上限預設 200 ms，超時記 `unknown` |
-| DFU 輸入定位 | 只用 checkbox 模板，自動排序 | 已實作；錨點模板與 `device_profiles.json` 已淘汰 |
-| `stations`／`status` | 新 `status`，內部狀態改名 `core_status` | 已實作；`stations` 併入 `core_status` |
-| Monitor UI 手動檢查 | 唯讀、不上鎖 | 以 `inspect` 實作（見 5.8），僅供 Monitor UI |
+| 設備身份、`req_id`、`protocol_version`、固定回覆欄位 | 第 2、3 節 | 已實作 |
+| `check` 移除，改 `check_start`／`check_finish` | 共用 `data`，含 `active`；協定維持 `1.0` | 已實作。`check` 回 `unknown_command` |
+| 六種整輪圖樣 | 含準備中 0101、人工停止完成 0011 | 已實作 |
+| `monitor_start` | 必填 `timeout_sec` 1–300；準備中等待；待確認回 `log_solution_review`；準備中或快捷鍵建立本輪開始請求 | 已實作 |
+| 本輪開始請求 | 無請求回 `monitor_not_ready`；有請求未見監控中的可交付畫面回 `manual_verification_required`；`taken` 或該錯誤才清除 | 已實作（含 2026-10-19 三點補充） |
+| `check_start` | 兩影格交集、`started`、完成畫面可直接 `taken`、重複不消耗 | 已實作。`reason` 為 `activity_confirmed` |
+| 可見性 | 30 秒、5 秒、最多 3 次；準備中歸零計時；`inspect` 不點 Dock | 已實作 |
+| DFU `input` | 待命可輸入；完成與人工停止完成在本輪已交付或已人工核對後可輸入 | 已實作 |
+| Monitor UI | `inspect` 顯示中文狀態與已開始通道 | 已實作 |
 
 ### 仍待辦
 
-- **Log Solution 1.2 定位方塊移動（等 Log Solution 定座標）**：左定位方塊將移到色帶最左側上方（移除「KVM RESULT」字樣），使左右定位方塊涵蓋整條色帶。橋接過渡期同時支援 1.1 與新位置（以兩定位方塊距離判斷），見 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` C6。
-- **人工停止的第五種圖樣（程式待實作，#36）**：Log Solution 1.2 人工停止改顯示 MANUAL_STOP_COMPLETE（0011，2026-10-19 確認）。橋接需新增此狀態：全部格位終局且已見本次 Monitoring 才交付並回報人工停止；未見本次 Monitoring 則回「需人工核對」、不交付。協定已定案（2026-10-19）：交付時 `state = "manual_stop_complete"`，未見本次 Monitoring 回 `manual_verification_required`；程式待 #36 實作。 HANDOFF 9.5 已確認把 `check` 拆成 `check_start`／`check_finish`，並新增 PREPARING（0101）與啟動失敗 REVIEW；#36 暫停，待協定修訂後重寫。
-- **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
-- **FCT 推入前訊號的現場時序**：訊號到首次寫檔的實際時間，決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
-- **Log Solution 1.2**：人工停止第五種圖樣、視窗前景時機、左定位點移動等修改，依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 與 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 由 Log Solution 開發者開票。橋接須先支援 0011 與新幾何才能部署 1.2；1.1 下人工停止的輪次回 `round_lost`。
+- **LabVIEW 端**：typedef 與 VI 改版屬 #13，需人工在 LabVIEW 完成。本文件與 `docs/LABVIEW_HANDOFF.md` 是依據。
+- **Log Solution 1.2 左定位方塊移動（#32）**：幾何仍為契約 1.1。新定位點座標未定，橋接未改幾何。
+- **Log Solution 應用程式本身**：圖樣、準備中、視窗前景、FCT 期限由 Log Solution 專案實作。橋接只讀畫面。
+- **FCT 推入前訊號的現場時序**：決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
 - **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。
+- **協定 1.1**：輪次 UUID、ACK、重啟後重傳。不在本次範圍。

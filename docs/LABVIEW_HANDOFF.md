@@ -3,7 +3,7 @@
 日期：2026-10-19（Asia/Taipei）
 對象：LabVIEW 測試流程控制者的設計與實作人員
 依據：spec #40（橋接協定修訂）、`docs/PROTOCOL.md`（協定 1.0）、`docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`
-狀態：**協定已定案，橋接程式尚未實作完成（spec #40）**。欄位型別、JSON 範例、typedef 以 `docs/PROTOCOL.md` 為準；本文件只說明呼叫順序與每種回覆的處置。
+狀態：**已實作**（spec #40，橋接 #41～#47，2026-10-19）。欄位型別、JSON 範例、typedef 以 `docs/PROTOCOL.md` 為準；本文件只說明呼叫順序與每種回覆的處置。三點補充（準備中即建立本輪開始請求、判讀順序把相同簽章的重看排在請求檢查之前、人工停止完成與一般完成同屬 READY）是使用者 2026-10-19 的決定，規則見 PROTOCOL 第 5.4～5.6 節。
 
 ---
 
@@ -34,12 +34,12 @@
 
 | `kind` | 意思 | 出現在 | `results` | LabVIEW 該做什麼 |
 | --- | --- | --- | --- | --- |
-| `started` | 已確認有通道開始測試；`active` 列出通道與證據 | `check_start` | 空 | 記錄已開始的通道（可顯示在人機畫面），接著送 `check_finish` |
+| `started` | 已確認有通道開始測試；`active` 列出通道與證據。`reason` 為 `activity_confirmed` | `check_start`、`inspect`（Monitor UI） | 空 | 記錄已開始的通道（可顯示在人機畫面），接著送 `check_finish`。`inspect` 只顯示 |
 | `taken` | 本輪完整結果，**第一次**交付 | `check_start`、`check_finish` | 完整 | **依逐格結果做產品處置**：PASS 良品；FAIL／NOTEST／TIMEOUT／STOPPED 不良品交人工。`state = "manual_stop_complete"` 時標記為人工停止、交作業員重工 |
 | `already_taken` | 同一輪結果**再次**交付（重看或通訊中斷後重取），結果與第一次相同 | `check_start`、`check_finish` | 完整（與第一次相同） | 只顯示、核對；**不再做設備動作** |
-| `waiting` | 還沒有可交付結果：準備中、監控中但尚未開始、測試中 | 全部 | 空 | 繼續等或再查；`state` 可顯示目前狀態 |
-| `paused` | Log 異常待確認（衝突、警報、未偵測到測試開始等） | 全部 | 空 | 報警、暫停後續設備動作，等人員在 Log Solution 處理完再查 |
-| `unknown` | 畫面看不清楚，判讀不可靠 | 全部 | 空 | 視為設備／通訊異常，**不得判產品 FAIL** |
+| `waiting` | 還沒有可交付結果：準備中、監控中但尚未開始、測試中 | `check_start`、`check_finish`、`inspect` | 空 | 繼續等或再查；`state` 可顯示目前狀態 |
+| `paused` | Log 異常待確認（衝突、警報、未偵測到測試開始等） | `check_start`、`check_finish`、`inspect` | 空 | 報警、暫停後續設備動作，等人員在 Log Solution 處理完再查 |
+| `unknown` | 畫面看不清楚，判讀不可靠 | `check_start`、`check_finish`、`inspect` | 空 | 視為設備／通訊異常，**不得判產品 FAIL** |
 
 `active` 的 `evidence`：
 
@@ -47,17 +47,19 @@
 - `result`：沒看到測試中，但已看到該通道的有效測試結果（PASS／FAIL 等）。
 - NOTEST、TIMEOUT、STOPPED、WAITING 都**不算**已開始。
 
-`state` 的值：`standby`（待命）、`preparing`（準備中，不能開測）、`monitoring`（監控就緒）、`review`（異常待確認）、`complete`（一般完成）、`manual_stop_complete`（人工停止完成）、`""`（看不清楚）。
+`state` 的值：`standby`（待命）、`preparing`（準備中，不能開測）、`monitoring`（監控就緒）、`review`（待確認）、`complete`（一般完成）、`manual_stop_complete`（人工停止完成）、`""`（看不清楚）。
+
+`check_start`／`check_finish` 先看待確認（`paused`），再看是否與上一次交付簽章相同（`already_taken`，附相同結果），再看畫面是否清楚，最後才檢查本輪開始請求。沒有請求回 `monitor_not_ready`。交付後簽章變了、又沒看到準備中或監控中、也沒有新的 `monitor_start`，同樣回 `monitor_not_ready`。`inspect` 不套用這條請求規則，也不回 `taken`。
 
 ## 4. 錯誤碼與處置（`status = "error"`）
 
 | `error` | 何時 | LabVIEW 處置 |
 | --- | --- | --- |
 | `manual_verification_required` | 本輪送過 `monitor_start`，但橋接一直沒看到本次監控就緒，畫面卻出現可交付結果（例如還沒就緒就被人工停止、或準備逾時後人員確認警報） | **不交付、不做設備動作、不自動重測**；暫停並請人員核對。核對後由人員決定重工，下一輪重新 `monitor_start` |
-| `monitor_not_ready` | `check_start`／`check_finish` 前本輪沒送過 `monitor_start`；或 `start_test` 時 Log 不是監控就緒（例如準備中） | 流程順序錯誤：先完成 `monitor_start` |
+| `monitor_not_ready` | `check_start`／`check_finish` 沒有本輪開始請求（沒送過 `monitor_start`，或交付後簽章已變且沒有新一輪信號）；或 `start_test` 時 Log 不是監控就緒（例如準備中） | 流程順序錯誤：先完成 `monitor_start` |
 | `monitor_not_started` | `monitor_start` 在 `timeout_sec` 內沒看到監控就緒 | 暫停並通知人員；可依現場判斷再送一次 `monitor_start`（Log 仍在準備中時不會重複觸發） |
 | `log_solution_review` | `monitor_start` 時 Log 異常待確認（例如啟動失敗） | 報警、暫停；人員在 Log Solution 排除並復位後才能再 `monitor_start` |
-| `log_solution_busy` | Log 正在監控（`monitor_start`）；或 `input` 時 Log 監控中／待確認／準備中 | 上一輪尚未結束，先完成本輪 |
+| `log_solution_busy` | `monitor_start` 時 Log 已在監控中；或 `input` 時為監控中／待確認／準備中，或一般完成／人工停止完成但本輪尚未交付、也沒回過 `manual_verification_required` | 上一輪尚未結束，先完成本輪或等人工核對。待命，以及完成類狀態在已交付或已人工核對後，可以輸入下一輪 SN |
 | `log_solution_not_found` | Log Solution 沒開，或 Dock 上找不到它 | 嚴重異常，停線檢查 |
 | `log_solution_not_visible` | Log Solution 被遮住，自動拉回 3 次仍看不到 | 暫停並請人員把 Log Solution 視窗移出來 |
 | `round_lost` | 本輪已監控就緒後，Log Solution 回到待命（例如當掉重開） | 本輪結果已無法取得，暫停並交人工 |

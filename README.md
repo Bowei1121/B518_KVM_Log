@@ -20,7 +20,7 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 LabVIEW 與 Core 之間的協定為 TCP JSON 1.0：每行一筆 JSON、以 `req_id` 配對回覆、只帶設備 ID。例如：
 
 ```json
-{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check","timeout_sec":600}
+{"protocol_version":"1.0","req_id":"6f1d0c2e-0007","device":"DFU-01","cmd":"check_finish","timeout_sec":600}
 ```
 
 完整欄位、錯誤碼與範例見 [TCP JSON 介面規格 1.0](docs/PROTOCOL.md)。
@@ -42,17 +42,17 @@ LabVIEW 與 Core 之間的協定為 TCP JSON 1.0：每行一筆 JSON、以 `req_
 - DFU：`window`、`input`、`button`（OK）、`checkbox_checked`、`checkbox_unchecked`、`dock_icon`。checkbox 只需兩種狀態模板，通道數由設備清單決定，不再需要每通道的錨點模板。
 - BT：`window`、`start_all`、`dock_icon`。
 - FCT：`window`、`dock_icon`。目前 TCP 流程不使用，保留於模板目錄。
-- COMMON：`log_solution_dock_icon`。Log Solution 的 Dock 圖示，`monitor_start` 與 `check` 的可見性恢復共用。
+- COMMON：`log_solution_dock_icon`。Log Solution 的 Dock 圖示，`monitor_start` 與 `check_start`／`check_finish` 的可見性恢復共用。
 
 `testing`、`pass`、`fail` 結果模板已淘汰，結果判讀全部來自 Log Solution 的顯示契約。
 
 各站支援的 TCP 指令：
 
-- DFU：`monitor_start`、`input`（`items[{slot, sn}]`，通道 1..N，依 Log Solution 狀態拒絕忙碌）、`start_test`（點 OK）與 `check`。
-- BT：`monitor_start`、`start_test`（點 Start All）與 `check`。
-- FCT：`monitor_start` 與 `check`。`input`、`start_test` 不支援，回 `unsupported_command`。
+- DFU：`input` → `monitor_start` → `start_test`（點 OK）→ `check_start`（可省略）→ `check_finish`。`input` 的 `items` 為 `[{slot, sn}]`，通道 1..N。
+- BT：`monitor_start` → `start_test`（點 Start All）→ `check_start`（可省略）→ `check_finish`。
+- FCT：`monitor_start` → `check_start`（可省略）→ `check_finish`。`input`、`start_test` 不支援，回 `unsupported_command`。
 
-三站的 `check` 都讀取 Log Solution 顯示契約 1.1 的畫面，不再依賴模板。`button` 已移除，改由 `start_test` 開始測試。
+三站的 `check_start`／`check_finish` 都讀取 Log Solution 顯示契約的畫面，不再依賴模板。`check` 與 `button` 已移除，送出回 `unknown_command`。`monitor_start` 必填 `timeout_sec`（1–300）。交接見 [LabVIEW 設計者交接](docs/LABVIEW_HANDOFF.md)。
 
 ## 匹配診斷
 
@@ -84,4 +84,4 @@ git clone --recurse-submodules <repo-url>
 
 ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工廠內網可用性未定，目前同樣按人工配對更新準備。自動更新列為後續可能性。
 
-顯示契約 1.1 另以 header 的兩格排數標記明確區分一排／兩排。新版 `check` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。
+顯示契約 1.1 另以 header 的兩格排數標記明確區分一排／兩排。`check_finish` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。
