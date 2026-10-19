@@ -3,8 +3,8 @@
 Verifies:
 - Consecutive requests targeting the same KVM IP reuse the active connection without re-signaling.
 - Connections to different KVM IPs are managed independently in the pool.
-- Background heartbeat periodically pulls frames from active connections to prevent timeouts.
-- Detected connection failures or disconnected states during heartbeat cleanly evict the connection.
+- Background heartbeat periodically asks active connections whether they are still healthy.
+- A dead connection (video track ended, or peer connection failed/closed) is evicted by the heartbeat.
 - Connections idle for longer than the idle timeout (default 10 min) are cleanly evicted and closed.
 - Subsequent requests to an evicted KVM transparently re-establish a fresh connection.
 - Concurrent connection requests to the same IP are deduplicated.
@@ -30,46 +30,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
-from fake_kvm import FakeKVM, make_snapshot
+from fake_kvm import FakeKVM
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
 class MockJetKVMClient(FakeKVM):
-    """Mock WebRTC KVM client simulating JetKVMClient interface."""
+    """Mock KVM client: the shared fake session with a picture and connect counters."""
 
     def __init__(self, host: str, password: str = "", should_fail_connect: bool = False) -> None:
-        super().__init__()
+        super().__init__(frame="dummy_frame")
         self.host = host
         self.password = password
         self.should_fail_connect = should_fail_connect
         self.connected = False
         self.connect_calls = 0
         self.close_calls = 0
-        self.latest_frame_calls = 0
-        self.frame_sequence = 0
-        self.latest_frame_exc: Optional[Exception] = None
 
     async def connect(self) -> None:
         self.connect_calls += 1
         if self.should_fail_connect:
             raise ConnectionError(f"Simulated connection failure to {self.host}")
         await asyncio.sleep(0.01)
-        self.connected = True
+        await super().connect()
 
     async def close(self) -> None:
         self.close_calls += 1
-        self.connected = False
-
-    def latest_frame(self):
-        self.latest_frame_calls += 1
-        if self.latest_frame_exc is not None:
-            raise self.latest_frame_exc
-        if not self.connected:
-            return None
-        self.frame_sequence += 1
-        return make_snapshot("dummy_frame", sequence=self.frame_sequence, received_monotonic=time.monotonic(),
-                             stream_id="mock_stream", pts=1000.0 + self.frame_sequence)
+        await super().close()
 
 
 class MockClientFactory:
@@ -167,22 +154,21 @@ def test_multiple_distinct_kvm_ips() -> None:
     asyncio.run(_test())
 
 
-def test_background_heartbeat_pulls_frames() -> None:
-    """Heartbeat pulls frames from all open connections and updates stats."""
+def test_background_heartbeat_checks_health() -> None:
+    """Heartbeat counts healthy connections and updates stats; the background worker keeps running it."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory, heartbeat_interval=0.05)
 
         client = await pool.get_connection("192.168.1.10")
-        assert client.latest_frame_calls == 0
 
-        # Perform single heartbeat pass
         count = await pool.perform_heartbeat()
         assert count == 1
-        assert client.latest_frame_calls == 1
+        assert client.close_calls == 0
 
         info = pool.get_connection_info("192.168.1.10")
         assert info is not None
+        assert info["healthy"] is True
         assert info["heartbeat_count"] == 1
         assert info["last_heartbeat_at"] > 0
 
@@ -193,14 +179,14 @@ def test_background_heartbeat_pulls_frames() -> None:
         await pool.stop()
         assert pool.is_running is False
 
-        assert client.latest_frame_calls >= 2
+        assert pool.get_connection_info("192.168.1.10")["heartbeat_count"] >= 2
         await pool.close_all()
 
     asyncio.run(_test())
 
 
 def test_heartbeat_detects_disconnect_and_evicts() -> None:
-    """Heartbeat detects broken or errored connections and cleanly evicts them."""
+    """Heartbeat detects a dead session (video track ended) and cleanly evicts it."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory)
@@ -208,8 +194,7 @@ def test_heartbeat_detects_disconnect_and_evicts() -> None:
         client = await pool.get_connection("192.168.1.10")
         assert pool.active_count() == 1
 
-        # Simulate client error during frame pull
-        client.latest_frame_exc = ConnectionResetError("Remote KVM closed connection")
+        client.end_track()
 
         count = await pool.perform_heartbeat()
         assert count == 0
@@ -217,6 +202,30 @@ def test_heartbeat_detects_disconnect_and_evicts() -> None:
         assert pool.active_count() == 0
         assert pool.get_active_ips() == []
         assert client.close_calls >= 1
+
+        await pool.close_all()
+
+    asyncio.run(_test())
+
+
+@pytest.mark.parametrize("state, healthy", [
+    ("connected", True),
+    ("disconnected", True),   # transient ICE state: not a death signal
+    ("failed", False),
+    ("closed", False),
+])
+def test_heartbeat_evicts_on_peer_state_death_signals_only(state: str, healthy: bool) -> None:
+    """Only peer connection failed/closed evict; a transient disconnected state keeps the connection."""
+    async def _test() -> None:
+        factory = MockClientFactory()
+        pool = KVMConnectionPool(client_factory=factory)
+
+        client = await pool.get_connection("192.168.1.10")
+        client.set_peer_state(state)
+
+        assert await pool.perform_heartbeat() == (1 if healthy else 0)
+        assert pool.active_count() == (1 if healthy else 0)
+        assert client.close_calls == (0 if healthy else 1)
 
         await pool.close_all()
 
@@ -649,58 +658,14 @@ def test_tcp_command_releases_lease_when_client_disconnects() -> None:
         assert client.close_calls == 0
 
 
-def test_recovered_heartbeat_keeps_leased_connection_on_release() -> None:
-    """A heartbeat that failed during a command and then recovered does not evict the connection on release."""
-    async def _test() -> None:
-        factory = MockClientFactory()
-        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
-
-        client = await pool.acquire_connection("192.168.1.10")
-        client.latest_frame_exc = RuntimeError("frame pull broke")
-        assert await pool.perform_heartbeat() == 0
-
-        client.latest_frame_exc = None
-        assert await pool.perform_heartbeat() == 1
-
-        await pool.release_connection("192.168.1.10")
-        assert client.close_calls == 0
-        assert pool.active_count() == 1
-
-        await pool.close_all()
-
-    asyncio.run(_test())
-
-
-def test_recovered_heartbeat_hands_leased_connection_to_new_request() -> None:
-    """Once the heartbeat recovers, a new request reuses the leased connection instead of being refused."""
-    async def _test() -> None:
-        factory = MockClientFactory()
-        pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
-
-        client = await pool.acquire_connection("192.168.1.10")
-        client.latest_frame_exc = RuntimeError("frame pull broke")
-        assert await pool.perform_heartbeat() == 0
-        client.latest_frame_exc = None
-        assert await pool.perform_heartbeat() == 1
-
-        assert await pool.acquire_connection("192.168.1.10") is client
-        assert client.connect_calls == 1
-
-        await pool.release_connection("192.168.1.10")
-        await pool.release_connection("192.168.1.10")
-        await pool.close_all()
-
-    asyncio.run(_test())
-
-
-def test_failed_heartbeat_on_leased_connection_is_not_given_to_new_request() -> None:
+def test_unhealthy_leased_connection_is_not_given_to_new_request() -> None:
     """While a failed-heartbeat connection is leased, new requests are refused and no replacement is opened."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
 
         client = await pool.acquire_connection("192.168.1.10")
-        client.latest_frame_exc = RuntimeError("frame pull broke")
+        client.end_track()
         assert await pool.perform_heartbeat() == 0
 
         with pytest.raises(KVMUnavailableError):
@@ -717,14 +682,14 @@ def test_failed_heartbeat_on_leased_connection_is_not_given_to_new_request() -> 
     asyncio.run(_test())
 
 
-def test_failed_heartbeat_on_leased_connection_is_evicted_on_release() -> None:
+def test_unhealthy_leased_connection_is_evicted_on_release() -> None:
     """A heartbeat failure during a command defers eviction; the release applies it."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
 
         client = await pool.acquire_connection("192.168.1.10")
-        client.latest_frame_exc = RuntimeError("frame pull broke")
+        client.end_track()
         assert await pool.perform_heartbeat() == 0
 
         assert client.close_calls == 0

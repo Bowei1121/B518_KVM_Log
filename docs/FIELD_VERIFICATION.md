@@ -22,11 +22,11 @@
 
 | # | 步驟 | 預期結果 | 驗證日期 | 結果 |
 | --- | --- | --- | --- | --- |
-| K1 | 閒置時拔掉該 JetKVM 網路線，等 10 秒後插回；再送 `snapshot` | 拔線後下一次心跳就淘汰連線（Core log 有淘汰紀錄）；插回後 `snapshot` 自動重連成功 | | |
-| K2 | `check_finish`（`timeout_sec` 120）長輪詢中拔網路線 | 不必等凍結門檻，立即回 `kvm_connect_failed` | | |
+| K1 | 閒置時拔掉該 JetKVM 網路線，等 10 秒後插回；再送 `snapshot` | 拔線後 Core log 出現 `peer connection failed`／`影像軌道結束` 任一，且之後心跳淘汰連線（淘汰紀錄）。若拔線後 WebRTC 始終不轉 `failed`、軌道也不結束，記為**未偵測**並回報（推論：ICE 逾時的時間需實測）；插回後 `snapshot` 自動重連成功 | | |
+| K2 | `check_finish`（`timeout_sec` 120）長輪詢中拔網路線 | 偵測到 K1 的死亡訊號後立即回 `kvm_connect_failed`，不等 `frame_frozen`；回覆時間記錄於結果欄 | | |
 | K3 | K2 之後插回網路線，重新 `monitor_start` → 開測 → `check_finish` | 新一輪正常 `taken`，不需要重啟 Core | | |
 | K4 | 閒置時讓 JetKVM 重開機 | 連線被淘汰；JetKVM 開機完成後下一個指令自動重連成功 | | |
-| K5 | 測試進行中讓 JetKVM 重開機，開機後結果畫面已出現時送 `check_finish` | 回 `manual_verification_required`（斷線期間無法確認同輪） | | |
+| K5 | 測試進行中讓 JetKVM 重開機；進行中的 `check_finish` 回 `kvm_connect_failed`，開機完成後再送 `check_finish`，且結果畫面已出現 | 重連後的那次回 `manual_verification_required`（斷線期間無法確認同輪） | | |
 | K6 | 測試機畫面長時間靜止（例如 10 分鐘無變化）時送 `check_finish` | 不被誤判為斷線，不觸發重連 | | |
 
 ## KVM 重連後同輪重問（#56）

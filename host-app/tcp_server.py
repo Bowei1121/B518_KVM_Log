@@ -662,6 +662,13 @@ class TcpJsonServer:
                 return {"status": "cancelled", "error": "client_disconnected"}
             if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
                 return {"status": "error", "error": "server_shutting_down"}
+            # KVM died mid-command (track ended or peer failed): report now, without waiting for Freeze Guard.
+            if not kvm.is_healthy():
+                return {
+                    "status": "error",
+                    "error": "kvm_connect_failed",
+                    "message": f"KVM '{req.get('kvm_ip')}' connection lost during the command",
+                }
 
             # Frame Freeze Guard: the picture's timestamps must keep advancing.
             is_live, freeze_err = await self.freeze_guard.verify_liveness(

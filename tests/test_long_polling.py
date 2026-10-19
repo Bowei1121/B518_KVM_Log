@@ -182,6 +182,28 @@ def test_frozen_picture_aborts_long_poll_immediately(rig):
     assert time.monotonic() - started < 5.0
 
 
+@pytest.mark.parametrize("death", ["end_track", "peer_failed"])
+def test_kvm_death_mid_command_returns_kvm_connect_failed_without_freeze_wait(rig, death):
+    """The picture keeps moving, so only the connection's own death signal can end the poll early."""
+    _arm(rig)
+    th, out = _background_check(rig, DEVICE, "req-dead", 30)
+    _settle(0.3)
+    started = time.monotonic()
+    if death == "end_track":
+        rig.kvm().end_track()
+    else:
+        rig.kvm().set_peer_state("failed")
+    th.join(timeout=10)
+
+    assert out["resp"]["status"] == "error"
+    assert out["resp"]["error"] == "kvm_connect_failed"
+    assert time.monotonic() - started < 5.0
+
+    # The dead connection was evicted on release; the next command reconnects instead of failing.
+    again = _check_once(rig, DEVICE, "req-again", 0)
+    assert again["error"] != "kvm_connect_failed"
+
+
 def test_disconnect_during_long_poll_releases_the_device_lock(rig):
     _arm(rig)
     sock = _open(rig)

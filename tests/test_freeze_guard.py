@@ -94,12 +94,6 @@ class MockKVMClient(FakeKVM):
         """Explicitly freeze stream (timestamps remain static)."""
         pass  # PTS does not change
 
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
-
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
     payload = json.dumps(wire(data)) + "\n"

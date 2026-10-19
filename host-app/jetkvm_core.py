@@ -5,6 +5,7 @@ JetKVM 可重用連線模組
 - JetKVMClient(host, password): 建立並保持 WebRTC 連線 (視訊 + rpc 控制)
     .connect() / .close() (coroutine)
     .latest_frame() -> FrameSnapshot (最新 BGR 影格的副本與新鮮度; 尚無影格時 None)
+    .is_healthy() -> bool (影像軌道結束或 peer connection failed/closed 時為 False)
     .size   -> (W, H)
     .call(method, params)  -> 送 JSON-RPC (鍵鼠)
     .click(px, py) / .type_text(text)  (coroutine)
@@ -16,6 +17,7 @@ JetKVM 可重用連線模組
 import asyncio
 import base64
 import json
+import logging
 import threading
 import time
 import uuid
@@ -30,6 +32,8 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 from aiortc.sdp import candidate_from_sdp
 
 from frame_snapshot import FrameSnapshot
+
+logger = logging.getLogger("JetKVMClient")
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -94,6 +98,9 @@ class JetKVMClient:
         self.stream_id = uuid.uuid4().hex
         self._frame_lock = threading.Lock()
         self.connected = False
+        # Death signals (see is_healthy): the video track ended, or the peer connection state.
+        self._track_ended = False
+        self._peer_state = "new"
         self._id = 0
         self._ws = None
         self._recv_task = None
@@ -133,32 +140,15 @@ class JetKVMClient:
                 detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
                 self.rpc_errors.append(str(detail))
 
+        @pc.on("connectionstatechange")
+        def _peer_state_changed():
+            self._on_peer_state(pc.connectionState)
+
         @pc.on("track")
         def on_track(track):
             if track.kind != "video":
                 return
-
-            async def consume():
-                while True:
-                    try:
-                        f = await track.recv()
-                    except Exception:
-                        return
-                    decoded = f.to_ndarray(format="bgr24")
-                    presentation_time = None
-                    if f.pts is not None and f.time_base is not None:
-                        presentation_time = float(f.pts * f.time_base)
-                    with self._frame_lock:
-                        self.frame = decoded
-                        self.frame_sequence += 1
-                        self.frame_received_monotonic = time.monotonic()
-                        self.frame_presentation_time = presentation_time
-                        if self.size is None:
-                            self.size = (f.width, f.height)
-                    if self.size == (f.width, f.height):
-                        first_frame.set()
-
-            asyncio.ensure_future(consume())
+            asyncio.ensure_future(self._pump_video(track, first_frame))
 
         pc.addTransceiver("video", direction="recvonly")
         await pc.setLocalDescription(await pc.createOffer())
@@ -227,6 +217,42 @@ class JetKVMClient:
                                "請確認來源電腦有輸出 HDMI 到 JetKVM 且螢幕已喚醒")
         await asyncio.sleep(0.3)
         self.connected = True
+
+    async def _pump_video(self, track, first_frame=None):
+        """Decode the video track into self.frame until it ends. The end of the track is a death signal."""
+        while True:
+            try:
+                f = await track.recv()
+            except Exception as exc:
+                self._track_ended = True
+                logger.warning("KVM 影像軌道結束 (host=%s): %s", self.host, exc)
+                return
+            decoded = f.to_ndarray(format="bgr24")
+            presentation_time = None
+            if f.pts is not None and f.time_base is not None:
+                presentation_time = float(f.pts * f.time_base)
+            with self._frame_lock:
+                self.frame = decoded
+                self.frame_sequence += 1
+                self.frame_received_monotonic = time.monotonic()
+                self.frame_presentation_time = presentation_time
+                if self.size is None:
+                    self.size = (f.width, f.height)
+            if first_frame is not None and self.size == (f.width, f.height):
+                first_frame.set()
+
+    def _on_peer_state(self, state):
+        self._peer_state = state
+        if state in ("failed", "closed"):
+            logger.warning("KVM peer connection %s (host=%s)", state, self.host)
+
+    def is_healthy(self) -> bool:
+        """False only when the session is dead: the video track ended, or the peer connection failed or closed.
+
+        A stale picture does not count; Freeze Guard answers that with frame_frozen. A transient
+        "disconnected" peer state does not count either.
+        """
+        return self.connected and not self._track_ended and self._peer_state not in ("failed", "closed")
 
     def latest_frame(self) -> Optional[FrameSnapshot]:
         """The newest picture as a copy with its freshness metadata; None until the first frame."""
