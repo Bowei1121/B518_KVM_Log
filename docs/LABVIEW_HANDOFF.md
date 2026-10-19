@@ -54,10 +54,10 @@
 | `error` | 何時 | LabVIEW 處置 |
 | --- | --- | --- |
 | `manual_verification_required` | 本輪送過 `monitor_start`，但橋接一直沒看到本次監控就緒，畫面卻出現可交付結果（例如還沒就緒就被人工停止、或準備逾時後人員確認警報） | **不交付、不做設備動作、不自動重測**；暫停並請人員核對。核對後由人員決定重工，下一輪重新 `monitor_start` |
-| `monitor_not_ready` | `check_start`／`check_finish` 前本輪沒送過 `monitor_start`；或 `start_test` 時 Log 不是監控就緒（例如準備中） | 流程順序錯誤：先完成 `monitor_start` |
-| `monitor_not_started` | `monitor_start` 在 `timeout_sec` 內沒看到監控就緒 | 暫停並通知人員；可依現場判斷再送一次 `monitor_start`（Log 仍在準備中時不會重複觸發） |
+| `monitor_not_ready` | `check_start`／`check_finish` 前本輪沒送過 `monitor_start`（結果交付後也算，除非畫面仍是同一輪可重看）；或 `start_test` 時 Log 不是監控就緒（例如準備中） | 流程順序錯誤：先完成 `monitor_start` |
+| `monitor_not_started` | `monitor_start` 在 `timeout_sec` 內沒看到監控就緒 | 暫停並通知人員；可依現場判斷再送一次 `monitor_start`（Log 仍在準備中時不會重複觸發，橋接也會沿用同一輪的開始記錄） |
 | `log_solution_review` | `monitor_start` 時 Log 異常待確認（例如啟動失敗） | 報警、暫停；人員在 Log Solution 排除並復位後才能再 `monitor_start` |
-| `log_solution_busy` | Log 正在監控（`monitor_start`）；或 `input` 時 Log 監控中／待確認／準備中 | 上一輪尚未結束，先完成本輪 |
+| `log_solution_busy` | Log 正在監控（`monitor_start`）；或 `input` 時 Log 監控中／待確認／準備中，或畫面是完成／人工停止完成但本輪結果還沒交付給 LabVIEW | 上一輪尚未結束，先用 `check_finish` 取走本輪結果（或處理完需人工核對）再輸入下一輪 SN |
 | `log_solution_not_found` | Log Solution 沒開，或 Dock 上找不到它 | 嚴重異常，停線檢查 |
 | `log_solution_not_visible` | Log Solution 被遮住，自動拉回 3 次仍看不到 | 暫停並請人員把 Log Solution 視窗移出來 |
 | `round_lost` | 本輪已監控就緒後，Log Solution 回到待命（例如當掉重開） | 本輪結果已無法取得，暫停並交人工 |
@@ -80,7 +80,7 @@
 | 收到 `taken` | `started`、`already_taken`、`waiting`、`paused`、`unknown` |
 | | 任何 `status = "error"` 或 `"timeout"` |
 
-`already_taken` 可以拿來在人機畫面重新顯示結果，或在通訊中斷後確認上次交付的內容，但設備動作只能在第一次 `taken` 時做一次。
+`already_taken` 可以拿來在人機畫面重新顯示結果，或在通訊中斷後確認上次交付的內容，但設備動作只能在第一次 `taken` 時做一次。重看只在 Log Solution 畫面仍顯示同一輪結果時成立；畫面已改變（例如進入新一輪）就不能再重看，會回 `monitor_not_ready` 或新一輪的狀態。
 
 ## 7. 尚未包含（協定 1.1 再處理）
 

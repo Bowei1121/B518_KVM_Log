@@ -17,3 +17,5 @@ GitHub：https://github.com/Bowei1121/B518_KVM_Log/issues/43（Parent #40）
 - [ ] `inspect` 改用同一格式，不回 `taken`
 - [ ] 既有 `check` 測試改寫為 `check_finish`；可見性恢復套用於 `check_finish`
 - [ ] 1～5 都修改 TCP 伺服器，依序進行（1 → 2 → 3 → 4 → 5），不要由不同 agent 並行。
+- [ ] （2026-10-19 補充）判斷順序：REVIEW → `paused`；簽章與上一次交付相同且無新一輪信號 → `already_taken`（排在本輪開始請求檢查之前，交付後請求已清除仍可重看）；不可靠 → `unknown`；之後才套用本輪開始請求規則（票 4）
+- [ ] （2026-10-19 補充）新一輪信號為看到準備中或監控中、或收到新的 `monitor_start`；任一出現即清除上一次交付的簽章

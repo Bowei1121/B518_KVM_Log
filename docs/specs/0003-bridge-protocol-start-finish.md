@@ -105,12 +105,23 @@ LabVIEW 測試流程控制者需要分兩步確認一輪測試：先確認 ATE �
 - **錯誤碼表**：新增 `log_solution_review`；`monitor_not_ready` 擴充為「未送本輪 `monitor_start` 就要求確認」；`manual_verification_required` 依本輪開始請求規則。
 - **文件**：PROTOCOL.md 改寫指令、欄位、`kind` 表、錯誤碼、範例、typedef 清單、三站呼叫順序；新增 `docs/LABVIEW_HANDOFF.md`（給 LabVIEW 設計者）並與 PROTOCOL 的 `kind` 表一致。
 - **Monitor UI**：手動檢查改用新格式顯示 `state` 與已開始通道。
+- **補充決定（2026-10-19，實作前釐清）**：
+  1. **準備中也建立本輪開始請求**：`monitor_start` 開始時若已是準備中，不送快捷鍵，但要建立（或保留）該設備的本輪開始請求，接著等待監控就緒；同一次呼叫內看到監控中即視為已見本次監控就緒。`monitor_start` 回 `monitor_not_started` 時不清除本輪開始請求；只有 `taken` 或 `manual_verification_required` 會清除。
+  2. **`check_start`／`check_finish` 的判斷順序**（依序套用，先符合者回覆）：
+     1. 待確認（REVIEW）→ `kind = paused`。
+     2. 畫面簽章（完成種類＋格數＋逐格結果）與上一次交付相同，且之後沒有新一輪信號 → `kind = already_taken`，附相同結果。此條排在本輪開始請求檢查之前，交付後請求已清除仍可重看。
+     3. 畫面不可靠 → `kind = unknown`（照常套用可見性恢復）。
+     4. 沒有本輪開始請求 → `error = monitor_not_ready`。
+     5. 有請求但未見本次監控就緒，出現完成或人工停止完成 → `error = manual_verification_required`；有請求且已見本次監控就緒 → 正常判讀。
+     - 新一輪信號：看到準備中或監控中，或收到新的 `monitor_start`；任一出現即清除「上一次交付的簽章」。
+     - 因此交付後簽章改變、沒有新一輪信號、請求已清除 → `monitor_not_ready`（原結果已不在畫面上，不能再當 `already_taken`；新內容未經開始流程，不能交付）。
+  3. **人工停止完成後的 DFU `input`**：人工停止完成與一般完成同屬 READY，規則相同。待命 → 可輸入；完成或人工停止完成且本輪已交付（`taken`）或已回 `manual_verification_required` → 可輸入下一輪 SN；完成或人工停止完成但本輪尚未交付、也沒回過 `manual_verification_required` → `log_solution_busy`；監控中、準備中、待確認 → `log_solution_busy`。
 
 ## Testing Decisions
 
 - 好的測試只驗證外部行為：送入的 JSON 行、回覆的 JSON 行、假 JetKVM 記錄的點擊與按鍵；不斷言私有狀態或 log。
 - **主要切入點（沿用 spec #2）**：TCP JSON 協定＋合成 ATE 畫面的假 JetKVM，以真實 socket 收發。合成畫面擴充：六種狀態圖樣（含 Preparing 0101、ManualStopComplete 0011）、通道 TESTING／COMPLETING 顏色、可逐張改變的畫面序列（模擬兩影格、unknown 夾雜、完成種類切換）、`monitor_start` 送快捷鍵後依序呈現 Preparing → Monitoring 或 Preparing → Review。
-- 涵蓋：`check` 已移除；`check_start` 的兩影格交集、evidence 區分、非活動狀態、直接交付、重複呼叫不消耗；`check_finish` 的 `taken`／`already_taken`（相同結果、新輪後不再是 already_taken）；本輪開始請求三種情況與清除；`manual_verification_required` 的人工停止與準備逾時兩案；`monitor_start` 的 Preparing 等待、Preparing 起點不送快捷鍵、Review 立即錯誤、`timeout_sec` 逾時；`input`／`start_test` 遇 Preparing；Preparing 重置可見性計時；六種圖樣與未知圖樣；完成種類不混用；`inspect` 新格式且不點擊。
+- 涵蓋：補充決定 1～3 各至少一個案例（準備中起點建立請求、`monitor_not_started` 後請求仍在、交付後重看不受請求清除影響、交付後簽章改變回 `monitor_not_ready`、人工停止完成交付後 `input` 可用而未交付時 `log_solution_busy`）；`check` 已移除；`check_start` 的兩影格交集、evidence 區分、非活動狀態、直接交付、重複呼叫不消耗；`check_finish` 的 `taken`／`already_taken`（相同結果、新輪後不再是 already_taken）；本輪開始請求三種情況與清除；`manual_verification_required` 的人工停止與準備逾時兩案；`monitor_start` 的 Preparing 等待、Preparing 起點不送快捷鍵、Review 立即錯誤、`timeout_sec` 逾時；`input`／`start_test` 遇 Preparing；Preparing 重置可見性計時；六種圖樣與未知圖樣；完成種類不混用；`inspect` 新格式且不點擊。
 - Prior art：`test_check_1_0.py`、`test_monitor_start.py`、`test_start_test_1_0.py`、`test_dfu_input_1_0.py`、`test_visibility_recovery.py`、`test_inspect_1_0.py`、`test_round_frame_consumer.py`、`protocol_helpers.py`（LogSolutionKVM、render_log_solution、cover_left）。既有 `check` 測試改寫為新指令。
 - 全套測試以本機權限執行（需要 bind localhost）。
 
