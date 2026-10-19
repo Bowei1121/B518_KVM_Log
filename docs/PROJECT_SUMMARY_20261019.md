@@ -121,3 +121,4 @@
 - Q17：`already_taken` 帶與第一次相同的完整結果，可重複查看；同輪判斷為完成種類＋格數＋各格結果相同且未開始新輪；只有 `taken` 可觸發設備動作。橋接重啟後重傳屬協定 1.1。
 - Q18：六種 `kind` 定義與 LabVIEW 動作表定案。Q19：新增 `docs/LABVIEW_HANDOFF.md` 給 LabVIEW 設計者（呼叫順序、kind 表、錯誤碼處置、何時可做設備動作）。
 - CONTEXT.md：「同輪重傳」擴充為含上位機主動重看；新增「本輪開始請求」。
+- to-spec：spec #3 發布為 **#40**（`ready-for-agent`），本機副本 `docs/specs/0003-bridge-protocol-start-finish.md`；測試切入點沿用 spec #2（Q16 已確認）。新增 `docs/LABVIEW_HANDOFF.md`。#36 以「由 #40 取代」關閉；#13 已留言提醒依 #40 與交接文件設計。
