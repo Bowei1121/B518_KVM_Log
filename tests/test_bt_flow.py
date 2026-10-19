@@ -10,11 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from auto_flow import run_flow, run_focus
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
+from fake_kvm import FakeKVM
 
 
-class FakeKvm:
+class FakeKvm(FakeKVM):
     def __init__(self, frame):
-        self.frame = frame
+        super().__init__(frame)
         self.rpc_errors = []
         self.clicks = []
 

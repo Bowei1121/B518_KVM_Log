@@ -30,14 +30,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
+from fake_kvm import FakeKVM, make_snapshot
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
-class MockJetKVMClient:
+class MockJetKVMClient(FakeKVM):
     """Mock WebRTC KVM client simulating JetKVMClient interface."""
 
     def __init__(self, host: str, password: str = "", should_fail_connect: bool = False) -> None:
+        super().__init__()
         self.host = host
         self.password = password
         self.should_fail_connect = should_fail_connect
@@ -59,14 +61,15 @@ class MockJetKVMClient:
         self.close_calls += 1
         self.connected = False
 
-    def latest_frame(self) -> Optional[tuple[Any, int, float, str, float]]:
+    def latest_frame(self):
         self.latest_frame_calls += 1
         if self.latest_frame_exc is not None:
             raise self.latest_frame_exc
         if not self.connected:
             return None
         self.frame_sequence += 1
-        return ("dummy_frame", self.frame_sequence, time.monotonic(), "mock_stream", 1000.0 + self.frame_sequence)
+        return make_snapshot("dummy_frame", sequence=self.frame_sequence, received_monotonic=time.monotonic(),
+                             stream_id="mock_stream", pts=1000.0 + self.frame_sequence)
 
 
 class MockClientFactory:
