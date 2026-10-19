@@ -34,7 +34,7 @@ RESULT_COLUMNS = 10
 BLACK_MAX = 80
 WHITE_MIN = 176
 COLOR_TOLERANCE = 20
-TERMINAL = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
+TERMINAL_STATUSES = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
 
 class MarkerState(str, Enum):
@@ -68,6 +68,20 @@ STATUS_COLORS = {
     "TIMEOUT": (0, 153, 255),
 }
 
+# Screen states grouped by what a reading lets the host do with them.
+FINISHED_STATES = frozenset((MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE))
+BUSY_STATES = frozenset((MarkerState.PREPARING, MarkerState.MONITORING, MarkerState.REVIEW))
+OPEN_STATES = frozenset((MarkerState.STANDBY,)) | FINISHED_STATES
+CONFIRMATION_REQUIRED = "confirmation_required"
+
+
+class ScreenKind(str, Enum):
+    """What one reading decides for the reply on its own; round progress decides the rest."""
+
+    UNKNOWN = "unknown"
+    PAUSED = "paused"
+    WAITING = "waiting"
+
 
 @dataclass(frozen=True)
 class FrameObservation:
@@ -82,7 +96,7 @@ class FrameObservation:
     @property
     def results_complete(self):
         return (self.finished and self.capacity > 0 and len(self.statuses) == self.capacity
-                and all(status in TERMINAL for status in self.statuses))
+                and all(status in TERMINAL_STATUSES for status in self.statuses))
 
     @property
     def finished(self):
@@ -103,12 +117,6 @@ class FrameObservation:
     def may_send_hid(self):
         """Not busy. An unreadable screen still allows the Dock click, which is also the visibility recovery."""
         return not self.busy
-
-
-FINISHED_STATES = frozenset((MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE))
-BUSY_STATES = frozenset((MarkerState.PREPARING, MarkerState.MONITORING, MarkerState.REVIEW))
-OPEN_STATES = frozenset((MarkerState.STANDBY,)) | FINISHED_STATES
-CONFIRMATION_REQUIRED = "confirmation_required"
 
 
 def _locator_candidates(frame):
@@ -379,11 +387,11 @@ def reportable_active(state, rows):
 
 
 def screen_kind(observation):
-    """What one reading decides for the reply: ``unknown`` when unreliable, ``paused`` on Review, else ``waiting``."""
+    """What one reading decides for the reply: UNKNOWN when unreliable, PAUSED on Review, else WAITING."""
     if not observation.reliable:
-        return "unknown"
+        return ScreenKind.UNKNOWN
     if observation.state == MarkerState.REVIEW:
-        return "paused"
-    return "waiting"
+        return ScreenKind.PAUSED
+    return ScreenKind.WAITING
 
 

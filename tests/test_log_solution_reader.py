@@ -1,6 +1,7 @@
 """log_solution_reader without a socket: what one reading (or two fresh readings) decides."""
 
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,7 @@ from log_solution_reader import (  # noqa: E402
     ActivityTracker, FrameObservation, MarkerState, inspect_app_frame, read_snapshot,
     reportable_active, screen_kind,
 )
+from tcp_server import _inspect_round  # noqa: E402
 
 COLORS = {
     "PASS": (0, 239, 0), "FAIL": (0, 0, 255), "TESTING": (0, 255, 255),
@@ -220,3 +222,27 @@ def test_observation_defaults_are_unreadable_and_not_busy():
 
     assert not obs.busy and not obs.finished and not obs.may_open_round
     assert obs.may_send_hid
+
+
+class _OneFrameKVM:
+    def __init__(self, image):
+        self.image = image
+
+    def latest_frame(self):
+        return FrameSnapshot(image=self.image, sequence=1, received_monotonic=time.monotonic(),
+                             stream_id="s", pts=None)
+
+
+@pytest.mark.parametrize("state, kind", [
+    (MarkerState.MONITORING, "waiting"),
+    (MarkerState.COMPLETE, "waiting"),
+    (MarkerState.REVIEW, "paused"),
+])
+def test_inspect_reply_keeps_the_1_0_key_order(state, kind):
+    """Wire key order matches main's inspect reply: state, capacity, active, kind, reason, results."""
+    reply, _ = _inspect_round(_OneFrameKVM(render_frame(state, ["PASS"] * 4)), ActivityTracker())
+
+    assert list(reply) == ["state", "capacity", "active", "kind", "reason", "results"]
+    assert reply["kind"] == kind
+    assert reply["active"] == []
+    assert reply["results"] == []

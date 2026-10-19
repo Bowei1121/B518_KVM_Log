@@ -163,22 +163,24 @@ def _inspect_round(kvm: Any, tracker: Any) -> Tuple[Dict[str, Any], Any]:
     arms or consumes the device's round gate. Two agreeing fresh frames fill ``active``.
     """
     from log_solution_reader import (
-        CONFIRMATION_REQUIRED, read_app_frame, reportable_active, screen_kind,
+        CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
     )
 
     snapshot, obs = read_app_frame(kvm)
     if snapshot is None:
         return {"error": "no_frame", "message": "No frame received from KVM yet"}, None
     rows = tracker.observe(obs, snapshot.sequence, snapshot.received_monotonic)
-    if not obs.reliable:
+    kind = screen_kind(obs)
+    if kind is ScreenKind.UNKNOWN:
         return _unknown(obs.reason), None
     state = obs.state
-    base = {"state": state.value, "capacity": int(obs.capacity)}
-    if screen_kind(obs) == "paused":
-        return {**base, "kind": "paused", "reason": CONFIRMATION_REQUIRED, "results": [], "active": []}, state
-    # inspect never delivers. A finished screen is waiting with empty results and no "started" channels.
+    # Key order matches the 1.0 reply on main: state, capacity, active, kind, reason, results.
+    # Finished screens report no started channels (reportable_active), so active stays [] there.
     active = [{"slot": slot, "evidence": evidence} for slot, evidence in reportable_active(state, rows)]
-    return {**base, "kind": "waiting", "reason": state.value, "results": [], "active": active}, state
+    base = {"state": state.value, "capacity": int(obs.capacity), "active": active}
+    if kind is ScreenKind.PAUSED:
+        return {**base, "kind": "paused", "reason": CONFIRMATION_REQUIRED, "results": [], "active": []}, state
+    return {**base, "kind": "waiting", "reason": state.value, "results": []}, state
 
 
 class TcpJsonServer:

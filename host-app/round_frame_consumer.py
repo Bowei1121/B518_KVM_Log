@@ -9,7 +9,7 @@ import time
 from typing import Optional, Tuple
 
 from log_solution_reader import (
-    CONFIRMATION_REQUIRED, ActivityTracker, MarkerState, inspect_app_frame, screen_kind,
+    CONFIRMATION_REQUIRED, ActivityTracker, MarkerState, ScreenKind, inspect_app_frame, screen_kind,
 )
 
 
@@ -59,6 +59,7 @@ class RoundFrameGate:
 
     @property
     def _activity_prev(self):
+        """Compatibility only: tests/test_round_frame_consumer.py reads it. Remove with #55, not a public API."""
         return self._activity.previous
 
     def forget_delivered_round(self):
@@ -129,12 +130,12 @@ class RoundFrameGate:
         observation = inspect_app_frame(frame, received_at, now, self.max_age)
         self._activity.observe(observation, sequence, received_at)
         kind = screen_kind(observation)
-        if kind == "unknown":
+        if kind is ScreenKind.UNKNOWN:
             self._candidate_signature = None
             self._candidate_count = 0
             return TakeDecision("unknown", self.device_id, reason=observation.reason)
 
-        if kind == "paused":
+        if kind is ScreenKind.PAUSED:
             self._candidate_signature = None
             self._candidate_count = 0
             return TakeDecision("paused", self.device_id, observation.state,
