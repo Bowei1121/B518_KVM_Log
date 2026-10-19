@@ -137,19 +137,12 @@ class TestExtractPTS:
         kvm = MockKVMClient(initial_pts=45.67)
         assert extract_pts(kvm) == 45.67
 
-    def test_extract_pts_from_attributes(self):
+    def test_extract_pts_reads_the_newest_frame(self):
         assert extract_pts(FakeKVM("frame", pts=78.9)) == 78.9
 
-    def test_extract_pts_missing_or_none(self):
-        assert extract_pts(None) is None
-
-        class EmptyObj:
-            pass
-
-        assert extract_pts(EmptyObj()) is None
-
-        kvm_none = MockKVMClient(initial_pts=None)
-        assert extract_pts(kvm_none) is None
+    def test_extract_pts_missing_before_first_frame_or_without_pts(self):
+        assert extract_pts(FakeKVM(None)) is None
+        assert extract_pts(MockKVMClient(initial_pts=None)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -305,15 +298,15 @@ class TestDFURoundFrameGateFreeze:
         gate = RoundFrameGate("DFU-01", freeze_threshold=1.0, require_presentation_time=True)
 
         # First frame at t=0, pts=10.0
-        dec1 = gate.observe(None, sequence=1, received_at=0.0, now=0.0, presentation_time=10.0)
+        dec1 = gate.observe(None, sequence=1, received_at=0.0, now=0.0, pts=10.0)
         assert dec1.kind != "frozen"
 
         # Frame at t=0.5, pts=10.0 (static for 0.5s < 1.0s)
-        dec2 = gate.observe(None, sequence=2, received_at=0.5, now=0.5, presentation_time=10.0)
+        dec2 = gate.observe(None, sequence=2, received_at=0.5, now=0.5, pts=10.0)
         assert dec2.kind == "unknown"
 
         # Frame at t=1.2, pts=10.0 (static for 1.2s >= 1.0s freeze_threshold)
-        dec3 = gate.observe(None, sequence=3, received_at=1.2, now=1.2, presentation_time=10.0)
+        dec3 = gate.observe(None, sequence=3, received_at=1.2, now=1.2, pts=10.0)
         assert dec3.kind == "frozen"
         assert dec3.reason == "frame_frozen"
         assert gate.is_frozen is True
@@ -323,13 +316,13 @@ class TestDFURoundFrameGateFreeze:
 
     def test_round_frame_gate_recovers_when_pts_resumes_advancing(self):
         gate = RoundFrameGate("DFU-01", freeze_threshold=1.0, require_presentation_time=True)
-        gate.observe(None, sequence=1, received_at=0.0, now=0.0, presentation_time=10.0)
+        gate.observe(None, sequence=1, received_at=0.0, now=0.0, pts=10.0)
         # Static -> frozen
-        dec_frozen = gate.observe(None, sequence=2, received_at=1.2, now=1.2, presentation_time=10.0)
+        dec_frozen = gate.observe(None, sequence=2, received_at=1.2, now=1.2, pts=10.0)
         assert dec_frozen.kind == "frozen"
 
         # Stream recovers with advanced PTS
-        dec_alive = gate.observe(None, sequence=3, received_at=1.3, now=1.3, presentation_time=10.1)
+        dec_alive = gate.observe(None, sequence=3, received_at=1.3, now=1.3, pts=10.1)
         assert dec_alive.kind != "frozen"
         assert gate.is_frozen is False
 
@@ -566,10 +559,11 @@ class TestStreamReconnectResetsFreezeState:
         asyncio.run(_run())
 
 
-class _ScriptedKVM:
+class _ScriptedKVM(FakeKVM):
     """Returns one (stream_id, pts) reading per latest_frame() call; repeats the last reading."""
 
     def __init__(self, readings):
+        super().__init__()
         self._readings = list(readings)
         self._current = self._readings[0]
 

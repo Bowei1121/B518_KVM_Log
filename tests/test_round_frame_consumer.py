@@ -217,15 +217,15 @@ class RoundFrameConsumerTests(unittest.TestCase):
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
         self.assertEqual(gate.observe(monitoring, 1, 10, now=10, stream_id="s",
-                                      presentation_time=50.0).kind, "waiting")
+                                      pts=50.0).kind, "waiting")
         stale = gate.observe(complete, 2, 10.1, now=10.1, stream_id="s",
-                             presentation_time=49.9)
+                             pts=49.9)
         self.assertEqual((stale.kind, stale.reason), ("unknown", "out_of_order_source_frame"))
         self.assertFalse(gate.taken)
         self.assertEqual(gate.observe(complete, 3, 10.2, now=10.2, stream_id="s",
-                                      presentation_time=50.1).kind, "waiting")
+                                      pts=50.1).kind, "waiting")
         self.assertEqual(gate.observe(complete, 4, 10.3, now=10.3, stream_id="s",
-                                      presentation_time=50.2).kind, "taken")
+                                      pts=50.2).kind, "taken")
 
     def test_complete_capacity_must_match_observed_monitoring_round(self):
         gate = RoundFrameGate("device-1", stable_complete_frames=1)
@@ -311,20 +311,20 @@ class RoundFrameConsumerTests(unittest.TestCase):
         """A4: stream-time unknowns reset the activity pair before returning."""
         frame = render_frame(MarkerState.MONITORING, ["TESTING", "WAITING", "WAITING", "WAITING"])
         gate = RoundFrameGate("device-1", require_presentation_time=True, max_frame_gap=1.0)
-        gate.observe(frame, 1, 1.0, now=1.0, stream_id="s", presentation_time=1.0)
-        gate.observe(frame, 2, 1.1, now=1.1, stream_id="s", presentation_time=1.1)
+        gate.observe(frame, 1, 1.0, now=1.0, stream_id="s", pts=1.0)
+        gate.observe(frame, 2, 1.1, now=1.1, stream_id="s", pts=1.1)
         self.assertTrue(gate.last_active)
 
-        missing = gate.observe(frame, 3, 1.2, now=1.2, stream_id="s", presentation_time=None)
+        missing = gate.observe(frame, 3, 1.2, now=1.2, stream_id="s", pts=None)
         self.assertEqual(missing.kind, "unknown")
         self.assertEqual(missing.reason, "missing_source_frame_time")
         self.assertEqual(gate.last_active, ())
         self.assertIsNone(gate._activity_prev)
 
-        gate.observe(frame, 4, 1.3, now=1.3, stream_id="s", presentation_time=2.0)
-        gate.observe(frame, 5, 1.4, now=1.4, stream_id="s", presentation_time=2.1)
+        gate.observe(frame, 4, 1.3, now=1.3, stream_id="s", pts=2.0)
+        gate.observe(frame, 5, 1.4, now=1.4, stream_id="s", pts=2.1)
         self.assertTrue(gate.last_active)
-        out_of_order = gate.observe(frame, 6, 1.5, now=1.5, stream_id="s", presentation_time=2.0)
+        out_of_order = gate.observe(frame, 6, 1.5, now=1.5, stream_id="s", pts=2.0)
         self.assertEqual(out_of_order.kind, "unknown")
         self.assertEqual(out_of_order.reason, "out_of_order_source_frame")
         self.assertEqual(gate.last_active, ())

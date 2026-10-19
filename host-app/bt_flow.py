@@ -53,7 +53,10 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         if last_hid_error(kvm):
             raise BtStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
 
-        frame = kvm.latest_frame().image
+        window_snapshot = kvm.latest_frame()
+        if window_snapshot is None:
+            raise BtStartError("hid_failed", "沒有 JetKVM 影格")
+        frame = window_snapshot.image
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         wv, wl, wt, ww, wh = locate(gray, window, downscale=True)
         diagnostics.record("window", wv, threshold, frame,

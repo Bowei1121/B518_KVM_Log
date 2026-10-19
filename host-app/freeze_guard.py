@@ -15,7 +15,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from frame_snapshot import FrameSnapshot
 
 logger = logging.getLogger("FrameFreezeGuard")
 
@@ -27,47 +30,35 @@ class StationType(str, Enum):
     DFU = "DFU"
 
 
-def _latest(kvm: Any) -> Any:
-    """``kvm.latest_frame()`` as a FrameSnapshot, or None when nothing has arrived or the read raised."""
-    try:
-        return kvm.latest_frame()
-    except Exception:
-        return None
-
-
 def extract_pts(kvm: Any) -> Optional[float]:
-    """PTS in seconds of the KVM's newest frame, or None."""
-    snapshot = _latest(kvm)
+    """PTS in seconds of the KVM's newest frame, or None before the first frame."""
+    snapshot = kvm.latest_frame()
     return None if snapshot is None or snapshot.pts is None else float(snapshot.pts)
 
 
 def extract_frame_sequence(kvm: Any) -> Optional[int]:
-    """Frame sequence number of the KVM's newest frame, or None."""
-    snapshot = _latest(kvm)
+    """Frame sequence number of the KVM's newest frame, or None before the first frame."""
+    snapshot = kvm.latest_frame()
     return None if snapshot is None else int(snapshot.sequence)
-
-
-def extract_stream_id(kvm: Any) -> Optional[str]:
-    """Stream id of the KVM's newest frame, so PTS is compared within one stream."""
-    snapshot = _latest(kvm)
-    return None if snapshot is None or snapshot.stream_id is None else str(snapshot.stream_id)
-
-
-def _read_meta(kvm: Any) -> Tuple[Optional[float], Optional[int], Optional[str]]:
-    """(pts, sequence, stream_id) from one latest_frame() call; all None until a frame arrives."""
-    snapshot = _latest(kvm)
-    if snapshot is None:
-        return None, None, None
-    return snapshot.pts, snapshot.sequence, snapshot.stream_id
 
 
 @dataclass(frozen=True)
 class FrameMeta:
-    """One reading of a KVM's latest frame, stamped with the guard's clock."""
-    pts: Optional[float]
-    sequence: Optional[int]
-    stream_id: Optional[str]
+    """One reading of a KVM's latest frame, stamped with the guard's clock. ``snapshot`` is None before the first frame."""
+    snapshot: Optional[FrameSnapshot]
     now: float
+
+    @property
+    def pts(self) -> Optional[float]:
+        return None if self.snapshot is None else self.snapshot.pts
+
+    @property
+    def sequence(self) -> Optional[int]:
+        return None if self.snapshot is None else self.snapshot.sequence
+
+    @property
+    def stream_id(self) -> Optional[str]:
+        return None if self.snapshot is None else self.snapshot.stream_id
 
 
 @dataclass
@@ -323,8 +314,7 @@ class FrameFreezeGuard:
         }
 
     def _read_frame(self, kvm: Any) -> FrameMeta:
-        pts, sequence, stream_id = _read_meta(kvm)
-        return FrameMeta(pts=pts, sequence=sequence, stream_id=stream_id, now=self.clock())
+        return FrameMeta(snapshot=kvm.latest_frame(), now=self.clock())
 
     def _open_window(
         self,

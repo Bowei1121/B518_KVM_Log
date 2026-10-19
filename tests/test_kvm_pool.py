@@ -30,15 +30,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
-from fake_kvm import make_snapshot
+from fake_kvm import FakeKVM, make_snapshot
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
-class MockJetKVMClient:
+class MockJetKVMClient(FakeKVM):
     """Mock WebRTC KVM client simulating JetKVMClient interface."""
 
     def __init__(self, host: str, password: str = "", should_fail_connect: bool = False) -> None:
+        super().__init__()
         self.host = host
         self.password = password
         self.should_fail_connect = should_fail_connect

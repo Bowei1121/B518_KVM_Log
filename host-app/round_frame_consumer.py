@@ -279,17 +279,17 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
 
 
 def read_app_frame(kvm):
-    """``(frame, observation, sequence, received_at)``. Frame is None when nothing has arrived."""
+    """``(snapshot, observation)``. Both are None when no picture has arrived yet."""
     snapshot = kvm.latest_frame()
-    if snapshot is None or snapshot.image is None:
-        return None, None, None, None
-    frame, received_at = snapshot.image, snapshot.received_monotonic
-    return frame, inspect_app_frame(frame, received_at, now=time.monotonic()), snapshot.sequence, received_at
+    if snapshot is None:
+        return None, None
+    return snapshot, inspect_app_frame(snapshot.image, snapshot.received_monotonic, now=time.monotonic())
 
 
 def read_latest_app_frame(kvm):
     """Gate-less reading of the newest frame: ``(frame, observation)``, or ``(None, None)`` with no frame yet."""
-    frame, observation, _sequence, _received_at = read_app_frame(kvm)
+    snapshot, observation = read_app_frame(kvm)
+    frame = None if snapshot is None else snapshot.image
     return frame, observation
 
 
@@ -366,7 +366,7 @@ class RoundFrameGate:
         self.last_active = ()
 
     def observe(self, frame, sequence, received_at, now=None, stream_id=None,
-                presentation_time=None, accept_round=True):
+                pts=None, accept_round=True):
         """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown/frozen."""
         now = self.clock() if now is None else now
         if stream_id != self.last_stream_id:
@@ -390,15 +390,15 @@ class RoundFrameGate:
             self.last_active = ()
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")
         self.last_sequence = sequence
-        if self.require_presentation_time and presentation_time is None:
+        if self.require_presentation_time and pts is None:
             self._candidate_signature = None
             self._candidate_count = 0
             self._activity_prev = None
             self.last_active = ()
             return TakeDecision("unknown", self.device_id, reason="missing_source_frame_time")
-        if presentation_time is not None:
+        if pts is not None:
             if self.last_presentation_time is not None:
-                if presentation_time <= self.last_presentation_time:
+                if pts <= self.last_presentation_time:
                     if self.first_static_presentation_time is None:
                         self.first_static_presentation_time = now
                     static_duration = max(0.0, now - self.first_static_presentation_time)
@@ -420,7 +420,7 @@ class RoundFrameGate:
                     self.is_frozen = False
             else:
                 self.first_static_presentation_time = now
-            self.last_presentation_time = presentation_time
+            self.last_presentation_time = pts
         previous_received_at = self.last_received_at
         self.last_received_at = received_at
         observation = inspect_app_frame(frame, received_at, now, self.max_age)
@@ -520,11 +520,10 @@ class RoundFrameGate:
 def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):
     """Pass the newest decoded BGR frame through the public consumer seam."""
     snapshot = kvm.latest_frame()
-    if snapshot is None or snapshot.image is None:
+    if snapshot is None:
         return TakeDecision("unknown", gate.device_id, reason="no_frame")
     return gate.observe(snapshot.image, snapshot.sequence, snapshot.received_monotonic, now=now,
-                        stream_id=snapshot.stream_id, presentation_time=snapshot.pts,
-                        accept_round=accept_round)
+                        stream_id=snapshot.stream_id, pts=snapshot.pts, accept_round=accept_round)
 
 
 def tcp_round_reply(decision):
