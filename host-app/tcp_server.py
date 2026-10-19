@@ -442,9 +442,10 @@ class TcpJsonServer:
                 return _inspect_round(kvm, stability)
         else:
             gate = self._round_gate(entry.device_id)
+            accept_round = self._round_track(entry.device_id).start_requested
 
             def job():
-                return observe_latest_round_frame(kvm, gate)
+                return observe_latest_round_frame(kvm, gate, accept_round=accept_round)
 
         future = self._inspector.submit(job)
         self._inspections[flight_key] = future
@@ -467,6 +468,34 @@ class TcpJsonServer:
             track = RoundTrack()
             self._rounds[device_id] = track
         return track
+
+    def _account_round_screen(self, device_id: str, obs: Dict[str, Any]) -> None:
+        """Preparing or monitoring is a new-round signal. Monitoring counts only while a request exists."""
+        track = self._round_track(device_id)
+        state = obs.get("state")
+        if state == "preparing":
+            track.monitoring_seen = False
+            track.input_released = False
+        elif state == "monitoring":
+            track.input_released = False
+            if track.start_requested:
+                track.monitoring_seen = True
+
+    def _round_start_refusal(self, device_id: str, obs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """check_start / check_finish steps (4) and (5). None when judgment should continue.
+
+        (1) paused, (2) already_taken and (3) unknown are handled by the caller before this.
+        """
+        track = self._round_track(device_id)
+        if not track.start_requested:
+            return _check_error("monitor_not_ready",
+                                "no round-start request; result was not taken", obs)
+        if (not track.monitoring_seen and obs.get("reason") == "deliverable_without_monitoring"):
+            track.settle()
+            return _check_error(
+                "manual_verification_required",
+                "start was requested but this round's monitoring was not seen", obs)
+        return None
 
     def _round_gate(self, device_id: str) -> Any:
         """The device's round gate, created on first use; it lives as long as the server."""
@@ -495,9 +524,10 @@ class TcpJsonServer:
             return "hid_failed", "Log Solution state unreadable"
         if observation.state == MarkerState.STANDBY:
             return None
-        if observation.state == MarkerState.COMPLETE:
-            gate = self._round_gates.get(entry.device_id)
-            if gate is not None and gate.taken:
+        # complete and manual_stop_complete are both READY. Input waits until this round
+        # was delivered or manual_verification_required was already returned.
+        if observation.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
+            if self._round_track(entry.device_id).input_released:
                 return None
             return "log_solution_busy", "round result not yet taken"
         return "log_solution_busy", f"Log Solution state is {observation.state.value}"
@@ -537,6 +567,7 @@ class TcpJsonServer:
 
         entry = req["_device_entry"]
         track = self._round_track(entry.device_id)
+        track.begin_start()
         self._round_gate(entry.device_id).forget_delivered_round()
         template_root = self._template_root()
         try:
@@ -628,6 +659,8 @@ class TcpJsonServer:
                 return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
 
+            if not read_only:
+                self._account_round_screen(entry.device_id, obs)
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
                 return {
                     "status": "error",
@@ -635,7 +668,16 @@ class TcpJsonServer:
                     "message": f"screen shows {obs['capacity']} slots, device is configured for {entry.channels}",
                     "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
                 }
-            if obs["kind"] in ("taken", "paused", "already_taken"):
+            # Review, then an exact re-view, both win before the round-start request check.
+            if obs["kind"] in ("paused", "already_taken"):
+                return {"status": "ok", "data": obs}
+            if not read_only and obs["kind"] != "unknown":
+                refused = self._round_start_refusal(entry.device_id, obs)
+                if refused is not None:
+                    return refused
+            if obs["kind"] == "taken":
+                if not read_only:
+                    self._round_track(entry.device_id).settle()
                 return {"status": "ok", "data": obs}
             if read_only and obs.get("state") in ("complete", "manual_stop_complete"):
                 return {"status": "ok", "data": obs}
@@ -1078,6 +1120,7 @@ class RoundTrack:
     def __init__(self) -> None:
         self.start_requested = False
         self.monitoring_seen = False
+        self.input_released = False
 
     def note_start(self) -> None:
         """Shortcut sent, or monitor_start is looking at Preparing. Keeps an existing request."""
@@ -1086,6 +1129,18 @@ class RoundTrack:
     def note_monitoring(self) -> None:
         """This monitor_start call observed Monitoring, so the round is ready to judge."""
         self.monitoring_seen = True
+        self.input_released = False
+
+    def begin_start(self) -> None:
+        """A new monitor_start. Keeps a request that monitor_not_started did not clear."""
+        self.monitoring_seen = False
+        self.input_released = False
+
+    def settle(self) -> None:
+        """taken or manual_verification_required spends the request and releases the next SN input."""
+        self.start_requested = False
+        self.monitoring_seen = False
+        self.input_released = True
 
 
 def main() -> None:

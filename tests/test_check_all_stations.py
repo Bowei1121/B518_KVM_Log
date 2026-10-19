@@ -17,7 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 STATIONS = ["FCT-01", "BT-01"]
@@ -71,8 +71,8 @@ def _call(srv, device, cmd="check_finish", timeout_sec=0, req_id="r"):
 
 
 def _take(srv, kvm, device, statuses):
-    """Monitoring, then a complete band read twice: the second read is the taken result."""
-    kvm.show("monitoring", ["WAITING"] * len(statuses))
+    """A started round, then a complete band read twice: the second read is the taken result."""
+    arm_round(srv, kvm, device, ["WAITING"] * len(statuses))
     assert _call(srv, device)["data"]["kind"] == "waiting"
     kvm.show("complete", statuses)
     first = _call(srv, device)
@@ -104,10 +104,10 @@ def test_complete_without_monitoring_first_is_never_taken(rig, device):
     reads = [_call(srv, device) for _ in range(3)]
 
     for resp in reads:
-        assert resp["status"] == "ok"
-        assert resp["data"]["kind"] == "waiting"
-        assert resp["data"]["reason"] == "monitoring_not_observed"
+        assert resp["status"] == "error"
+        assert resp["error"] == "monitor_not_ready"
         assert resp["data"]["results"] == []
+        assert resp["data"]["kind"] != "taken"
 
 
 @pytest.mark.parametrize("device", STATIONS)
@@ -213,8 +213,7 @@ def _status_busy(srv, device):
 @pytest.mark.parametrize("device", STATIONS)
 def test_inspect_reads_the_band_without_consuming_the_round(rig, device):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _call(srv, device)
+    arm_round(srv, kvm, device)
     kvm.show("complete", ["PASS", "FAIL", "PASS", "NOTEST"])
 
     seen = _call(srv, device, cmd="inspect", timeout_sec=5)

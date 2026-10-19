@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 DEVICE = "DFU-01"
@@ -88,7 +88,7 @@ def test_inspect_reports_preparing_and_manual_stop_complete(rig):
 
 def test_inspect_is_not_blocked_by_a_labview_lock(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
     _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 10})
     time.sleep(0.3)
@@ -106,7 +106,7 @@ def test_inspect_is_not_blocked_by_a_labview_lock(rig):
 
 def test_inspect_never_takes_the_round_from_labview(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
     _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)
@@ -129,7 +129,7 @@ def test_inspect_never_takes_the_round_from_labview(rig):
 
 def test_inspect_after_labview_took_the_round_still_reports_the_screen_not_already_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
     _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)

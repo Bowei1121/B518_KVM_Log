@@ -84,6 +84,11 @@ def _recv(sock, timeout=10.0):
     return json.loads(line.decode("utf-8"))
 
 
+def _arm(rig, device=DEVICE, statuses=None):
+    from protocol_helpers import arm_round
+    return arm_round(rig.srv, rig.kvm(device), device, statuses)
+
+
 def _check_once(rig, device, req_id, timeout_sec):
     with _open(rig) as sock:
         _send(sock, {"req_id": req_id, "device": device, "cmd": "check_finish", "timeout_sec": timeout_sec})
@@ -110,7 +115,7 @@ COMPLETE = ["PASS", "FAIL", "NOTEST", "PASS"]
 
 
 def test_immediate_complete_returns_taken_fast(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
     th, out = _background_check(rig, DEVICE, "req-fast", 30)
     _settle()
     started = time.monotonic()
@@ -124,7 +129,7 @@ def test_immediate_complete_returns_taken_fast(rig):
 
 
 def test_delayed_complete_holds_the_connection_until_taken(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
     started = time.monotonic()
     th, out = _background_check(rig, DEVICE, "req-hold", 15)
     _settle(1.5)
@@ -138,7 +143,7 @@ def test_delayed_complete_holds_the_connection_until_taken(rig):
 
 
 def test_long_poll_times_out_with_last_observed_state(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
 
     resp = _check_once(rig, DEVICE, "req-timeout", 1.5)
 
@@ -150,8 +155,8 @@ def test_long_poll_times_out_with_last_observed_state(rig):
 
 
 def test_device_busy_while_long_poll_runs_but_other_devices_do_not_block(rig):
-    rig.kvm("DFU-01").show("monitoring")
-    rig.kvm("DFU-02").show("monitoring")
+    _arm(rig, "DFU-01")
+    _arm(rig, "DFU-02")
     th, _ = _background_check(rig, "DFU-01", "req-lp", 3)
     _settle(0.3)
 
@@ -178,7 +183,7 @@ def test_frozen_picture_aborts_long_poll_immediately(rig):
 
 
 def test_disconnect_during_long_poll_releases_the_device_lock(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
     sock = _open(rig)
     _send(sock, {"req_id": "req-drop", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 30})
     _settle(0.3)
@@ -204,7 +209,7 @@ def test_invalid_timeout_is_rejected_before_polling(rig):
 def test_parallel_long_polls_on_distinct_devices_each_get_their_own_result(rig):
     devices = ["DFU-01", "DFU-02", "DFU-03"]
     for device in devices:
-        rig.kvm(device).show("monitoring")
+        _arm(rig, device)
     results = {}
 
     def run(device):
@@ -228,7 +233,7 @@ def test_parallel_long_polls_on_distinct_devices_each_get_their_own_result(rig):
 
 
 def test_long_poll_is_fenced_per_device_round(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
     th, out = _background_check(rig, DEVICE, "round-1", 15)
     _settle()
     rig.kvm().show("complete", COMPLETE)
@@ -290,7 +295,7 @@ def test_cancelled_check_of_a_gone_client_writes_no_reply_and_releases_the_lock(
 
 
 def test_check_in_progress_is_answered_server_shutting_down_when_core_stops(rig):
-    rig.kvm().show("monitoring")
+    _arm(rig)
     sock = _open(rig)
     try:
         _send(sock, {"req_id": "req-stop", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 30})

@@ -124,6 +124,53 @@ def test_review_refuses_input_without_any_hid_action(rig):
     assert _hid_events(kvm) == []
 
 
+def test_manual_stop_complete_accepts_input_only_after_the_round_is_settled(rig):
+    """2026-10-19: manual_stop_complete is READY, same as complete.
+
+    Input is refused until this round was delivered or manual_verification_required was returned.
+    """
+    srv, kvm = rig
+    terminal = ["STOPPED", "PASS", "FAIL", "NOTEST"]
+    kvm.log_state = "manual_stop_complete"
+    kvm.log_statuses = terminal
+
+    busy = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN1"}], req_id="busy")
+
+    assert busy["error"] == "log_solution_busy"
+    assert _hid_events(kvm) == []
+
+    kvm.log_state = "preparing"
+    started = _cmd(srv, "DFU-01", "monitor_start", {"timeout_sec": 1}, req_id="ms")
+    assert started["error"] == "monitor_not_started"
+    assert _hid_events(kvm) == []
+
+    kvm.log_state = "manual_stop_complete"
+    kvm.log_statuses = terminal
+    verdict = _cmd(srv, "DFU-01", "check_finish", {"timeout_sec": 0}, req_id="cf")
+    assert verdict["error"] == "manual_verification_required"
+    assert verdict["data"]["results"] == []
+    assert _hid_events(kvm) == []
+
+    allowed = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN-NEXT"}], req_id="next")
+    assert allowed["status"] == "ok"
+    assert allowed["data"]["entered"] == [1]
+    assert ("type", "SN-NEXT") in kvm.events
+
+
+def _cmd(srv, device, cmd, extra, req_id):
+    host, port = srv.server_address
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": cmd, **extra}
+    with socket.create_connection((host, port), timeout=10.0) as sock:
+        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+
 def test_complete_round_not_yet_taken_refuses_input(rig):
     srv, kvm = rig
     kvm.log_state = "complete"

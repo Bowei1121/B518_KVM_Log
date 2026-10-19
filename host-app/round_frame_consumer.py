@@ -329,7 +329,7 @@ class RoundFrameGate:
         self._candidate_count = 0
 
     def observe(self, frame, sequence, received_at, now=None, stream_id=None,
-                presentation_time=None):
+                presentation_time=None, accept_round=True):
         """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown/frozen."""
         now = self.clock() if now is None else now
         if stream_id != self.last_stream_id:
@@ -406,13 +406,18 @@ class RoundFrameGate:
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="standby")
         if observation.state == MarkerState.MONITORING:
-            self.armed = True
-            self.taken = False
-            self.armed_capacity = observation.capacity
+            # Monitoring is a new-round signal: drop the previous delivery. Arm only when
+            # this check is allowed to accept the round.
             self.delivered_signature = None
             self.delivered_results = ()
             self._candidate_signature = None
             self._candidate_count = 0
+            if accept_round:
+                self.armed = True
+                self.taken = False
+                self.armed_capacity = observation.capacity
+            else:
+                self.armed = False
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="monitoring")
         signature = (observation.state, observation.capacity, observation.statuses)
@@ -420,7 +425,12 @@ class RoundFrameGate:
                 and observation.results_complete):
             return TakeDecision("already_taken", self.device_id, observation.state,
                                 observation.capacity, self.delivered_results, "round_already_taken")
-        if not self.armed:
+        if not self.armed or not accept_round:
+            # A deliverable screen that this call must not take. The server turns it into
+            # manual_verification_required when a start was requested but monitoring was not seen.
+            if observation.results_complete:
+                return TakeDecision("waiting", self.device_id, observation.state,
+                                    observation.capacity, reason="deliverable_without_monitoring")
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="monitoring_not_observed")
         if observation.capacity != self.armed_capacity:
@@ -454,7 +464,7 @@ class RoundFrameGate:
                             observation.capacity, rows, "reliable_complete")
 
 
-def observe_latest_round_frame(kvm, gate, now=None):
+def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):
     """Pass the newest decoded BGR frame through the public consumer seam."""
     if hasattr(kvm, "latest_frame"):
         snapshot = kvm.latest_frame()
@@ -472,7 +482,7 @@ def observe_latest_round_frame(kvm, gate, now=None):
     if frame is None:
         return TakeDecision("unknown", gate.device_id, reason="no_frame")
     return gate.observe(frame, sequence, received_at, now=now, stream_id=stream_id,
-                        presentation_time=presentation_time)
+                        presentation_time=presentation_time, accept_round=accept_round)
 
 
 def tcp_round_reply(decision):

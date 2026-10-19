@@ -43,6 +43,9 @@ def run_check_cmd(server, req):
     req.setdefault("_kvm_client", RealishKVM())
     req.setdefault("_device_entry", server.device_registry.get(req["device"]))
     server._is_running = True  # handler is driven directly, without the socket loop
+    track = server._round_track(req["device"])
+    track.note_start()
+    track.note_monitoring()
     return asyncio.run(server._handle_check_finish(req))
 
 
@@ -63,7 +66,8 @@ def test_no_frame_yet_is_error_no_result(server, device):
 
 
 def _round_decision(monkeypatch, decision):
-    monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", lambda kvm, gate: decision)
+    monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame",
+                        lambda kvm, gate, accept_round=True: decision)
 
 
 @pytest.mark.parametrize(
@@ -109,7 +113,7 @@ def test_frozen_decision_is_frame_frozen_error(server, monkeypatch, device):
 
 @pytest.mark.parametrize("device", ALL_STATIONS)
 def test_inspection_exception_is_internal_error(server, monkeypatch, device):
-    def boom(kvm, gate):
+    def boom(kvm, gate, accept_round=True):
         raise RuntimeError("decode failed")
 
     monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", boom)

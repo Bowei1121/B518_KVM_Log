@@ -19,8 +19,9 @@ from protocol_helpers import render_log_solution  # noqa: E402
 
 
 def _cycle_frames(fps=10):
-    """standby 1 s, monitoring 2 s, complete 1 s, looped: a round the gate can take."""
+    """standby, preparing, monitoring, complete, looped: monitor_start can see preparing."""
     sequence = ([("standby", ["WAITING"] * 4)] * fps
+                + [("preparing", ["WAITING"] * 4)] * max(1, fps // 2)
                 + [("monitoring", ["WAITING"] * 4)] * (2 * fps)
                 + [("complete", ["PASS", "FAIL", "PASS", "PASS"])] * fps)
     frames = [render_log_solution(state, statuses) for state, statuses in sequence]
@@ -38,7 +39,7 @@ def recording_dir(tmp_path):
 def test_recording_round_trips_frames_and_timestamps(recording_dir):
     recording = rl.load_recording(recording_dir)
 
-    assert len(recording.frames) == 40
+    assert len(recording.frames) == 45
     assert recording.pts[0] == 100.0
     assert recording.frames[0].shape[2] == 3
 

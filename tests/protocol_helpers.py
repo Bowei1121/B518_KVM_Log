@@ -294,3 +294,41 @@ def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
         color = (0, 0, 0) if status == "OUTSIDE" else _LOG_COLORS[status]
         rect(col * 34, 34 + row * 27, 34, 26, color)
     return frame
+
+
+def arm_round(srv, kvm, device, statuses=None):
+    """Establish this device's round-start request and leave Monitoring on screen.
+
+    monitor_start sees Preparing (no Dock, no shortcut) and then Monitoring, so a later
+    check_finish is allowed to judge the round.
+    """
+    import json
+    import socket
+    import threading
+    import time
+
+    kvm.show("preparing")
+    out = {}
+
+    def run():
+        host, port = srv.server_address
+        payload = {"protocol_version": "1.0", "req_id": f"arm-{device}", "device": device,
+                   "cmd": "monitor_start", "timeout_sec": 1}
+        with socket.create_connection((host, port), timeout=10.0) as sock:
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            buf = b""
+            while b"\n" not in buf:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        out["resp"] = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.2)
+    kvm.show("monitoring", statuses or ())
+    thread.join(timeout=5)
+    resp = out.get("resp")
+    assert resp is not None and resp.get("status") == "ok", resp
+    return resp

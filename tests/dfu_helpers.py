@@ -62,6 +62,7 @@ class SyntheticDfuKVM:
         self.hid_error_after_types = None  # type-count after which a HID error is reported
         self.lost_clicks = []  # one entry per click to ignore, by checkbox index
         self.frame = self._render()
+        self._frame_seq = 0
 
     def _render(self):
         canvas = np.full((240, 260, 3), 230, dtype=np.uint8)
@@ -104,8 +105,10 @@ class SyntheticDfuKVM:
         import time as _time
         from protocol_helpers import render_log_solution
 
+        self._frame_seq += 1
+        now = _time.monotonic()
         frame = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
-        return (frame, len(self.events) + 1, _time.monotonic(), "synthetic", _time.monotonic())
+        return (frame, self._frame_seq, now, "synthetic", now)
 
     def checked_channels(self):
         """1-based channel numbers in order, for checkboxes currently checked."""

@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 DEVICE = "DFU-01"
@@ -74,6 +74,7 @@ def _settle(seconds=0.7):
 
 def test_preparing_screen_is_waiting_and_reliable(rig):
     srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
     kvm.show("preparing")
 
     resp = _check(srv, 0)
@@ -99,8 +100,7 @@ def test_removed_check_command_is_unknown_command(rig):
 
 def test_manual_stop_complete_is_taken_with_its_own_state(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    assert _check(srv, 0)["data"]["state"] == "monitoring"
+    arm_round(srv, kvm, DEVICE)
     kvm.show("manual_stop_complete", ["STOPPED", "PASS", "FAIL", "NOTEST"])
 
     first = _check(srv, 0, req_id="ms1")
@@ -116,8 +116,7 @@ def test_manual_stop_complete_is_taken_with_its_own_state(rig):
 
 def test_manual_stop_without_any_stopped_slot_stays_manual_stop(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _check(srv, 0)
+    arm_round(srv, kvm, DEVICE)
     kvm.show("manual_stop_complete", ["PASS", "PASS", "PASS", "PASS"])
     _check(srv, 0, req_id="a")
     resp = _check(srv, 0, req_id="b")
@@ -129,8 +128,7 @@ def test_manual_stop_without_any_stopped_slot_stays_manual_stop(rig):
 
 def test_complete_and_manual_stop_frames_do_not_share_a_stability_count(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _check(srv, 0)
+    arm_round(srv, kvm, DEVICE)
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
     first = _check(srv, 0, req_id="c1")
     kvm.show("manual_stop_complete", ["PASS", "PASS", "PASS", "PASS"])
@@ -146,8 +144,7 @@ def test_complete_and_manual_stop_frames_do_not_share_a_stability_count(rig):
 
 def test_preparing_after_delivery_is_not_the_same_round(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _check(srv, 0)
+    arm_round(srv, kvm, DEVICE)
     kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
     _check(srv, 0, req_id="p1")
     taken = _check(srv, 0, req_id="p2")
@@ -157,8 +154,10 @@ def test_preparing_after_delivery_is_not_the_same_round(rig):
     kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
     again = _check(srv, 0, req_id="p4")
 
-    assert preparing["data"]["kind"] == "waiting"
-    assert preparing["data"]["state"] == "preparing"
+    # Delivery cleared the request. Preparing is a new-round signal, not a new request,
+    # so both reads refuse instead of replaying the delivered round.
+    assert preparing["error"] == "monitor_not_ready"
+    assert again["error"] == "monitor_not_ready"
     assert again["data"]["kind"] != "already_taken"
 
 
@@ -168,17 +167,15 @@ def test_single_read_on_standby_returns_waiting_without_results(rig):
 
     resp = _check(srv, 0)
 
-    assert resp["status"] == "ok"
-    assert resp["error"] == ""
-    assert set(resp["data"]) == DATA_KEYS
-    assert resp["data"]["kind"] == "waiting"
-    assert resp["data"]["state"] == "standby"
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_ready"
     assert resp["data"]["results"] == []
+    assert resp["data"]["kind"] != "taken"
 
 
 def test_single_read_while_monitoring_is_waiting(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
 
     resp = _check(srv, 0)
 
@@ -201,7 +198,7 @@ def test_blank_screen_is_unknown_and_never_a_product_result(rig):
 
 def test_long_poll_returns_taken_per_slot_as_soon_as_complete_is_seen(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     started = time.monotonic()
@@ -226,7 +223,7 @@ def test_long_poll_returns_taken_per_slot_as_soon_as_complete_is_seen(rig):
 
 def test_stopped_slots_are_returned_as_is(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "STOPPED", "PASS", "PASS"])
@@ -239,8 +236,7 @@ def test_stopped_slots_are_returned_as_is(rig):
 
 def test_completing_slot_is_still_waiting_not_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _settle(0.2)
+    arm_round(srv, kvm, DEVICE)
     kvm.show("complete", ["PASS", "COMPLETING", "PASS", "PASS"])
 
     resp = _check(srv, 0)
@@ -252,7 +248,7 @@ def test_completing_slot_is_still_waiting_not_taken(rig):
 
 def test_review_pauses_immediately_during_long_poll(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     started = time.monotonic()
@@ -269,7 +265,7 @@ def test_review_pauses_immediately_during_long_poll(rig):
 
 def test_second_read_after_taken_is_already_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10, req_id="first"))
     _settle()
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
@@ -286,7 +282,7 @@ def test_second_read_after_taken_is_already_taken(rig):
 
 def test_long_poll_times_out_with_last_observed_state(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
 
     resp = _check(srv, 1.0)
 
@@ -299,7 +295,7 @@ def test_long_poll_times_out_with_last_observed_state(rig):
 
 def test_capacity_mismatch_never_delivers_results(rig):
     srv, kvm = rig
-    kvm.show("monitoring", ["WAITING"] * 2)  # a two-slot round on a four-channel device
+    arm_round(srv, kvm, DEVICE, ["WAITING"] * 2)  # a two-slot round on a four-channel device
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "FAIL"])
@@ -340,7 +336,7 @@ def test_frozen_picture_during_long_poll_is_frame_frozen(rig):
 
 def test_taken_is_reported_once_even_if_screen_keeps_complete(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])

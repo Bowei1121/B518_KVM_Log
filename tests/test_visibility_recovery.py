@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
@@ -112,6 +112,7 @@ def _inspect(srv, device, timeout_sec=0):
 def test_monitoring_then_standby_returns_round_lost_at_once(serve):
     kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)
+    arm_round(srv, kvm, "DFU-01")
     armed = _check(srv, "DFU-01")
     assert armed["data"]["reason"] == "monitoring"
 
@@ -131,15 +132,14 @@ def test_standby_without_monitoring_this_round_is_just_waiting(serve):
 
     resp = _check(srv, "DFU-01")
 
-    assert resp["status"] == "ok"
-    assert resp["data"]["kind"] == "waiting"
-    assert resp["data"]["reason"] == "standby"
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_ready"
+    assert resp["data"]["results"] == []
 
 
 def test_preparing_resets_the_visibility_timer_and_does_not_click_the_dock(tmp_path):
     # Lost budget is longer than one 0.5 s poll, so the preparing frame can be seen and reset the timer.
     kvm = LogSolutionKVM(state="standby")
-    kvm.blank()
     root = tmp_path / "template"
     _save_dock_template(root, LogSolutionKVM())
     srv = TcpJsonServer(
@@ -155,6 +155,8 @@ def test_preparing_resets_the_visibility_timer_and_does_not_click_the_dock(tmp_p
     )
     srv.start()
     try:
+        arm_round(srv, kvm, "DFU-01")
+        kvm.blank()
         import threading
         out = {}
 
@@ -180,6 +182,7 @@ def test_preparing_resets_the_visibility_timer_and_does_not_click_the_dock(tmp_p
 def test_covered_window_is_recovered_by_one_dock_click_and_check_takes_the_round(serve):
     kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)
+    arm_round(srv, kvm, "DFU-01")
     assert _check(srv, "DFU-01")["data"]["reason"] == "monitoring"  # the round is armed before the cover
 
     kvm.show("complete", ["PASS", "FAIL", "NOTEST", "TIMEOUT"])
@@ -249,6 +252,7 @@ def _armed_complete_behind_cover(serve, cover):
     """Arm a round, then show its Complete screen behind an ATE window that covers the left side."""
     kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)
+    arm_round(srv, kvm, "DFU-01")
     assert _check(srv, "DFU-01")["data"]["reason"] == "monitoring"
     kvm.show("complete", ["PASS", "FAIL", "NOTEST", "TIMEOUT"])
     cover(kvm)
@@ -308,6 +312,7 @@ def test_duplicate_frames_neither_count_as_unseen_nor_reset_the_timer(serve):
     # A stream that keeps repeating its frame number: no reliable reading, but not "not visible" either.
     kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)
+    arm_round(srv, kvm, "DFU-01")
     assert _check(srv, "DFU-01")["data"]["reason"] == "monitoring"
     kvm.repeat_sequence = True
 

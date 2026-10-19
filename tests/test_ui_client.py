@@ -36,7 +36,7 @@ from kvm_pool import KVMConnectionPool
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 from ui_app import CoreServiceClient
-from protocol_helpers import LogSolutionKVM
+from protocol_helpers import LogSolutionKVM, arm_round
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ class TestLightweightMonitorUIClient:
         """UI snapshot of a device under a LabVIEW long-poll succeeds immediately and does not steal the round."""
         server, kvm_map, (host, port) = running_core_service
         kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
-        kvm.show("monitoring")
+        arm_round(server, kvm, "DFU-01")
 
         with socket.create_connection((host, port), timeout=10.0) as labview_sock:
             send_json(labview_sock, {"protocol_version": "1.0", "req_id": "labview-test-01",
@@ -247,7 +247,7 @@ class TestLightweightMonitorUIClient:
         """Closing or crashing UI process/socket has zero impact on Core Service or active LabVIEW sessions."""
         server, kvm_map, (host, port) = running_core_service
         kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
-        kvm.show("monitoring")
+        arm_round(server, kvm, "DFU-01")
 
         with socket.create_connection((host, port), timeout=10.0) as labview_sock:
             send_json(labview_sock, {"protocol_version": "1.0", "req_id": "lv-ping-1", "device": "",
