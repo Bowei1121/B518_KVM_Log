@@ -32,6 +32,14 @@
 - Q2：橋接釘住顏色並開票 **#34**（`ready-for-agent`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/09-pin-status-colours.md`）。
 - Q3：C5 改為「1.2 起上位機先支援新舊兩種畫面，再更新 App」。
 
+## 第五種圖樣 0011 的整合
+
+- 使用者決定以 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 的第五種圖樣 MANUAL_STOP_COMPLETE（0011）為準，取代 1.2 建議原 C1「人工停止沿用 Complete」。
+- 主資料夾 main 上未推送的 3 個 commit（`b92f25e`、`f09f2d4`、`243b64f`）已 rebase 到 `fd6a8ae` 之上，放在分支 `docs/handoff-1-2-0011`；兩份 10-19 摘要合併為本檔，主資料夾那份完整保留在下方一節。
+- 1.2 建議 C1 改寫為第五種圖樣（以 HANDOFF 為準）；相容性表、驗收清單、PROTOCOL.md 5.4 與第 10 節同步更新。
+- 開橋接票 **#36**（`needs-info`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/10-manual-stop-pattern-0011.md`）。待確認的協定建議：交付時 `state = "manual_stop_complete"`（不新增欄位）；未見本次 Monitoring 回 `error = "manual_verification_required"`。
+- 主資料夾的本機 main 仍是 rebase 前的 3 個 commit，PR 合併後需要把它對齊到 `origin/main`。
+
 ## 主資料夾工作階段的 10-19 紀錄（HANDOFF 與第五種圖樣）
 
 
