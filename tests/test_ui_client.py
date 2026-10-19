@@ -19,7 +19,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -31,6 +31,7 @@ if str(_HOST_APP_DIR) not in sys.path:
 
 from device_lock import DeviceLockManager
 from device_registry import DeviceRegistry
+from fake_kvm import FakeKVM
 from freeze_guard import FrameFreezeGuard
 from kvm_pool import KVMConnectionPool
 from protocol_helpers import make_registry, wire, numbered
@@ -43,7 +44,7 @@ from protocol_helpers import LogSolutionKVM, arm_round
 # Test Helpers & Mock KVM
 # ---------------------------------------------------------------------------
 
-class MockKVMClient:
+class MockKVMClient(FakeKVM):
     """Mock JetKVM Client providing controllable frames and PTS."""
 
     def __init__(
@@ -58,28 +59,12 @@ class MockKVMClient:
             # Create a synthetic 100x100 dummy BGR image
             try:
                 import numpy as np
-                self.frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                frame_data = np.zeros((100, 100, 3), dtype=np.uint8)
             except Exception:
-                self.frame = b"dummy_jpeg_bytes"
-        else:
-            self.frame = frame_data
-
-        self.frame_sequence = initial_sequence
-        self.frame_presentation_time = initial_pts
-        self.frame_received_monotonic = time.monotonic()
-        self.stream_id = stream_id
-        self.connected = True
+                frame_data = b"dummy_jpeg_bytes"
+        super().__init__(frame_data, sequence=initial_sequence, stream_id=stream_id, pts=initial_pts)
         self.result = initial_result
         self.visual_state = None
-
-    def latest_frame(self) -> Tuple[Any, int, float, str, Optional[float]]:
-        return (
-            self.frame,
-            self.frame_sequence,
-            self.frame_received_monotonic,
-            self.stream_id,
-            self.frame_presentation_time,
-        )
 
     def advance(self, delta_pts: float = 0.033) -> float:
         if self.frame_presentation_time is not None:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from device_registry import DeviceRegistry  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
+from fake_kvm import make_snapshot  # noqa: E402
 
 PROTOCOL = "1.0"
 
@@ -225,7 +226,8 @@ class LogSolutionKVM:
                 strip[y:y + h, x:x + w] = self._dock_icon
             frame = np.vstack([window, strip])
             pts = None if self.omit_presentation_time else self._pts
-            return (frame, self._seq, _time.monotonic(), "synthetic-stream", pts)
+            return make_snapshot(frame, sequence=self._seq, received_monotonic=_time.monotonic(),
+                                 stream_id="synthetic-stream", pts=pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}

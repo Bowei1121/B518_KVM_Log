@@ -27,109 +27,38 @@ class StationType(str, Enum):
     DFU = "DFU"
 
 
-def extract_pts(kvm_or_frame: Any) -> Optional[float]:
-    """Extract Presentation Timestamp (PTS) in seconds from a KVM client or frame.
-
-    Inspects:
-    1. Tuple/list from kvm.latest_frame(): (frame, sequence, recv_time, stream_id, pts)
-    2. Object method: kvm.latest_frame()
-    3. Direct attributes on kvm: frame_presentation_time, presentation_time, pts, timestamp
-    4. Direct attributes on frame: pts, timestamp, presentation_time
-    """
-    if kvm_or_frame is None:
+def _latest(kvm: Any) -> Any:
+    """``kvm.latest_frame()`` as a FrameSnapshot, or None when nothing has arrived or the read raised."""
+    try:
+        return kvm.latest_frame()
+    except Exception:
         return None
 
-    # 1. Tuple/list from latest_frame()
-    if isinstance(kvm_or_frame, (tuple, list)):
-        if len(kvm_or_frame) >= 5 and kvm_or_frame[4] is not None:
-            try:
-                return float(kvm_or_frame[4])
-            except (ValueError, TypeError):
-                pass
-        return None
 
-    # 2. Object with callable latest_frame()
-    if hasattr(kvm_or_frame, "latest_frame") and callable(kvm_or_frame.latest_frame):
-        try:
-            snapshot = kvm_or_frame.latest_frame()
-            if snapshot is not None and isinstance(snapshot, (tuple, list)) and len(snapshot) >= 5:
-                if snapshot[4] is not None:
-                    return float(snapshot[4])
-        except Exception:
-            pass
-
-    # 3. Direct attributes on KVM or frame object
-    for attr in ("frame_presentation_time", "presentation_time", "pts", "timestamp"):
-        val = getattr(kvm_or_frame, attr, None)
-        if val is not None:
-            try:
-                return float(val)
-            except (ValueError, TypeError):
-                continue
-
-    # 4. Check nested .frame if it has attributes
-    inner_frame = getattr(kvm_or_frame, "frame", None)
-    if inner_frame is not None and inner_frame is not kvm_or_frame:
-        for attr in ("pts", "timestamp", "presentation_time"):
-            val = getattr(inner_frame, attr, None)
-            if val is not None:
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    continue
-
-    return None
+def extract_pts(kvm: Any) -> Optional[float]:
+    """PTS in seconds of the KVM's newest frame, or None."""
+    snapshot = _latest(kvm)
+    return None if snapshot is None or snapshot.pts is None else float(snapshot.pts)
 
 
-def extract_frame_sequence(kvm_or_frame: Any) -> Optional[int]:
-    """Extract frame sequence / serial number if available."""
-    if kvm_or_frame is None:
-        return None
-    if isinstance(kvm_or_frame, (tuple, list)) and len(kvm_or_frame) >= 2:
-        try:
-            return int(kvm_or_frame[1])
-        except (ValueError, TypeError):
-            pass
-    for attr in ("frame_sequence", "sequence", "seq"):
-        val = getattr(kvm_or_frame, attr, None)
-        if val is not None:
-            try:
-                return int(val)
-            except (ValueError, TypeError):
-                pass
-    return None
+def extract_frame_sequence(kvm: Any) -> Optional[int]:
+    """Frame sequence number of the KVM's newest frame, or None."""
+    snapshot = _latest(kvm)
+    return None if snapshot is None else int(snapshot.sequence)
 
 
-def extract_stream_id(kvm_or_frame: Any) -> Optional[str]:
-    """Extract the stream id (index 3 of latest_frame()) so PTS is compared within one stream."""
-    if kvm_or_frame is None:
-        return None
-    if isinstance(kvm_or_frame, (tuple, list)):
-        if len(kvm_or_frame) >= 5 and kvm_or_frame[3] is not None:
-            return str(kvm_or_frame[3])
-        return None
-    if hasattr(kvm_or_frame, "latest_frame") and callable(kvm_or_frame.latest_frame):
-        try:
-            snapshot = kvm_or_frame.latest_frame()
-        except Exception:
-            snapshot = None
-        if isinstance(snapshot, (tuple, list)) and len(snapshot) >= 5 and snapshot[3] is not None:
-            return str(snapshot[3])
-    val = getattr(kvm_or_frame, "stream_id", None)
-    return None if val is None else str(val)
+def extract_stream_id(kvm: Any) -> Optional[str]:
+    """Stream id of the KVM's newest frame, so PTS is compared within one stream."""
+    snapshot = _latest(kvm)
+    return None if snapshot is None or snapshot.stream_id is None else str(snapshot.stream_id)
 
 
 def _read_meta(kvm: Any) -> Tuple[Optional[float], Optional[int], Optional[str]]:
-    """(pts, sequence, stream_id) from one latest_frame() call when the KVM returns a snapshot."""
-    snapshot = None
-    if hasattr(kvm, "latest_frame") and callable(kvm.latest_frame):
-        try:
-            snapshot = kvm.latest_frame()
-        except Exception:
-            snapshot = None
-    if isinstance(snapshot, (tuple, list)) and len(snapshot) >= 5:
-        return extract_pts(snapshot), extract_frame_sequence(snapshot), extract_stream_id(snapshot)
-    return extract_pts(kvm), extract_frame_sequence(kvm), extract_stream_id(kvm)
+    """(pts, sequence, stream_id) from one latest_frame() call; all None until a frame arrives."""
+    snapshot = _latest(kvm)
+    if snapshot is None:
+        return None, None, None
+    return snapshot.pts, snapshot.sequence, snapshot.stream_id
 
 
 @dataclass(frozen=True)

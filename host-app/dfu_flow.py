@@ -99,8 +99,8 @@ def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_TH
 
 
 def _frame(kvm):
-    frame = getattr(kvm, "frame", None)
-    return None if frame is None else frame.copy()
+    snapshot = kvm.latest_frame()
+    return None if snapshot is None else snapshot.image
 
 
 def _window_match(frame, template, diagnostics, key, threshold):

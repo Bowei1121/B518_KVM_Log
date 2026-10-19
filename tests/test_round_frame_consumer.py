@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
+from fake_kvm import FakeKVM  # noqa: E402
 from round_frame_consumer import (
     MarkerState, RoundFrameGate, inspect_app_frame, observe_latest_round_frame,
     tcp_round_reply,
@@ -270,19 +271,8 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(gate.observe(changed, 5, 3.2, now=3.2).kind, "taken")
 
     def test_public_latest_frame_interface_and_tcp_reply_are_one_shot(self):
-        class FakeKvm:
-            def __init__(self):
-                self.frame = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
-                self.frame_sequence = 1
-                self.frame_received_monotonic = 10
-                self.frame_presentation_time = 1.0
-                self.stream_id = "controlled"
-
-            def latest_frame(self):
-                return (self.frame.copy(), self.frame_sequence, self.frame_received_monotonic,
-                        self.stream_id, self.frame_presentation_time)
-
-        kvm = FakeKvm()
+        kvm = FakeKVM(render_frame(MarkerState.MONITORING, ["WAITING"] * 2), sequence=1,
+                      received_monotonic=10, stream_id="controlled", pts=1.0)
         gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 12,
                               require_presentation_time=True)
         decision = observe_latest_round_frame(kvm, gate, now=10)

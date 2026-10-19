@@ -10,19 +10,21 @@ Verifies that Presentation Timestamp (PTS) freeze guard:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import socket
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import pytest
 
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from fake_kvm import FakeKVM, make_snapshot
 from freeze_guard import FrameFreezeGuard, extract_pts, extract_frame_sequence
 from round_frame_consumer import RoundFrameGate, tcp_round_reply
 from protocol_helpers import LogSolutionKVM, arm_round, make_registry, wire, numbered, ProbeServer
@@ -64,7 +66,7 @@ ROUTES = {
 # Test Helpers & Mock KVM
 # ---------------------------------------------------------------------------
 
-class MockKVMClient:
+class MockKVMClient(FakeKVM):
     """Mock JetKVM WebRTC client with controllable Presentation Timestamp (PTS)."""
 
     def __init__(
@@ -74,22 +76,8 @@ class MockKVMClient:
         stream_id: str = "mock-stream-01",
         frame_data: Any = "dummy_frame_data",
     ) -> None:
-        self.frame = frame_data
-        self.frame_sequence = initial_sequence
-        self.frame_presentation_time = initial_pts
-        self.frame_received_monotonic = time.monotonic()
-        self.stream_id = stream_id
-        self.connected = True
+        super().__init__(frame_data, sequence=initial_sequence, stream_id=stream_id, pts=initial_pts)
         self._pts_delta = 0.033  # ~30fps step
-
-    def latest_frame(self) -> Tuple[Any, int, float, str, Optional[float]]:
-        return (
-            self.frame,
-            self.frame_sequence,
-            self.frame_received_monotonic,
-            self.stream_id,
-            self.frame_presentation_time,
-        )
 
     def advance(self, delta_pts: Optional[float] = None) -> float:
         """Simulate arrival of a new video frame with incremented PTS."""
@@ -141,29 +129,16 @@ def recv_json(sock: socket.socket, timeout: float = 3.0) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class TestExtractPTS:
-    def test_extract_pts_from_tuple(self):
-        snap = ("frame", 1, 10.0, "stream-1", 123.456)
-        assert extract_pts(snap) == 123.456
+    def test_extract_pts_from_snapshot(self):
+        kvm = FakeKVM("frame", sequence=1, received_monotonic=10.0, stream_id="stream-1", pts=123.456)
+        assert extract_pts(kvm) == 123.456
 
     def test_extract_pts_from_mock_client_latest_frame(self):
         kvm = MockKVMClient(initial_pts=45.67)
         assert extract_pts(kvm) == 45.67
 
     def test_extract_pts_from_attributes(self):
-        class ObjWithAttr:
-            frame_presentation_time = 78.9
-
-        assert extract_pts(ObjWithAttr()) == 78.9
-
-        class ObjWithPts:
-            pts = 99.123
-
-        assert extract_pts(ObjWithPts()) == 99.123
-
-        class ObjWithTimestamp:
-            timestamp = 55.44
-
-        assert extract_pts(ObjWithTimestamp()) == 55.44
+        assert extract_pts(FakeKVM("frame", pts=78.9)) == 78.9
 
     def test_extract_pts_missing_or_none(self):
         assert extract_pts(None) is None
@@ -488,8 +463,7 @@ class _ReconnectingKVM(LogSolutionKVM):
             self._pts = 1.0  # the new stream's PTS restarts from a low value
 
     def latest_frame(self):
-        frame, seq, received_at, _, pts = super().latest_frame()
-        return (frame, seq, received_at, self._stream, pts)
+        return dataclasses.replace(super().latest_frame(), stream_id=self._stream)
 
 
 class TestStreamReconnectResetsFreezeState:
@@ -603,7 +577,7 @@ class _ScriptedKVM:
         if self._readings:
             self._current = self._readings.pop(0)
         stream_id, pts = self._current
-        return (None, 1, time.monotonic(), stream_id, pts)
+        return make_snapshot(None, sequence=1, stream_id=stream_id, pts=pts)
 
 
 # Old stream runs to PTS 100; the reconnected stream's first frame has no PTS, then restarts low.

@@ -278,25 +278,13 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
                             app_origin=(x0, y0))
 
 
-def _frame_snapshot(kvm):
-    """``(frame, sequence, received_at)`` from the newest picture, or Nones."""
-    if hasattr(kvm, "latest_frame"):
-        snapshot = kvm.latest_frame()
-        if not snapshot:
-            return None, None, None
-        return snapshot[0], snapshot[1], snapshot[2]
-    frame = getattr(kvm, "frame", None)
-    if frame is None:
-        return None, None, None
-    return frame, getattr(kvm, "frame_sequence", 1), time.monotonic()
-
-
 def read_app_frame(kvm):
     """``(frame, observation, sequence, received_at)``. Frame is None when nothing has arrived."""
-    frame, sequence, received_at = _frame_snapshot(kvm)
-    if frame is None:
+    snapshot = kvm.latest_frame()
+    if snapshot is None or snapshot.image is None:
         return None, None, None, None
-    return frame, inspect_app_frame(frame, received_at, now=time.monotonic()), sequence, received_at
+    frame, received_at = snapshot.image, snapshot.received_monotonic
+    return frame, inspect_app_frame(frame, received_at, now=time.monotonic()), snapshot.sequence, received_at
 
 
 def read_latest_app_frame(kvm):
@@ -531,23 +519,12 @@ class RoundFrameGate:
 
 def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):
     """Pass the newest decoded BGR frame through the public consumer seam."""
-    if hasattr(kvm, "latest_frame"):
-        snapshot = kvm.latest_frame()
-        if snapshot is None:
-            return TakeDecision("unknown", gate.device_id, reason="no_frame")
-        if len(snapshot) < 5:
-            return TakeDecision("unknown", gate.device_id, reason="missing_source_frame_time")
-        frame, sequence, received_at, stream_id, presentation_time = snapshot[:5]
-    else:
-        frame = getattr(kvm, "frame", None)
-        sequence = getattr(kvm, "frame_sequence", 1)
-        received_at = getattr(kvm, "frame_received_monotonic", now)
-        stream_id = getattr(kvm, "stream_id", "controlled-frame")
-        presentation_time = getattr(kvm, "frame_presentation_time", None)
-    if frame is None:
+    snapshot = kvm.latest_frame()
+    if snapshot is None or snapshot.image is None:
         return TakeDecision("unknown", gate.device_id, reason="no_frame")
-    return gate.observe(frame, sequence, received_at, now=now, stream_id=stream_id,
-                        presentation_time=presentation_time, accept_round=accept_round)
+    return gate.observe(snapshot.image, snapshot.sequence, snapshot.received_monotonic, now=now,
+                        stream_id=snapshot.stream_id, presentation_time=snapshot.pts,
+                        accept_round=accept_round)
 
 
 def tcp_round_reply(decision):

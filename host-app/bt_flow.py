@@ -36,12 +36,13 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         start_all = _load_template(catalog, "BT", "start_all", log, diagnostics, threshold)
         if dock is None or window is None or start_all is None:
             raise BtStartError("hid_failed", "缺少 BT 模板 (dock_icon / window / start_all)")
-        if getattr(kvm, "frame", None) is None:
+        snapshot = kvm.latest_frame()
+        if snapshot is None:
             raise BtStartError("hid_failed", "沒有 JetKVM 影格")
         if hasattr(kvm, "rpc_errors"):
             kvm.rpc_errors.clear()
 
-        frame = kvm.frame.copy()
+        frame = snapshot.image
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         dv, dl, dt, dw, dh = locate(gray, dock, downscale=False)
         diagnostics.record("dock_icon", dv, threshold, frame, (dl, dt, dw, dh) if dl is not None else None)
@@ -52,7 +53,7 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         if last_hid_error(kvm):
             raise BtStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
 
-        frame = kvm.frame.copy()
+        frame = kvm.latest_frame().image
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         wv, wl, wt, ww, wh = locate(gray, window, downscale=True)
         diagnostics.record("window", wv, threshold, frame,

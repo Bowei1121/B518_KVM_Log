@@ -4,7 +4,7 @@ JetKVM 可重用連線模組
 =====================
 - JetKVMClient(host, password): 建立並保持 WebRTC 連線 (視訊 + rpc 控制)
     .connect() / .close() (coroutine)
-    .frame  -> 最新 BGR numpy 影格
+    .latest_frame() -> FrameSnapshot (最新 BGR 影格的副本與新鮮度; 尚無影格時 None)
     .size   -> (W, H)
     .call(method, params)  -> 送 JSON-RPC (鍵鼠)
     .click(px, py) / .type_text(text)  (coroutine)
@@ -19,6 +19,7 @@ import json
 import threading
 import time
 import uuid
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -27,6 +28,8 @@ import urllib3
 import websockets
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration
 from aiortc.sdp import candidate_from_sdp
+
+from frame_snapshot import FrameSnapshot
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -225,14 +228,14 @@ class JetKVMClient:
         await asyncio.sleep(0.3)
         self.connected = True
 
-    def latest_frame(self):
-        """Return an immutable-in-practice frame copy with stream freshness metadata."""
+    def latest_frame(self) -> Optional[FrameSnapshot]:
+        """The newest picture as a copy with its freshness metadata; None until the first frame."""
         with self._frame_lock:
             if self.frame is None:
                 return None
-            return (self.frame.copy(), self.frame_sequence,
-                    self.frame_received_monotonic, self.stream_id,
-                    self.frame_presentation_time)
+            return FrameSnapshot(self.frame.copy(), self.frame_sequence,
+                                 self.frame_received_monotonic, self.stream_id,
+                                 self.frame_presentation_time)
 
     async def _wait_ice(self, pc):
         if pc.iceGatheringState == "complete":

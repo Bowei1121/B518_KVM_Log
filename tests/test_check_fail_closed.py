@@ -2,18 +2,21 @@
 
 Socket and synthetic Log Solution frames only. No private-state setup.
 """
+import dataclasses
 import json
 import socket
 import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
+from fake_kvm import make_snapshot  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
@@ -79,7 +82,7 @@ def test_no_frame_yet_is_error_no_result(rig, device):
 
     def no_frame():
         pts["v"] += 1.0
-        return (None, int(pts["v"]), time.monotonic(), "synthetic-stream", pts["v"])
+        return make_snapshot(None, sequence=int(pts["v"]), pts=pts["v"])
 
     kvm.latest_frame = no_frame  # type: ignore[method-assign]
     res = _check(srv, device)
@@ -154,35 +157,20 @@ def test_frozen_stream_is_frame_frozen_error(rig, device):
 
 
 class _BoomAfterArmKVM(LogSolutionKVM):
-    """latest_frame raises after explode(); freeze guard still advances via attributes."""
+    """After explode() the picture is undecodable (float64, which OpenCV rejects): PTS still advances, observation raises."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._boom = False
-        self._attr_pts = 9000.0
-        self._attr_seq = 1
 
     def explode(self):
         self._boom = True
 
     def latest_frame(self):
+        snapshot = LogSolutionKVM.latest_frame(self)
         if self._boom:
-            raise RuntimeError("decode failed")
-        return LogSolutionKVM.latest_frame(self)
-
-    @property
-    def frame_presentation_time(self):
-        self._attr_pts += 0.05
-        return self._attr_pts
-
-    @property
-    def frame_sequence(self):
-        self._attr_seq += 1
-        return self._attr_seq
-
-    @property
-    def stream_id(self):
-        return "synthetic-stream"
+            return dataclasses.replace(snapshot, image=np.zeros(snapshot.image.shape, dtype=np.float64))
+        return snapshot
 
 
 @pytest.fixture

@@ -11,6 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from fake_kvm import beside, make_snapshot  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
 BOX = 14
@@ -107,8 +108,9 @@ class SyntheticDfuKVM:
 
         self._frame_seq += 1
         now = _time.monotonic()
-        frame = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
-        return (frame, self._frame_seq, now, "synthetic", now)
+        app = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
+        return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
+                             stream_id="synthetic", pts=now)
 
     def checked_channels(self):
         """1-based channel numbers in order, for checkboxes currently checked."""

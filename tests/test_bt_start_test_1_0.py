@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from bt_flow import BtStartError, run_start_all  # noqa: E402
+from fake_kvm import beside, make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from protocol_helpers import make_registry, render_log_solution  # noqa: E402
@@ -57,7 +58,9 @@ class BtKvm(FakeKvm):
 
     def latest_frame(self):
         now = time.monotonic()
-        return (render_log_solution(self.log_state, ["WAITING"] * 4), 1, now, "synthetic", now)
+        app = render_log_solution(self.log_state, ["WAITING"] * 4)
+        return make_snapshot(beside(self.frame, app), sequence=1, received_monotonic=now,
+                             stream_id="synthetic", pts=now)
 
 
 class FailingKvm(BtKvm):

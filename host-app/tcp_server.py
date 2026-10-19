@@ -380,18 +380,9 @@ class TcpJsonServer:
                 "device": device_id,
             }
 
-        # Extract frame and PTS
-        frame = None
-        pts = None
-        if hasattr(kvm, "latest_frame"):
-            latest = kvm.latest_frame()
-            if latest is not None and isinstance(latest, (tuple, list)) and len(latest) >= 5:
-                frame = latest[0]
-                pts = latest[4]
-        if frame is None and hasattr(kvm, "frame"):
-            frame = kvm.frame
-        if pts is None and hasattr(kvm, "frame_presentation_time"):
-            pts = kvm.frame_presentation_time
+        latest = kvm.latest_frame()
+        frame = None if latest is None else latest.image
+        pts = None if latest is None else latest.pts
 
         if frame is None:
             return {
