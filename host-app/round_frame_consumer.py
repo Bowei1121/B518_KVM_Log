@@ -75,7 +75,7 @@ class FrameObservation:
 
     @property
     def results_complete(self):
-        return (self.reliable and self.state == MarkerState.COMPLETE
+        return (self.reliable and self.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE)
                 and self.capacity > 0 and len(self.statuses) == self.capacity
                 and all(status in TERMINAL for status in self.statuses))
 
@@ -313,6 +313,18 @@ class RoundFrameGate:
         self.last_presentation_time = None
         self.first_static_presentation_time = None
         self.armed_capacity = None
+        self.delivered_signature = None
+        self.delivered_results = ()
+        self._candidate_signature = None
+        self._candidate_count = 0
+
+    def forget_delivered_round(self):
+        """A new monitor_start drops the previous delivery. Monitoring must be seen again."""
+        self.armed = False
+        self.taken = False
+        self.armed_capacity = None
+        self.delivered_signature = None
+        self.delivered_results = ()
         self._candidate_signature = None
         self._candidate_count = 0
 
@@ -331,6 +343,8 @@ class RoundFrameGate:
             self.last_presentation_time = None
             self.first_static_presentation_time = None
             self.armed_capacity = None
+            self.delivered_signature = None
+            self.delivered_results = ()
             self._candidate_signature = None
             self._candidate_count = 0
         if self.last_sequence is not None and sequence <= self.last_sequence:
@@ -375,9 +389,8 @@ class RoundFrameGate:
             return TakeDecision("paused", self.device_id, observation.state,
                                 observation.capacity, reason="confirmation_required")
         if observation.state == MarkerState.PREPARING:
-            # Reliable reading: resets the visibility timer and must not be treated as occluded.
-            self._candidate_signature = None
-            self._candidate_count = 0
+            # Reliable reading, and a new-round signal: drop the previous delivery.
+            self.forget_delivered_round()
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="preparing")
         if observation.state == MarkerState.STANDBY:
@@ -396,13 +409,17 @@ class RoundFrameGate:
             self.armed = True
             self.taken = False
             self.armed_capacity = observation.capacity
+            self.delivered_signature = None
+            self.delivered_results = ()
             self._candidate_signature = None
             self._candidate_count = 0
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="monitoring")
-        if self.taken:
+        signature = (observation.state, observation.capacity, observation.statuses)
+        if (self.delivered_signature is not None and signature == self.delivered_signature
+                and observation.results_complete):
             return TakeDecision("already_taken", self.device_id, observation.state,
-                                observation.capacity, reason="round_already_taken")
+                                observation.capacity, self.delivered_results, "round_already_taken")
         if not self.armed:
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="monitoring_not_observed")
@@ -418,7 +435,6 @@ class RoundFrameGate:
             return TakeDecision("waiting", self.device_id, observation.state,
                                 observation.capacity, reason="incomplete_or_nonterminal_results")
 
-        signature = (observation.capacity, observation.statuses)
         gap = (None if previous_received_at is None else
                max(0.0, received_at - previous_received_at))
         if signature == self._candidate_signature and gap <= self.max_frame_gap:
@@ -432,6 +448,8 @@ class RoundFrameGate:
         self.taken = True
         self.armed = False
         rows = tuple((index, status) for index, status in enumerate(observation.statuses, 1))
+        self.delivered_signature = signature
+        self.delivered_results = rows
         return TakeDecision("taken", self.device_id, observation.state,
                             observation.capacity, rows, "reliable_complete")
 

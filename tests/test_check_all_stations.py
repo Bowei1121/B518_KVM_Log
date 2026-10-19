@@ -1,8 +1,9 @@
-"""check / inspect read the Log Solution band the same way on every station (ticket #22).
+"""check_finish / inspect read the Log Solution band the same way on every station.
 
 FCT and BT devices go through the same round gate as DFU: Monitoring before Complete,
-two fresh equal complete frames, capacity equal to the device channels, already_taken,
-Review pauses and a frozen picture is frame_frozen. Each test drives a real Core socket
+two fresh equal complete frames, capacity equal to the device channels, already_taken
+repeats the delivered results, Review pauses and a frozen picture is frame_frozen.
+inspect reports the screen and never takes. Each test drives a real Core socket
 against a synthetic Log Solution screen.
 """
 
@@ -61,7 +62,7 @@ def _recv(sock):
     return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
 
 
-def _call(srv, device, cmd="check", timeout_sec=0, req_id="r"):
+def _call(srv, device, cmd="check_finish", timeout_sec=0, req_id="r"):
     payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": cmd,
                "timeout_sec": timeout_sec}
     with _open(srv) as sock:
@@ -89,6 +90,7 @@ def test_two_equal_complete_frames_after_monitoring_are_taken_per_slot(rig, devi
     assert resp["status"] == "ok"
     assert resp["data"] == {
         "kind": "taken", "state": "complete", "reason": "reliable_complete", "capacity": 4,
+        "active": [],
         "results": [{"slot": 1, "status": "PASS"}, {"slot": 2, "status": "FAIL"},
                     {"slot": 3, "status": "NOTEST"}, {"slot": 4, "status": "TIMEOUT"}],
     }
@@ -117,7 +119,8 @@ def test_after_taken_the_same_round_is_already_taken(rig, device):
 
     assert resp["status"] == "ok"
     assert resp["data"]["kind"] == "already_taken"
-    assert resp["data"]["results"] == []
+    assert resp["data"]["active"] == []
+    assert resp["data"]["results"] == [{"slot": i, "status": "PASS"} for i in range(1, 5)]
 
 
 @pytest.mark.parametrize("device", STATIONS)
@@ -221,9 +224,13 @@ def test_inspect_reads_the_band_without_consuming_the_round(rig, device):
 
     expected = [{"slot": 1, "status": "PASS"}, {"slot": 2, "status": "FAIL"},
                 {"slot": 3, "status": "PASS"}, {"slot": 4, "status": "NOTEST"}]
-    assert seen["data"]["kind"] == "taken"
-    assert seen["data"]["results"] == expected
-    assert again["data"]["kind"] == "taken"
+    assert seen["status"] == "ok"
+    assert seen["data"]["kind"] == "waiting"
+    assert seen["data"]["state"] == "complete"
+    assert seen["data"]["active"] == []
+    assert seen["data"]["results"] == []
+    assert again["data"]["kind"] == "waiting"
+    assert again["data"]["results"] == []
     assert labview["data"]["kind"] == "taken"
     assert labview["data"]["results"] == expected
 
@@ -233,7 +240,7 @@ def test_inspect_answers_while_a_check_holds_the_device(rig, device):
     srv, kvm = rig
     kvm.show("monitoring")
     labview = _open(srv)
-    labview.sendall((json.dumps({"protocol_version": "1.0", "req_id": "lv", "device": device, "cmd": "check",
+    labview.sendall((json.dumps({"protocol_version": "1.0", "req_id": "lv", "device": device, "cmd": "check_finish",
                                  "timeout_sec": 30}) + "\n").encode("utf-8"))
     for _ in range(200):
         if _status_busy(srv, device):

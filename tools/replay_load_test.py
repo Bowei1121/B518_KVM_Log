@@ -71,7 +71,7 @@ def build_registry(args):
 
 
 class LoadClient(threading.Thread):
-    """One device's LabVIEW-like long poll: check, read the reply, pause between rounds."""
+    """One device's LabVIEW-like long poll: check_finish, read the reply, pause between rounds."""
 
     def __init__(self, host, port, device, args, stats, stop):
         super().__init__(daemon=True, name=f"load-{device}")
@@ -88,7 +88,7 @@ class LoadClient(threading.Thread):
                 self.counter += 1
                 req_id = f"{self.device}-{self.counter}"
                 payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
-                           "cmd": "check", "timeout_sec": self.args.check_timeout}
+                           "cmd": "check_finish", "timeout_sec": self.args.check_timeout}
                 started = time.monotonic()
                 sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
                 sock.settimeout(self.args.check_timeout + 15.0)

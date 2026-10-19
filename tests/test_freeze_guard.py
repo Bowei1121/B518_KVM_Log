@@ -393,7 +393,7 @@ def freeze_rig():
 def _check_on(address, device, req_id, timeout_sec):
     with socket.create_connection(address, timeout=10.0) as sock:
         send_json(sock, {"protocol_version": "1.0", "req_id": req_id, "device": device,
-                         "cmd": "check", "timeout_sec": timeout_sec})
+                         "cmd": "check_finish", "timeout_sec": timeout_sec})
         return recv_json(sock, timeout=10.0)
 
 

@@ -223,7 +223,7 @@ class TestLightweightMonitorUIClient:
 
         with socket.create_connection((host, port), timeout=10.0) as labview_sock:
             send_json(labview_sock, {"protocol_version": "1.0", "req_id": "labview-test-01",
-                                     "cmd": "check", "device": "DFU-01", "timeout_sec": 8})
+                                     "cmd": "check_finish", "device": "DFU-01", "timeout_sec": 8})
             time.sleep(0.3)
 
             assert server.lock_manager.is_locked("DFU-01") is True
@@ -263,7 +263,7 @@ class TestLightweightMonitorUIClient:
             assert server.is_running is True
 
             send_json(labview_sock, {"protocol_version": "1.0", "req_id": "lv-check-after-ui-crash",
-                                     "device": "DFU-01", "cmd": "check", "timeout_sec": 8})
+                                     "device": "DFU-01", "cmd": "check_finish", "timeout_sec": 8})
             time.sleep(0.3)
             kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
             lv_check = recv_json(labview_sock, timeout=10.0)
@@ -281,21 +281,19 @@ class TestLightweightMonitorUIClient:
         kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
         kvm.show("monitoring")
 
-        client = CoreServiceClient(host=host, port=port)
-        out = {}
-        th = threading.Thread(target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=8.0)),
-                              daemon=True)
-        th.start()
-        time.sleep(0.3)
         kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
-        th.join(timeout=12.0)
+        client = CoreServiceClient(host=host, port=port)
+        res = client.manual_check(device="DFU-01", timeout_sec=0)
 
-        assert out["res"].get("status") == "ok"
-        assert out["res"]["kind"] == "taken"
+        assert res.get("status") == "ok"
+        assert res["kind"] != "taken"
+        assert res["state"] == "complete"
+        assert res["active"] == []
+        assert res["results"] == []
 
         # Manual checks are read-only: a LabVIEW lock on the device does not block them.
         assert server.lock_manager.try_acquire("DFU-01", req_id="other-tester") is True
-        res_locked = client.manual_check(device="DFU-01", timeout_sec=1.0)
+        res_locked = client.manual_check(device="DFU-01", timeout_sec=0)
         assert res_locked.get("status") == "ok"
         assert res_locked.get("error") != "device_busy"
         assert server.lock_manager.is_locked("DFU-01") is True

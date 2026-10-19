@@ -103,7 +103,7 @@ def _monitor_start(srv, device, req_id="ms", timeout_sec=1):
 
 
 def _check(srv, device):
-    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check",
+    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check_finish",
                        "timeout_sec": 0})
 
 

@@ -233,13 +233,15 @@ def test_present_non_string_req_id_is_invalid_request(server, req_id):
     assert resp["req_id"] == ""
 
 
-@pytest.mark.parametrize("cmd", ["check", "inspect"])
+@pytest.mark.parametrize("cmd", ["check_finish", "inspect"])
 def test_check_error_reply_has_empty_kind_as_in_protocol_9_7(server, cmd):
     resp = _send(server, {"protocol_version": "1.0", "req_id": "k1", "device": "dfu-01", "cmd": cmd,
                           "timeout_sec": 0})
 
     assert resp["error"] == "unknown_device"
-    assert resp["data"] == {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []}
+    assert resp["data"] == {
+        "kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": [],
+    }
 
 
 @pytest.mark.parametrize("items", [

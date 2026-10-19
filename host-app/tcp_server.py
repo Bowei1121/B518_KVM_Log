@@ -93,7 +93,7 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "core_status": frozenset(),
     "shutdown": frozenset(),
     "snapshot": frozenset({"format", "quality"}),
-    "check": frozenset({"timeout_sec"}),
+    "check_finish": frozenset({"timeout_sec"}),
 }
 ENVELOPE_KEYS = frozenset({
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
@@ -116,16 +116,16 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
-    "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+    "check_finish": {"kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
     "input": {"entered": []},
     "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
-    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
 }
 
 
 def _unknown(reason: str) -> Dict[str, Any]:
-    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
+    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "active": [], "results": []}
 
 
 def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,6 +147,7 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
         "state": decision.state.value if decision.state is not None else "",
         "reason": decision.reason,
         "capacity": int(decision.capacity),
+        "active": [],
         "results": [{"slot": slot, "status": status} for slot, status in decision.results],
     }
 
@@ -154,8 +155,8 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
 def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
-    Reports what the screen shows now. A complete round is reported as taken only after two
-    equal complete readings, and nothing here arms or consumes the device's round gate.
+    Reports what the screen shows now. Never returns taken and never arms or consumes
+    the device's round gate. A finished screen is waiting with empty results.
     """
     from round_frame_consumer import MarkerState, read_latest_app_frame
 
@@ -164,26 +165,12 @@ def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, A
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
     if not obs.reliable:
         return _unknown(obs.reason)
-    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
+    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity),
+            "active": []}
     if obs.state == MarkerState.REVIEW:
         return {**base, "kind": "paused", "reason": "confirmation_required", "results": []}
-    if obs.state != MarkerState.COMPLETE:
-        return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
-    if not obs.results_complete:
-        if stability is not None:
-            stability.update(sig=None, count=0)
-        return {**base, "kind": "waiting", "reason": "incomplete_or_nonterminal_results", "results": []}
-    signature = (obs.capacity, obs.statuses)
-    if stability is None:
-        return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
-    if stability["sig"] == signature:
-        stability["count"] += 1
-    else:
-        stability.update(sig=signature, count=1)
-    results = [{"slot": slot, "status": status} for slot, status in enumerate(obs.statuses, 1)]
-    if stability["count"] >= 2:
-        return {**base, "kind": "taken", "reason": "reliable_complete", "results": results}
-    return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
+    # inspect never delivers. A finished screen is waiting with empty results; check_finish takes it.
+    return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
 
 
 class TcpJsonServer:
@@ -280,7 +267,7 @@ class TcpJsonServer:
         self.register_handler("status", self._handle_status)
         self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
-        self.register_handler("check", self._handle_check)
+        self.register_handler("check_finish", self._handle_check_finish, device_bound=True)
         self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("start_test", self._handle_start_test, device_bound=True)
@@ -550,6 +537,7 @@ class TcpJsonServer:
 
         entry = req["_device_entry"]
         track = self._round_track(entry.device_id)
+        self._round_gate(entry.device_id).forget_delivered_round()
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
@@ -581,7 +569,7 @@ class TcpJsonServer:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
-    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_check_finish(self, req: Dict[str, Any]) -> Dict[str, Any]:
         return await self._long_poll(req, read_only=False)
 
     async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -602,7 +590,8 @@ class TcpJsonServer:
         reader = req.get("_reader")
         writer = req.get("_writer")
         start_time = time.monotonic()
-        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
+        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0,
+                                "active": [], "results": []}
         stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
         # Visibility recovery (check only): when Log Solution stopped being visible, and Dock clicks so far.
         # Only a reliable reading resets the timer; the click count never resets within a request.
@@ -647,6 +636,8 @@ class TcpJsonServer:
                     "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
                 }
             if obs["kind"] in ("taken", "paused", "already_taken"):
+                return {"status": "ok", "data": obs}
+            if read_only and obs.get("state") in ("complete", "manual_stop_complete"):
                 return {"status": "ok", "data": obs}
             if timeout_sec == 0:
                 return {"status": "ok", "data": obs}
@@ -751,7 +742,7 @@ class TcpJsonServer:
                 return "invalid_argument", "quality must be 0 for png"
             if fmt == "jpeg" and not 1 <= quality <= 100:
                 return "invalid_argument", "quality must be between 1 and 100 for jpeg"
-        if cmd in ("check", "inspect"):
+        if cmd in ("check_finish", "inspect"):
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 return "invalid_argument", "timeout_sec is required and must be a number"

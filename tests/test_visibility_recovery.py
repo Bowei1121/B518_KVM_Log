@@ -100,7 +100,7 @@ def _send(srv, payload):
 
 
 def _check(srv, device, timeout_sec=0):
-    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check",
+    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check_finish",
                        "timeout_sec": timeout_sec})
 
 

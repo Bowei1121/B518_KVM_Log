@@ -90,7 +90,7 @@ def test_inspect_is_not_blocked_by_a_labview_lock(rig):
     srv, kvm = rig
     kvm.show("monitoring")
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 10})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 10})
     time.sleep(0.3)
     assert srv.lock_manager.is_locked(DEVICE)
 
@@ -108,17 +108,20 @@ def test_inspect_never_takes_the_round_from_labview(rig):
     srv, kvm = rig
     kvm.show("monitoring")
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 15})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)
 
-    ui_th, ui_out = _background(lambda: _inspect_once(srv, 12))
     time.sleep(0.3)
     kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
-    ui_th.join(timeout=15)
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "ui-once", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        ui_resp = _recv(ui)
     lv_resp = _recv(labview)
     labview.close()
 
-    assert ui_out["resp"]["data"]["kind"] == "taken"
+    assert ui_resp["data"]["kind"] != "taken"
+    assert ui_resp["data"]["active"] == []
+    assert ui_resp["data"]["results"] == []
     assert lv_resp["status"] == "ok"
     assert lv_resp["data"]["kind"] == "taken"
     assert [row["status"] for row in lv_resp["data"]["results"]] == ["PASS", "FAIL", "PASS", "PASS"]
@@ -128,7 +131,7 @@ def test_inspect_after_labview_took_the_round_still_reports_the_screen_not_alrea
     srv, kvm = rig
     kvm.show("monitoring")
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 15})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
     assert _recv(labview)["data"]["kind"] == "taken"

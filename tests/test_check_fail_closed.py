@@ -37,13 +37,13 @@ def server(tmp_path):
 
 
 def run_check_cmd(server, req):
-    """Drive the check handler directly, the way dispatch would for a device-bound request."""
+    """Drive the check_finish handler directly, the way dispatch would for a device-bound request."""
     req = dict(req)
     req.setdefault("timeout_sec", 0)
     req.setdefault("_kvm_client", RealishKVM())
     req.setdefault("_device_entry", server.device_registry.get(req["device"]))
     server._is_running = True  # handler is driven directly, without the socket loop
-    return asyncio.run(server._handle_check(req))
+    return asyncio.run(server._handle_check_finish(req))
 
 
 @pytest.mark.parametrize("device", ALL_STATIONS)

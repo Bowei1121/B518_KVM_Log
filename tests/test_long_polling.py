@@ -86,7 +86,7 @@ def _recv(sock, timeout=10.0):
 
 def _check_once(rig, device, req_id, timeout_sec):
     with _open(rig) as sock:
-        _send(sock, {"req_id": req_id, "device": device, "cmd": "check", "timeout_sec": timeout_sec})
+        _send(sock, {"req_id": req_id, "device": device, "cmd": "check_finish", "timeout_sec": timeout_sec})
         return _recv(sock)
 
 
@@ -180,7 +180,7 @@ def test_frozen_picture_aborts_long_poll_immediately(rig):
 def test_disconnect_during_long_poll_releases_the_device_lock(rig):
     rig.kvm().show("monitoring")
     sock = _open(rig)
-    _send(sock, {"req_id": "req-drop", "device": DEVICE, "cmd": "check", "timeout_sec": 30})
+    _send(sock, {"req_id": "req-drop", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 30})
     _settle(0.3)
     assert rig.srv.lock_manager.is_locked(DEVICE)
 
@@ -194,7 +194,7 @@ def test_disconnect_during_long_poll_releases_the_device_lock(rig):
 
 def test_invalid_timeout_is_rejected_before_polling(rig):
     with _open(rig) as sock:
-        _send(sock, {"req_id": "bad-timeout", "device": DEVICE, "cmd": "check", "timeout_sec": "not-a-number"})
+        _send(sock, {"req_id": "bad-timeout", "device": DEVICE, "cmd": "check_finish", "timeout_sec": "not-a-number"})
         resp = _recv(sock)
 
     assert resp["status"] == "error"
@@ -274,7 +274,7 @@ def test_cancelled_check_of_a_gone_client_writes_no_reply_and_releases_the_lock(
                         kvm_pool=KVMConnectionPool(client_factory=lambda host, password="": kvm))
     srv._is_running = True
     writer = _GoneWriter()
-    line = json.dumps({"protocol_version": "1.0", "req_id": "gone-1", "device": DEVICE, "cmd": "check",
+    line = json.dumps({"protocol_version": "1.0", "req_id": "gone-1", "device": DEVICE, "cmd": "check_finish",
                        "timeout_sec": 30}) + "\n"
 
     async def serve_one_line():
@@ -293,7 +293,7 @@ def test_check_in_progress_is_answered_server_shutting_down_when_core_stops(rig)
     rig.kvm().show("monitoring")
     sock = _open(rig)
     try:
-        _send(sock, {"req_id": "req-stop", "device": DEVICE, "cmd": "check", "timeout_sec": 30})
+        _send(sock, {"req_id": "req-stop", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 30})
         deadline = time.monotonic() + 5.0
         while not rig.srv.lock_manager.is_locked(DEVICE) and time.monotonic() < deadline:
             time.sleep(0.05)
