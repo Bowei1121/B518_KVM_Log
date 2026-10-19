@@ -6,7 +6,6 @@ without testing are evidence result. The command can deliver a finished round an
 does not consume an in-progress one.
 """
 
-import json
 import socket
 import sys
 import threading
@@ -65,7 +64,7 @@ def test_check_start_requires_timeout_sec(rig):
     payload = {"protocol_version": "1.0", "req_id": "bad", "device": DEVICE, "cmd": "check_start"}
     with socket.create_connection((host, port), timeout=3.0) as sock:
         sock.sendall(dumps_request(payload))
-        resp = json.loads(sock.makefile().readline())
+        resp = recv_reply(sock)
     assert resp["error"] == "invalid_argument"
 
 

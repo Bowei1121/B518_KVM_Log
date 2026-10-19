@@ -17,8 +17,6 @@ from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from fake_kvm import FakeKVM, make_snapshot  # noqa: E402
 
-PROTOCOL = PROTOCOL_VERSION
-
 # Leftover bytes per open test connection. Weak keys: a closed socket drops its buffer, and a
 # new socket never inherits another one's bytes.
 _REPLY_BUFFERS: "weakref.WeakKeyDictionary[Any, bytearray]" = weakref.WeakKeyDictionary()
@@ -55,7 +53,7 @@ def make_registry(routes=None) -> DeviceRegistry:
 def wire(obj: Dict[str, Any]) -> Dict[str, Any]:
     """Fill protocol_version and req_id when a test does not set them."""
     out = dict(obj)
-    out.setdefault("protocol_version", PROTOCOL)
+    out.setdefault("protocol_version", PROTOCOL_VERSION)
     out.setdefault("req_id", f"t-{uuid.uuid4().hex[:8]}")
     out.setdefault("device", "")
     return out
