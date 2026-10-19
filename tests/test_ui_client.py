@@ -301,6 +301,42 @@ class TestLightweightMonitorUIClient:
         server.lock_manager.release("DFU-01")
         client.disconnect()
 
+    def test_manual_check_names_state_and_started_channels(self, running_core_service):
+        """Manual inspect text names every Log state and lists started-channel evidence."""
+        from ui_app import format_manual_check
+
+        _server, kvm_map, (host, port) = running_core_service
+        kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())
+        client = CoreServiceClient(host=host, port=port)
+
+        kvm.show("monitoring", ["COMPLETING", "FAIL", "WAITING", "NOTEST"])
+        first = format_manual_check(client.manual_check(device="DFU-01", timeout_sec=0))
+        assert "監控就緒" in first
+        assert "測試中" not in first
+        assert "已有結果" not in first
+
+        kvm.show("monitoring", ["COMPLETING", "FAIL", "WAITING", "NOTEST"])
+        second = format_manual_check(client.manual_check(device="DFU-01", timeout_sec=0))
+        assert "監控就緒" in second
+        assert "通道 1 測試中" in second
+        assert "通道 2 已有結果" in second
+
+        expected = (
+            ("preparing", (), "準備中"),
+            ("review", (), "待確認"),
+            ("standby", (), "待命"),
+            ("monitoring", (), "監控就緒"),
+            ("complete", ("PASS", "FAIL", "NOTEST", "TIMEOUT"), "一般完成"),
+            ("manual_stop_complete", ("PASS", "FAIL", "STOPPED", "NOTEST"), "人工停止完成"),
+        )
+        for state, statuses, label in expected:
+            kvm.show(state, statuses)
+            text = format_manual_check(client.manual_check(device="DFU-01", timeout_sec=0))
+            assert label in text, text
+
+        assert kvm.events == []
+        client.disconnect()
+
     def test_ui_runs_as_separate_process_headless_check(self, running_core_service):
         """Verify ui_app runs as a decoupled standalone process using --headless-check."""
         server, kvm_map, (host, port) = running_core_service
