@@ -92,8 +92,4 @@ python host-app/core_daemon.py restart --port 5000
 
 ## 8. 未驗證與待現場確認
 
-- JetKVM 靜態 IP 設定選項（見第 2 節）。
-- FCT 推入前訊號到首次寫檔的實際時間，決定 Log Solution FCT start 期限（見第 4 節）。
-- 人員按停止監控後，Log Solution header 的實際標記是否符合規定：1.2 為 Complete（含 `STOPPED`，`check` 正常交付 `taken`）；1.1 為 Standby（`check` 回 `round_lost`）。見 `docs/PROTOCOL.md` 5.4 與第 10 節。
-- 九台同時運作的 CPU、記憶體與回覆延遲，需以混合真機的錄影重播壓測實測（見 `docs/LOAD_TEST.md`）。
-- LabVIEW 端 type definition 與 VI 改版（spec #13，人工）。
+所有待現場驗證項目已集中到 [`docs/FIELD_VERIFICATION.md`](FIELD_VERIFICATION.md)，到現場時逐項執行並記錄結果。

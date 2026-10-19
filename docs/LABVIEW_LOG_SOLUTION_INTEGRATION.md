@@ -88,7 +88,7 @@ DFU、FCT、BT 全部以 Log Solution 作正式結果來源。原本 ATE 軟體�
 | 待確認通知 | 現行 JSON 長輪詢不會立即回報待確認，尚須補齊 |
 | UUID／ACK／保存 | 目前尚無本規格要求的完整輪次交付、持久保存與接收確認機制 |
 | 設備識別 | 現有鎖與狀態使用的 key 不一致；需落實固定唯一 ID 的配置 |
-| 現場驗證 | 未驗實際 JetKVM 壓縮／縮放、LabVIEW 收發、ATE 動作與重啟恢復 |
+| 現場驗證 | 未驗；項目集中於 `FIELD_VERIFICATION.md` |
 
 既有 116 tests 與本次保存 App 像素回放通過，不代表上述待補項目已完成。技術證據及訪談歷程見 `PROJECT_SUMMARY_20261014.md`；歷史配對部署紀錄見 `TICKET16_DEPLOYMENT.md`，其中舊回覆格式須與現行 JSON 行為區分。
 
