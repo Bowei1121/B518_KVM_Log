@@ -12,6 +12,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
@@ -49,14 +52,8 @@ def _send(srv, cmd, timeout_sec=0, req_id="r", device=DEVICE, **extra):
     if cmd == "monitor_start" and "timeout_sec" not in extra and timeout_sec == 0:
         payload["timeout_sec"] = 1
     with socket.create_connection((host, port), timeout=15.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(payload))
+        return recv_reply(sock)
 
 
 def test_check_start_prefers_taken_over_started_on_a_complete_screen(rig):

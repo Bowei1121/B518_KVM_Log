@@ -5,17 +5,29 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Dict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import PROTOCOL_VERSION, build_request, dumps_request, read_reply  # noqa: E402
 from device_registry import DeviceRegistry  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from fake_kvm import FakeKVM, make_snapshot  # noqa: E402
 
-PROTOCOL = "1.0"
+PROTOCOL = PROTOCOL_VERSION
+
+# Leftover bytes per open test connection. Weak keys: a closed socket drops its buffer, and a
+# new socket never inherits another one's bytes.
+_REPLY_BUFFERS: "weakref.WeakKeyDictionary[Any, bytearray]" = weakref.WeakKeyDictionary()
+
+
+def recv_reply(sock: Any) -> Any:
+    """Next reply on ``sock``. Keeps bytes after the newline for the following call on it."""
+    buf = _REPLY_BUFFERS.setdefault(sock, bytearray())
+    return read_reply(sock, buf=buf)
 
 
 def make_registry(routes=None) -> DeviceRegistry:
@@ -307,7 +319,6 @@ def arm_round(srv, kvm, device, statuses=None):
     monitor_start sees Preparing (no Dock, no shortcut) and then Monitoring, so a later
     check_finish is allowed to judge the round.
     """
-    import json
     import socket
     import threading
     import time
@@ -318,17 +329,12 @@ def arm_round(srv, kvm, device, statuses=None):
 
     def run():
         host, port = srv.server_address
-        payload = {"protocol_version": "1.0", "req_id": f"arm-{device}", "device": device,
-                   "cmd": "monitor_start", "timeout_sec": 1}
+        payload = build_request(
+            "monitor_start", f"arm-{device}", device, {"timeout_sec": 1},
+        )
         with socket.create_connection((host, port), timeout=10.0) as sock:
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-            buf = b""
-            while b"\n" not in buf:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                buf += chunk
-        out["resp"] = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+            sock.sendall(dumps_request(payload))
+            out["resp"] = read_reply(sock)
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

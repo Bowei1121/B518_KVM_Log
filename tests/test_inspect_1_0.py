@@ -14,6 +14,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_registry  # noqa: E402
@@ -47,17 +50,11 @@ def _open(srv):
 
 
 def _send(sock, obj):
-    sock.sendall((json.dumps({"protocol_version": "1.0", **obj}) + "\n").encode("utf-8"))
+    sock.sendall(dumps_request({"protocol_version": "1.0", **obj}))
 
 
 def _recv(sock):
-    buf = bytearray()
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("closed")
-        buf.extend(chunk)
-    return json.loads(bytes(buf).partition(b"\n")[0].decode("utf-8"))
+    return recv_reply(sock)
 
 
 def _background(fn):

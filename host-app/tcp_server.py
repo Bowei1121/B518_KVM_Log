@@ -62,7 +62,11 @@ except ImportError:
 
 logger = logging.getLogger("TcpJsonServer")
 
-PROTOCOL_VERSION = "1.0"
+try:
+    from core_protocol import COMMON_FIELDS, ENVELOPE_KEYS, PROTOCOL_VERSION
+except ImportError:
+    from .core_protocol import COMMON_FIELDS, ENVELOPE_KEYS, PROTOCOL_VERSION  # type: ignore[import-not-found,no-redef]
+
 CORE_VERSION = "2.0.0"
 CHECK_MAX_TIMEOUT_SEC = 3600
 CHECK_POLL_INTERVAL_SEC = 0.5
@@ -86,7 +90,6 @@ def _visibility(obs: Dict[str, Any]) -> str:
     return "unseen" if obs.get("kind") == "unknown" else "seen"
 
 
-COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
 COMMAND_FIELDS: Dict[str, frozenset] = {
@@ -98,9 +101,6 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "check_finish": frozenset({"timeout_sec"}),
     "check_start": frozenset({"timeout_sec"}),
 }
-ENVELOPE_KEYS = frozenset({
-    "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
-})
 ERROR_CODE_MAP = {
     "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
