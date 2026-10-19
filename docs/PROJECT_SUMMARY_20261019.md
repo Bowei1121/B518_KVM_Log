@@ -122,3 +122,4 @@
 - Q18：六種 `kind` 定義與 LabVIEW 動作表定案。Q19：新增 `docs/LABVIEW_HANDOFF.md` 給 LabVIEW 設計者（呼叫順序、kind 表、錯誤碼處置、何時可做設備動作）。
 - CONTEXT.md：「同輪重傳」擴充為含上位機主動重看；新增「本輪開始請求」。
 - to-spec：spec #3 發布為 **#40**（`ready-for-agent`），本機副本 `docs/specs/0003-bridge-protocol-start-finish.md`；測試切入點沿用 spec #2（Q16 已確認）。新增 `docs/LABVIEW_HANDOFF.md`。#36 以「由 #40 取代」關閉；#13 已留言提醒依 #40 與交接文件設計。
+- to-tickets：spec #40 拆成 7 張票 **#41～#47**（#40 的 sub-issue，原生 blocked-by：#42←#41、#43←#41、#44←#42／#43、#45←#44、#46←#45、#47←#42／#44／#45），皆 `ready-for-agent`；本機副本 `.scratch/bridge-protocol-start-finish/issues/01～07-*.md`（本機編號 = GitHub 編號 − 40）。1～5 都改 TCP 伺服器，需依序進行。
