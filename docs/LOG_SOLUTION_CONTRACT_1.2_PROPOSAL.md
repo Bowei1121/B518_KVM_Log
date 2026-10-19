@@ -1,6 +1,6 @@
 # B518 Log Solution 修改建議：KVM 顯示契約 1.2
 
-日期：2026-10-16（Asia/Taipei），2026-10-17 補充 C6，2026-10-19 補充 C7 並修訂 C5
+日期：2026-10-16（Asia/Taipei），2026-10-17 補充 C6，2026-10-19 補充 C7、修訂 C5，並改寫 C1 為第五種圖樣（以 `LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 為準）
 對象：B518 Log Solution 開發者（請依本文件在 Log Solution 專案自行開票）
 提出方：B518 JetKVM Log 橋接程式
 依據：Log Solution `main` `9cad82f`（VERSION 0.1.0）原始碼唯讀查證；`docs/refactoring/KVM_DISPLAY_CONTRACT.md`（1.1）
@@ -16,7 +16,7 @@
 4. **色帶左側被遮住時一定偵測得到**：左定位方塊移到色帶最左側上方，左右兩個定位方塊涵蓋整條色帶；任何從左側蓋到色帶的視窗都會先蓋住左定位方塊。
 5. **格子顏色有唯一的書面來源**：每種格子狀態的顏色寫進契約，雙方都以契約為準，不再各自抄程式裡的值。
 
-狀態圖樣、排數標記不變。**C6 改變左定位方塊的位置**，橋接程式需要配合更新（見第 4 節）；C7 只把現有顏色寫進契約、移除未使用的 `STALLED`，並統一 NOTEST 的值；C1～C5 不影響橋接判讀。
+排數標記不變。**C1 新增第五種狀態圖樣（0011）、C6 改變左定位方塊的位置**，橋接程式都需要配合更新（見第 4 節）；C7 只把現有顏色寫進契約、移除未使用的 `STALLED`，並統一 NOTEST 的值；C2～C5 不影響橋接判讀。
 
 ## 2. 現況與問題
 
@@ -33,25 +33,38 @@
 
 ## 3. 建議修改
 
-### C1 人工停止 → Complete（解決 P1、P2）
+### C1 人工停止 → 第五種圖樣 MANUAL_STOP_COMPLETE（解決 P1、P2）
 
-規則：**人工停止且所有格子都是終局狀態、沒有待確認事項時，顯示 Complete，並視為結果可取用。**
+> **2026-10-19 修訂**：原建議「人工停止沿用 Complete 圖樣」已由使用者改為**新增第五種圖樣**，細節以 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`（交接文件，兩專案同步副本）為準。本節只摘要，兩者不一致時以交接文件為準。
+
+規則：**人工停止、所有格子都是終局狀態、沒有待確認事項時，顯示 MANUAL_STOP_COMPLETE，並視為結果可取用。** 一般完成仍顯示 COMPLETE，兩者必須可以分辨，橋接要明確回報「人工停止」。
+
+| 狀態 | 上排 | 下排 | 位元（左上、右上、左下、右下；1＝黑） |
+| --- | --- | --- | --- |
+| STANDBY | B W | W B | 1001 |
+| MONITORING | B B | W W | 1100 |
+| REVIEW | B W | B W | 1010 |
+| COMPLETE | W B | B W | 0110 |
+| **MANUAL_STOP_COMPLETE** | **W W** | **B B** | **0011（新增，2026-10-19 使用者確認）** |
 
 ```text
 state_for_round_snapshot(snapshot)
-  none                                         → Standby
-  awaiting review / pending conflict / 未確認警報 → Review      # 優先序不變
-  COMPLETED and result_available               → Complete
+  none                                          → Standby
+  awaiting review / pending conflict / 未確認警報 → Review                  # 優先序不變
+  COMPLETED and result_available                → Complete
   STOPPED and completion_reason == manual_stop
-      and result_available                     → Complete    # 新增
-  RUNNING                                      → Monitoring
-  其他（未開始、啟動失敗）                        → Standby
+      and result_available                      → ManualStopComplete      # 新增
+  RUNNING                                       → Monitoring
+  其他（未開始、啟動失敗）                         → Standby
 ```
 
-- `result_available`：`COMPLETED` 或「`STOPPED` 且 `completion_reason == manual_stop` 且 `collection_stopped` 且每格皆為終局狀態」時為真。
-- 優先序不變：停止時仍有未處理的衝突或未確認的警報，就維持 Review，等人員處理完才變成 Complete。
-- 啟動失敗或從未開始的輪次仍為 Standby。
+- `result_available`：`COMPLETED`，或「`STOPPED` 且 `completion_reason == manual_stop` 且 `collection_stopped` 且每格皆為終局狀態」時為真。
+- 優先序不變：停止時仍有未處理的衝突或未確認警報，先維持 Review，處理完才變成 MANUAL_STOP_COMPLETE。
+- 整輪人工停止的原因要保留在快照與稽核中；即使每格都已有終局結果、沒有任何 STOPPED 格，也要顯示 MANUAL_STOP_COMPLETE，不能靠「有沒有 STOPPED 格」推測。
+- 五種圖樣都恰好兩黑兩白，任一格翻轉都不會變成另一個合法圖樣；未定義圖樣（例如 0101）、缺格、低對比一律 unknown。
 - 稽核紀錄保留 `completion_reason = manual_stop` 與原始 `STOPPED` 狀態，不改寫成 FAIL。產品處置由 LabVIEW 依「非 PASS 即不良」處理。
+- **未見本次監控中就人工停止**：Log Solution 照常顯示 MANUAL_STOP_COMPLETE；橋接因為沒有本輪的同輪證據，不自動交付，改回報「需人工核對」（交接文件 9.2）。
+- 舊 1.1 consumer 不認得 0011，**必須先更新橋接，才能部署 Log Solution 1.2**（與 C6 相同）。
 
 ### C2 停止時一定把非終局格子設為 STOPPED（解決 P3）
 
@@ -130,15 +143,17 @@ state_for_round_snapshot(snapshot)
 | --- | --- | --- |
 | 1.1（現況） | 現況／新版 | 人工停止後顯示 Standby，橋接回 `round_lost`，LabVIEW 暫停並通知人員，不交付結果（安全，不會誤判） |
 | 1.2 | 現況（只支援 1.1 幾何） | **讀不到畫面**（左定位方塊位置不同），`check` 會點 Dock 恢復後回 `log_solution_not_visible`；不會誤判，但無法交付 |
-| 1.2 | 支援新舊幾何的版本 | 人工停止的輪次以 Complete 交付，`results` 含 `STOPPED`；左側遮擋一律判為不可見並點 Dock 恢復 |
+| 1.2 | 現況（不認得 0011） | 人工停止畫面（0011）判為 unknown，`check` 點 Dock 後回 `log_solution_not_visible`；不會誤判，但無法交付 |
+| 1.2 | 支援新舊幾何與 0011 的版本 | 人工停止的輪次以 MANUAL_STOP_COMPLETE 交付並回報人工停止，`results` 含 `STOPPED`；未見本次監控中則回需人工核對；左側遮擋一律判為不可見並點 Dock 恢復 |
 
 **部署順序：先更新橋接程式（支援新舊兩種幾何），再更新 Log Solution 1.2。** 反過來會讓 1.2 的畫面暫時讀不到。
 
 ## 5. 驗收建議（Log Solution 專案）
 
 1. `state_for_round_snapshot` 單元測試：
-   - 人工停止、全部終局、無衝突 → Complete。
-   - 人工停止但有未處理衝突或未確認警報 → Review。
+   - 人工停止、全部終局、無衝突 → MANUAL_STOP_COMPLETE（0011）；一般完成仍為 Complete（0110）。
+   - 人工停止但有未處理衝突或未確認警報 → Review；處理後才變成 MANUAL_STOP_COMPLETE。
+   - 人工停止且每格都已有終局結果（沒有 STOPPED 格）→ 仍為 MANUAL_STOP_COMPLETE。
    - 啟動失敗或未開始 → Standby。
    - `COMPLETED` → Complete（行為不變）。
 2. `stop()` 在 `monitor is None` 時，所有非終局格子變成 `STOPPED`，`result_available` 為真。
@@ -146,7 +161,7 @@ state_for_round_snapshot(snapshot)
 4. FCT profile `start` 期限設為 120 秒時：監控開始後 100 秒才出現第一筆檔案變動，該格不會被鎖成 `NOTEST`。
 5. 左定位方塊位於色帶第 1 格正上方，符合 C6 五條限制條件；以 Tk 擷取確認「KVM RESULT」字樣已移除、左右定位方塊與排數標記、狀態標記、色帶互不重疊，並在縮放 1.0／1.5 下都成立。
 6. 單元測試：`STATUS_COLOURS` 與契約顏色表逐項相同，且不含 `STALLED`；任兩種顏色在每個通道相差超過 40。
-7. 以 `tools/smoke_state_marker_app.py` 產生「人工停止 → Complete」的實際 Tk 擷取，交給橋接程式用既有 frame replay 工具驗證 `check` 回 `kind=taken`、`results` 含 `STOPPED`。
+7. 以 `tools/smoke_state_marker_app.py` 產生「人工停止 → MANUAL_STOP_COMPLETE（0011）」的實際 Tk 擷取，交給橋接程式用既有 frame replay 工具驗證 `check` 回 `kind=taken`、標明人工停止、`results` 含 `STOPPED`。
 
 ## 6. 橋接程式與部署的配合事項（供參考，不需 Log Solution 處理）
 

@@ -201,7 +201,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 - Dock 上找不到 Log Solution 圖示：立即回 `error = "log_solution_not_found"`，不算一次恢復。這是嚴重異常，需停線檢查。
 - 同一請求最多點 3 次（恢復成功也不重置次數），仍看不到回 `error = "log_solution_not_visible"`，`data.reason` 為最後一次判讀原因（可分辨被遮住或 Log Solution 設定錯誤）。被遮住後約 35 秒內恢復判讀；3 次都失敗約 105 秒回錯誤。
 - 本輪在串流上已見過 Monitoring，之後判讀到 Standby：立即回 `error = "round_lost"`。本輪結果已無法取得，LabVIEW 應暫停並通知人員。
-- 人工停止監控：Log Solution 1.2 下顯示 Complete（`results` 含 `STOPPED`），依一般流程回 `taken` 正常交付；1.1 下顯示 Standby，因此落入 `round_lost`。
+- 人工停止監控：現行 1.1 下 Log Solution 顯示 Standby，因此落入 `round_lost`。Log Solution 1.2 將改為第五種圖樣 MANUAL_STOP_COMPLETE（0011），橋接支援後才會交付並明確回報人工停止；回覆欄位尚未定稿（見第 10 節、`docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`）。
 - 以上兩者與其他錯誤一樣是 `status = "error"`，`data.kind` 為 `unknown`。`data` 其餘欄位可能保留最後一次觀察值，LabVIEW 只依 `error` 判斷。
 - `inspect` 為唯讀，不點 Dock。
 
@@ -492,8 +492,8 @@ Log Solution 仍在監控中時（上一輪尚未結束）：
 ### 仍待辦
 
 - **Log Solution 1.2 定位方塊移動（等 Log Solution 定座標）**：左定位方塊將移到色帶最左側上方（移除「KVM RESULT」字樣），使左右定位方塊涵蓋整條色帶。橋接過渡期同時支援 1.1 與新位置（以兩定位方塊距離判斷），見 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` C6。
-- **人工停止後的 header 實際標記（現場確認）**：規定行為見 5.4——Log Solution 1.2 下人工停止顯示 Complete（`results` 含 `STOPPED`），`check` 正常回 `taken` 交付；1.1 下人工停止顯示 Standby，`check` 回 `round_lost`。待現場確認的只是實機 header 是否確實如此標記，不改變上述規定。
+- **人工停止的第五種圖樣（等協定欄位定案）**：Log Solution 1.2 人工停止改顯示 MANUAL_STOP_COMPLETE（0011，2026-10-19 確認）。橋接需新增此狀態：全部格位終局且已見本次 Monitoring 才交付並回報人工停止；未見本次 Monitoring 則回「需人工核對」、不交付。回覆欄位與錯誤碼尚待定案，見票 #36 與 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`。
 - **LabVIEW 端**：typedef、`TCPIP_test.vi` 改版為 JSON 1.0，屬 spec #13，需人工在 LabVIEW 完成。
 - **FCT 推入前訊號的現場時序**：訊號到首次寫檔的實際時間，決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
-- **Log Solution 1.2**：人工停止顯示 Complete、視窗前景時機等修改，依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 由 Log Solution 開發者開票。本橋接不依賴 1.2；1.1 下人工停止的輪次回 `round_lost`。
+- **Log Solution 1.2**：人工停止第五種圖樣、視窗前景時機、左定位點移動等修改，依 `docs/LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md` 與 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 由 Log Solution 開發者開票。橋接須先支援 0011 與新幾何才能部署 1.2；1.1 下人工停止的輪次回 `round_lost`。
 - **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。
