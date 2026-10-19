@@ -31,3 +31,44 @@
 - Q1：1.2 建議文件新增 **C7**：格子顏色表寫進契約、移除未使用的 `STALLED`、NOTEST 以 `#f04bf1` 為準、容許誤差為 RGB 歐氏距離 ≤ 20（任兩色須 > 40；WAITING 與 STOPPED 約 45，餘裕小）。
 - Q2：橋接釘住顏色並開票 **#34**（`ready-for-agent`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/09-pin-status-colours.md`）。
 - Q3：C5 改為「1.2 起上位機先支援新舊兩種畫面，再更新 App」。
+
+## 第五種圖樣 0011 的整合
+
+- 使用者決定以 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 的第五種圖樣 MANUAL_STOP_COMPLETE（0011）為準，取代 1.2 建議原 C1「人工停止沿用 Complete」。
+- 主資料夾 main 上未推送的 3 個 commit（`b92f25e`、`f09f2d4`、`243b64f`）已 rebase 到 `fd6a8ae` 之上，放在分支 `docs/handoff-1-2-0011`；兩份 10-19 摘要合併為本檔，主資料夾那份完整保留在下方一節。
+- 1.2 建議 C1 改寫為第五種圖樣（以 HANDOFF 為準）；相容性表、驗收清單、PROTOCOL.md 5.4 與第 10 節同步更新。
+- 開橋接票 **#36**（已改為 `ready-for-agent`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/10-manual-stop-pattern-0011.md`）。已確認的協定：交付時 `state = "manual_stop_complete"`（不新增欄位）；未見本次 Monitoring 回 `error = "manual_verification_required"`。
+- 主資料夾的本機 main 仍是 rebase 前的 3 個 commit，PR 合併後需要把它對齊到 `origin/main`。
+
+## 主資料夾工作階段的 10-19 紀錄（HANDOFF 與第五種圖樣）
+
+
+### 本次接續與範圍
+
+本輪由 Log Solution 討論工作交接文件到 KVM_Log；未變更橋接產品、指令或 GitHub 議題。先讀 AGENTS.md、CONTEXT.md 及相關 ADR，未把提案或歷史測試當成已部署結果。
+
+既有提案為 LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md（2026-10-17 補充 C6）。原始碼查核：consumer 仍為 1.1、四個狀態；能解析 STOPPED 格位，但人工停止的 App 標記落 STANDBY，不能以此可靠交付整輪人工停止原因。
+
+### 已確認的討論結果
+
+- READY 可接受新輪，BUSY 表示本輪工作／待確認；監控就緒要等來源基準完成，上位機再啟動 ATE。
+- 藍框只表示一排／兩排；紅框採五種狀態語意，區分正常與人工停止可交付。新增的第五圖樣仍為建議，不是已核准位元規格。
+- 通道及色帶保留 STOPPED，已取得結果保留，操作員決定重工範圍；整輪人工停止原因須明確傳遞。
+- TESTING 是通道觀察，不是完成結果的必經條件；FCT start 先採120秒，整輪無活動也無有效結果時停止、NOTEST、REVIEW，人員確認後才交付。
+- 視窗事件提升，不永久置頂／不強制焦點；幾何沿用提案方向，精確座標待驗。
+
+### 產物與未定事項
+
+新增 [跨專案狀態辨識交接](LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md)，與 Log Solution 主文件為相同內容快照；同步 CONTEXT.md 的已確認詞彙。
+
+第五圖樣、精確幾何、準備期間畫面、未見 BUSY 就中止／逾時的同輪性，以及人工停止／TESTING 的對外協定格式仍須確認。未修改原提案、已發布1.1或產品程式；本輪只做文件一致性驗證，未跑產品測試。
+
+
+### 第五種圖樣確認（2026-10-19，後續更新）
+
+使用者明確同意 MANUAL_STOP_COMPLETE 採上排白白、下排黑黑；左上／右上／左下／右下依序為 0011（1黑、0白）。兩專案交接文件已同步改為已確認，取代前文的圖樣待確認狀態。精確幾何、準備期間畫面、未見 BUSY 就停止／逾時的同輪交付及 TCP 回覆格式仍未定稿；本次只更新文件，未修改或驗收產品程式。
+
+
+### 未見本次 BUSY 就人工停止（2026-10-19，後續確認）
+
+使用者同意：Log Solution 立即停止並呈現完整格位結果（既有終局保留，未完成為STOPPED）；無待確認後顯示人工停止可交付圖樣。但橋接若未見本次BUSY，不能證明畫面屬於這次開始，須向上位機回報「需人工核對」、不自動交付、不自動重測。此確認只涵蓋人工停止；未見BUSY的準備逾時及人工核對後恢復／核准程序、協定欄位仍待定稿。兩專案文件相同內容已同步；未修改產品程式。
