@@ -126,3 +126,32 @@
 - 實作前釐清（Grok 提問，2026-10-19 決定）：(1) `monitor_start` 開始時已是準備中也建立本輪開始請求，`monitor_not_started` 不清除請求；(2) `check_*` 判斷順序：REVIEW → `paused`；同簽章且無新一輪信號 → `already_taken`（排在請求檢查之前）；不可靠 → `unknown`；無請求 → `monitor_not_ready`；其餘照本輪開始請求規則。交付後簽章改變且無新一輪信號 → `monitor_not_ready`；(3) 人工停止完成同一般完成：已交付或已回 `manual_verification_required` 後 DFU `input` 可輸入下一輪，未交付時 `log_solution_busy`。已更新 spec #40（issue 與本機副本）、#42／#43／#44 驗收條件與本機副本、`docs/LABVIEW_HANDOFF.md`。
 - PR #50 重審（`2b1ace7`）：A1～A4、B1～B4、C 已處理並於本機確認；已留言請 Cursor 補回 fail-closed 的 `internal_error` 測試。UI 取消測試不穩定為 main 既有 bug（30 次失敗 8 次），開票 #51（`bug`、`ready-for-agent`），本機副本 `.scratch/core-ui-stability/issues/04-ui-cancel-race.md`。
 - PR #50（spec #40，#41～#47）重審通過：補回的 fail-closed 測試以變異測試確認有效（破壞錯誤處理後 12 個失敗），全套 512 passed；已合併 main（`b0b0190`），#41～#47 自動關閉。
+
+## 第二輪架構評估（improve-codebase-architecture，2026-10-19）
+
+- 依近 60 筆 commit 熱點（`tcp_server.py`、`monitor_flow.py`、`round_frame_consumer.py`）由兩個子代理唯讀探索 Core 與 UI 兩側；全套 518 passed／34 subtests。HTML 報告存於 OS temp（`architecture-review-20261019-192002.html`，可能被系統清理）。
+- 上輪（10-14）候選狀態：設備識別（ADR-0007）、Freeze Guard stream_id（ADR-0005 修訂）、Pool 使用期（ADR-0001 補註）已完成；UI 通訊排程大致由三條 CoreChannel 解決。
+- 本輪 7 個候選：C1 設備輪次、C2 Log Solution 畫面讀取、C3 KVM session（具名快照＋健康偵測）、C4 Core 協定收發共用、C5 CoreChannel worker 佇列、C6 指令描述表、C7 HID 對位點擊原語。使用者選 C1～C4 討論；C5～C7 本次不開票。
+
+### grilling 決策（Q1–Q29）
+
+- C1／C2 皆純重構（既有測試不改、全綠即驗收）。C2 抽出 `log_solution_reader.py`（定位、取樣、`MarkerState`、`inspect_app_frame`、通道開始追蹤），只回答看畫面即可決定的事；C1 新增 `device_round.py` 的 `DeviceRound`，吸收 `RoundTrack` 與 Gate 輪次部分，「Preparing/Monitoring＝新一輪」只留一份，刪 `monitoring_seen`。通道開始追蹤 inspect 與 check 各一實例。tcp_server 內部改用 enum。順序 C2 → C1。
+- KVM 重連後同輪重問：情況 A（測試中斷線、重連後已出結果）維持 `manual_verification_required`；情況 B（已交付後重連再問）現況回 `monitor_not_ready` 為 bug，應回 `already_taken`。另開票，C1 先把「重設凍結基準」與「清交付紀錄」拆成兩個動作。
+- C3 拆兩票：C3_1 純重構（具名影格快照、單一入口、HID flow 不再直讀 `kvm.frame`、共用 fake 建構）；C3_2 修 bug（只以影像軌道結束與 peer connection failed/closed 判定斷線，不以影格過舊判定；pool 改固定能力、刪 `grab_frame`／`heartbeat` 死碼；指令中斷線立即回既有 `kvm_connect_failed`）。兩套凍結判斷合併列後續。
+- C4：新增 `core_protocol.py` 共用組包、分幀、req_id 比對、攤平；tcp_server 共用常數；UI 維持 dict、刪 `default_status` hack；不動 CoreChannel 並行機制；修 `core_daemon` 半行解析。`debug_tool/test_client.py` 不納入。
+- 現場驗證集中於新文件 `docs/FIELD_VERIFICATION.md`（含原 DEPLOYMENT 第 8 節與整合文件的待驗項目、C3_2 與重連重問的實機步驟）；開發階段無法驗證。
+- CONTEXT.md 新增「設備輪次」。
+- 不開母票；沒有互相 block 的票可平行進行。
+
+### 開票（皆 `ready-for-agent`，原生 blocked-by）
+
+| 票 | 內容 | 相依 |
+| --- | --- | --- |
+| #54 | refactor：Log Solution 畫面讀取 module（C2） | — |
+| #55 | refactor：設備輪次 module（C1） | #54 |
+| #56 | bug：KVM 重連後同輪重問回 `monitor_not_ready` | #55 |
+| #57 | refactor：KVM 影格具名快照（C3_1） | — |
+| #58 | bug：KVM 斷線無法偵測（C3_2） | #57 |
+| #59 | refactor：Core 協定收發 module（C4） | — |
+
+可平行起跑：#54、#57、#59。#54 與 #57 都動 `round_frame_consumer.py`，#57 與 #59 都動 `tests/protocol_helpers.py`，合併時留意衝突。
