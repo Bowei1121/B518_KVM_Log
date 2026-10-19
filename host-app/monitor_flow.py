@@ -20,7 +20,8 @@ import cv2
 from auto_flow import load_gray, locate
 from match_diagnostics import MatchDiagnostics
 from hid_helpers import center, last_hid_error
-from round_frame_consumer import MarkerState, observe_latest_round_frame, read_latest_app_frame
+from log_solution_reader import MarkerState, read_latest_app_frame
+from round_frame_consumer import observe_latest_round_frame
 from template_catalog import TemplateCatalog
 
 MATCH_THRESHOLD = 0.80
@@ -137,7 +138,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             raise _busy(observation.state)
         if observation.reliable and observation.state == MarkerState.REVIEW:
             raise _review("開始前")
-        if not (observation.reliable and observation.state == MarkerState.PREPARING):
+        if observation.may_send_hid:
             clicked, score = await click_dock_icon(kvm, frame, catalog, diagnostics, threshold)
             if not clicked:
                 raise MonitorStartError("log_solution_not_found",
@@ -150,7 +151,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 raise _busy(observation.state)
             if observation.state == MarkerState.REVIEW:
                 raise _review("點擊 Dock 後")
-            if observation.state != MarkerState.PREPARING:
+            if observation.may_open_round:
                 await kvm.press_command_shift_m()
                 if on_shortcut is not None:
                     on_shortcut()
