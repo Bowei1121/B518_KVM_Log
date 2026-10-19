@@ -232,7 +232,8 @@ def test_single_check_read_on_covered_window_never_clicks(serve):
 def test_monitor_start_armed_round_returns_round_lost_when_standby_appears(serve):
     kvm = LogSolutionKVM(state="standby")
     srv = serve(kvm)
-    started = _send(srv, {"protocol_version": "1.0", "req_id": "ms", "device": "BT-01", "cmd": "monitor_start"})
+    started = _send(srv, {"protocol_version": "1.0", "req_id": "ms", "device": "BT-01",
+                          "cmd": "monitor_start", "timeout_sec": 1})
     assert started["data"]["state"] == "monitoring"
 
     kvm.show("standby")

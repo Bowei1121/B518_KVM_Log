@@ -226,6 +226,7 @@ class TcpJsonServer:
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._round_gates: Dict[str, Any] = {}
+        self._rounds: Dict[str, RoundTrack] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
         self.monitor_start_timeout_sec = float(monitor_start_timeout_sec)
@@ -283,7 +284,8 @@ class TcpJsonServer:
         self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("start_test", self._handle_start_test, device_bound=True)
-        self.register_handler("monitor_start", self._handle_monitor_start, device_bound=True)
+        self.register_handler("monitor_start", self._handle_monitor_start, fields=("timeout_sec",),
+                              device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -471,6 +473,14 @@ class TcpJsonServer:
 
         return raw if read_only else _round_observation(raw)
 
+    def _round_track(self, device_id: str) -> "RoundTrack":
+        """Per-device round-start request. Lives as long as the server; a timeout does not clear it."""
+        track = self._rounds.get(device_id)
+        if track is None:
+            track = RoundTrack()
+            self._rounds[device_id] = track
+        return track
+
     def _round_gate(self, device_id: str) -> Any:
         """The device's round gate, created on first use; it lives as long as the server."""
         from round_frame_consumer import RoundFrameGate
@@ -539,13 +549,18 @@ class TcpJsonServer:
         from monitor_flow import MonitorStartError, run_monitor_start
 
         entry = req["_device_entry"]
+        track = self._round_track(entry.device_id)
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
                 req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
-                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=self.monitor_start_timeout_sec,
-                log=logger.info, diagnostics_key=entry.device_id)
+                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=float(req["timeout_sec"]),
+                log=logger.info, diagnostics_key=entry.device_id,
+                on_preparing=track.note_start, on_shortcut=track.note_start,
+                on_monitoring=track.note_monitoring)
         except MonitorStartError as exc:
+            # monitor_not_started keeps the round-start request. Only a later taken or
+            # manual_verification_required reply clears it.
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"state": "", "capacity": 0}}
         return {"status": "ok", "data": result}
 
@@ -742,6 +757,12 @@ class TcpJsonServer:
                 return "invalid_argument", "timeout_sec is required and must be a number"
             if not 0 <= timeout <= CHECK_MAX_TIMEOUT_SEC:
                 return "invalid_argument", f"timeout_sec must be between 0 and {CHECK_MAX_TIMEOUT_SEC}"
+        if cmd == "monitor_start":
+            timeout = req.get("timeout_sec")
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return "invalid_argument", "timeout_sec is required and must be a number"
+            if not 1 <= timeout <= 300:
+                return "invalid_argument", "timeout_sec must be between 1 and 300"
         return None
 
     async def _dispatch_command(
@@ -1058,6 +1079,22 @@ class TcpJsonServer:
             asyncio.run(self._run_server_async())
         except (KeyboardInterrupt, SystemExit):
             pass
+
+
+class RoundTrack:
+    """One device's round-start request for the life of this Core process."""
+
+    def __init__(self) -> None:
+        self.start_requested = False
+        self.monitoring_seen = False
+
+    def note_start(self) -> None:
+        """Shortcut sent, or monitor_start is looking at Preparing. Keeps an existing request."""
+        self.start_requested = True
+
+    def note_monitoring(self) -> None:
+        """This monitor_start call observed Monitoring, so the round is ready to judge."""
+        self.monitoring_seen = True
 
 
 def main() -> None:

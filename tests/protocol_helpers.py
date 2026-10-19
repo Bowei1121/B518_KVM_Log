@@ -124,6 +124,7 @@ class LogSolutionKVM:
         self.shortcut_enabled = True
         self.restore_on_dock = False
         self.state_on_dock = None
+        self.state_after_shortcut = None
         self.repeat_sequence = False
         self._cover = None
         self.connected = False
@@ -195,7 +196,9 @@ class LogSolutionKVM:
     async def press_command_shift_m(self):
         with self._lock:
             self.events.append(("key", "cmd+shift+m"))
-            if self.shortcut_enabled and not self._hidden and self._state in (
+            if self.state_after_shortcut is not None:
+                self._set_state_locked(self.state_after_shortcut)
+            elif self.shortcut_enabled and not self._hidden and self._state in (
                     "standby", "complete", "manual_stop_complete"):
                 self._set_state_locked("monitoring")
 
