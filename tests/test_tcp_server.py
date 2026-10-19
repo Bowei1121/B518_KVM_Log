@@ -10,33 +10,21 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request, read_reply  # noqa: E402
+
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
 def send_json(sock: socket.socket, obj: dict) -> None:
     """Send a dictionary as a newline-delimited JSON string."""
-    line = json.dumps(wire(obj)) + "\n"
-    sock.sendall(line.encode("utf-8"))
-
-
-_SOCK_BUFFERS: dict[int, bytearray] = {}
+    sock.sendall(dumps_request(wire(obj)))
 
 
 def recv_json(sock: socket.socket, timeout: float = 2.0) -> dict:
     """Receive a newline-delimited JSON line and parse it."""
     sock.settimeout(timeout)
-    buf = _SOCK_BUFFERS.setdefault(id(sock), bytearray())
-    while b"\n" not in buf:
-        chunk = sock.recv(1024)
-        if not chunk:
-            _SOCK_BUFFERS.pop(id(sock), None)
-            raise ConnectionError("Socket closed while waiting for newline")
-        buf.extend(chunk)
-    nl_idx = buf.index(b"\n")
-    line = bytes(buf[:nl_idx])
-    del buf[:nl_idx + 1]
-    return json.loads(line.decode("utf-8"))
+    return read_reply(sock)
 
 
 @pytest.fixture

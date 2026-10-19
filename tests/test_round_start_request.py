@@ -14,6 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request, read_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
@@ -60,14 +62,8 @@ def serve(tmp_path):
 def _send(srv, payload):
     host, port = srv.server_address
     with socket.create_connection((host, port), timeout=10.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(payload))
+        return read_reply(sock)
 
 
 def _monitor_start(srv, timeout_sec=1, req_id="ms"):

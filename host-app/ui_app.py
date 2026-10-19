@@ -215,8 +215,8 @@ class CoreServiceClient:
         return flatten_reply(self.send_request("core_status", timeout=timeout))
 
     def get_stations(self, timeout: float = 2.0) -> Dict[str, Any]:
-        """Query configured stations status."""
-        return flatten_reply(self.send_request("core_status", timeout=timeout))
+        """Query configured stations status. Same core_status reply as get_status."""
+        return self.get_status(timeout)
 
     def get_snapshot(
         self,

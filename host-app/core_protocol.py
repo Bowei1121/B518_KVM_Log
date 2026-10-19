@@ -12,11 +12,15 @@ from typing import Any, Dict, Optional
 PROTOCOL_VERSION = "1.0"
 
 COMMON_FIELDS = frozenset({"protocol_version", "req_id", "device", "cmd"})
+# Reply envelope. Anything else on a Core reply belongs in ``data``, not beside these keys.
 ENVELOPE_KEYS = frozenset({
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
 })
 
 _FLATTEN_OVERLAY = ("status", "error", "message", "elapsed_sec", "req_id", "device")
+# Bytes after the first newline in one recv. Keyed by socket so the next read
+# returns the following frame instead of dropping it.
+_pending: Dict[int, bytearray] = {}
 
 
 def build_request(
@@ -51,14 +55,25 @@ def dumps_request(req: Dict[str, Any]) -> bytes:
 
 
 def read_frame(sock: Any, recv_size: int = 65536) -> bytes:
-    """One newline-delimited frame. The peer closing first is an error, even with buffered bytes."""
-    buf = bytearray()
+    """One newline-delimited frame. The peer closing first is an error, even with buffered bytes.
+
+    An empty frame (a bare newline) is ConnectionError, matching the old daemon client.
+    """
+    key = id(sock)
+    buf = _pending.pop(key, bytearray())
     while b"\n" not in buf:
         chunk = sock.recv(recv_size)
         if not chunk:
             raise ConnectionError("Core Service closed connection")
         buf.extend(chunk)
-    return bytes(buf.split(b"\n", 1)[0])
+    nl = buf.index(b"\n")
+    line = bytes(buf[:nl])
+    rest = buf[nl + 1:]
+    if rest:
+        _pending[key] = bytearray(rest)
+    if not line:
+        raise ConnectionError("Empty response received from Core Service")
+    return line
 
 
 def read_reply(sock: Any, recv_size: int = 65536) -> Any:

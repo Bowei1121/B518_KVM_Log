@@ -69,6 +69,11 @@ def test_read_reply_peer_closes_on_partial_line():
         read_reply(sock)
 
 
+def test_read_reply_empty_line_is_connection_error():
+    with pytest.raises(ConnectionError):
+        read_reply(ChunkSocket([b"\n"]))
+
+
 def test_req_id_mismatch():
     assert req_id_matches({"req_id": "ui-1", "status": "ok"}, "ui-1")
     assert not req_id_matches({"req_id": "other"}, "ui-1")
@@ -93,4 +98,21 @@ def test_flatten_reply_lifts_data_and_keeps_envelope_status():
     assert flat["stations"] == []
     assert "data" not in flat
     unchanged = {"status": "error", "error": "connection_failed", "message": "down"}
-    assert flatten_reply(unchanged) is unchanged or flatten_reply(unchanged) == unchanged
+    assert flatten_reply(unchanged) is unchanged
+
+
+def test_flatten_reply_error_with_data_keeps_envelope_error():
+    flat = flatten_reply({
+        "req_id": "ui-err",
+        "status": "error",
+        "error": "device_busy",
+        "message": "busy",
+        "elapsed_sec": 1.5,
+        "device": "BT-01",
+        "data": {"status": "running", "stations": [{"device": "BT-01"}]},
+    })
+    assert flat["status"] == "error"
+    assert flat["error"] == "device_busy"
+    assert flat["message"] == "busy"
+    assert flat["stations"] == [{"device": "BT-01"}]
+    assert "data" not in flat

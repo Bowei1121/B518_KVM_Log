@@ -13,6 +13,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request, read_reply  # noqa: E402
+
 from ui_app import CoreServiceClient  # noqa: E402
 
 FORBIDDEN = {"kvm_ip", "station", "save_path"}
@@ -36,18 +38,13 @@ class RecordingCore:
             except OSError:
                 return
             with conn:
-                buf = b""
-                while b"\n" not in buf:
-                    chunk = conn.recv(65536)
-                    if not chunk:
-                        break
-                    buf += chunk
-                if not buf:
+                try:
+                    request = read_reply(conn)
+                except ConnectionError:
                     continue
-                request = json.loads(buf.split(b"\n", 1)[0])
                 self.requests.append(request)
                 reply = self.reply_for(request)
-                conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+                conn.sendall(dumps_request(reply))
 
     def close(self):
         self._sock.close()
