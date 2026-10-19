@@ -342,7 +342,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `log_solution_review` | error | `monitor_start` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
 | `capacity_mismatch` | error | 可交付畫面的格數與設定通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
-| `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。此時不等 Freeze Guard 門檻，立即回覆。畫面靜止不屬於此情況（那是 `frame_frozen`） | 設備／網路異常，暫停。下一個指令會自動重連 |
+| `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |

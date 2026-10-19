@@ -184,6 +184,15 @@ def _inspect_round(kvm: Any, box: Dict[str, Any]) -> Dict[str, Any]:
     return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
 
 
+def _kvm_lost(req: Dict[str, Any]) -> Dict[str, Any]:
+    """check reply when the KVM died during the command (protocol error kvm_connect_failed, ADR-0001 補註 #58)."""
+    return {
+        "status": "error",
+        "error": "kvm_connect_failed",
+        "message": f"KVM '{req.get('kvm_ip')}' connection lost during the command",
+    }
+
+
 class TcpJsonServer:
     """Headless TCP Server using newline-delimited JSON protocol."""
 
@@ -664,11 +673,7 @@ class TcpJsonServer:
                 return {"status": "error", "error": "server_shutting_down"}
             # KVM died mid-command (track ended or peer failed): report now, without waiting for Freeze Guard.
             if not kvm.is_healthy():
-                return {
-                    "status": "error",
-                    "error": "kvm_connect_failed",
-                    "message": f"KVM '{req.get('kvm_ip')}' connection lost during the command",
-                }
+                return _kvm_lost(req)
 
             # Frame Freeze Guard: the picture's timestamps must keep advancing.
             is_live, freeze_err = await self.freeze_guard.verify_liveness(
@@ -677,6 +682,9 @@ class TcpJsonServer:
                 poll_interval=0.05,
             )
             if not is_live:
+                # The KVM can die inside the freeze window; that is a lost connection, not a frozen picture.
+                if not kvm.is_healthy():
+                    return _kvm_lost(req)
                 return {
                     "status": "error",
                     "error": "frame_frozen",

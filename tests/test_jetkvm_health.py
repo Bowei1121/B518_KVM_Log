@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from aiortc import RTCPeerConnection  # noqa: E402
 from aiortc.mediastreams import MediaStreamError  # noqa: E402
 from jetkvm_core import JetKVMClient  # noqa: E402
 
@@ -83,7 +84,7 @@ def test_stale_picture_is_not_death():
     ("new", True),
     ("connecting", True),
     ("connected", True),
-    ("disconnected", True),   # transient ICE state, not death
+    ("disconnected", True),   # aiortc never emits it; anything other than failed/closed is alive
     ("failed", False),
     ("closed", False),
 ])
@@ -101,3 +102,35 @@ def test_close_makes_client_unhealthy():
     asyncio.run(client.close())
 
     assert client.is_healthy() is False
+
+
+def test_real_peer_connection_close_reaches_health_through_the_wiring():
+    """Guards the event wiring: a real RTCPeerConnection closing must make the client unhealthy."""
+    async def _run():
+        client = _connected_client()
+        pc = RTCPeerConnection()
+        client._watch_session(pc, None)
+        assert client.is_healthy() is True
+
+        await pc.close()
+        return client
+
+    assert asyncio.run(_run()).is_healthy() is False
+
+
+@pytest.mark.parametrize("kind, healthy", [("video", False), ("audio", True)])
+def test_real_track_end_reaches_health_through_the_wiring(kind, healthy):
+    """A video track that ends kills the session; an audio track is not watched at all."""
+    async def _run():
+        client = _connected_client()
+        pc = RTCPeerConnection()
+        client._watch_session(pc, None)
+        track = _Track([_Frame()])
+        track.kind = kind
+        pc.emit("track", track)
+        await asyncio.sleep(0.05)
+        verdict = client.is_healthy()  # read before closing: a closed peer is dead for its own reason
+        await pc.close()
+        return verdict
+
+    assert asyncio.run(_run()) is healthy

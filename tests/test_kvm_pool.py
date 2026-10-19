@@ -210,12 +210,12 @@ def test_heartbeat_detects_disconnect_and_evicts() -> None:
 
 @pytest.mark.parametrize("state, healthy", [
     ("connected", True),
-    ("disconnected", True),   # transient ICE state: not a death signal
+    ("disconnected", True),   # aiortc never emits it; anything other than failed/closed is alive
     ("failed", False),
     ("closed", False),
 ])
 def test_heartbeat_evicts_on_peer_state_death_signals_only(state: str, healthy: bool) -> None:
-    """Only peer connection failed/closed evict; a transient disconnected state keeps the connection."""
+    """Only peer connection failed/closed evict; any other state keeps the connection."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory)
@@ -659,7 +659,7 @@ def test_tcp_command_releases_lease_when_client_disconnects() -> None:
 
 
 def test_unhealthy_leased_connection_is_not_given_to_new_request() -> None:
-    """While a failed-heartbeat connection is leased, new requests are refused and no replacement is opened."""
+    """While a leased connection is unhealthy, new requests are refused and no replacement is opened."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
@@ -683,7 +683,7 @@ def test_unhealthy_leased_connection_is_not_given_to_new_request() -> None:
 
 
 def test_unhealthy_leased_connection_is_evicted_on_release() -> None:
-    """A heartbeat failure during a command defers eviction; the release applies it."""
+    """An unhealthy connection under a lease defers eviction; the release applies it."""
     async def _test() -> None:
         factory = MockClientFactory()
         pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)

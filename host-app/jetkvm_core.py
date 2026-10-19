@@ -140,15 +140,7 @@ class JetKVMClient:
                 detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
                 self.rpc_errors.append(str(detail))
 
-        @pc.on("connectionstatechange")
-        def _peer_state_changed():
-            self._on_peer_state(pc.connectionState)
-
-        @pc.on("track")
-        def on_track(track):
-            if track.kind != "video":
-                return
-            asyncio.ensure_future(self._pump_video(track, first_frame))
+        self._watch_session(pc, first_frame)
 
         pc.addTransceiver("video", direction="recvonly")
         await pc.setLocalDescription(await pc.createOffer())
@@ -218,6 +210,17 @@ class JetKVMClient:
         await asyncio.sleep(0.3)
         self.connected = True
 
+    def _watch_session(self, pc, first_frame):
+        """Wire the two death signals to the peer connection: its state, and the end of the video track."""
+        @pc.on("connectionstatechange")
+        def _peer_state_changed():
+            self._on_peer_state(pc.connectionState)
+
+        @pc.on("track")
+        def on_track(track):
+            if track.kind == "video":
+                asyncio.ensure_future(self._pump_video(track, first_frame))
+
     async def _pump_video(self, track, first_frame=None):
         """Decode the video track into self.frame until it ends. The end of the track is a death signal."""
         while True:
@@ -249,8 +252,8 @@ class JetKVMClient:
     def is_healthy(self) -> bool:
         """False only when the session is dead: the video track ended, or the peer connection failed or closed.
 
-        A stale picture does not count; Freeze Guard answers that with frame_frozen. A transient
-        "disconnected" peer state does not count either.
+        A stale picture does not count; Freeze Guard answers that with frame_frozen. aiortc never
+        emits a "disconnected" state, and any state other than failed/closed is treated as alive.
         """
         return self.connected and not self._track_ended and self._peer_state not in ("failed", "closed")
 

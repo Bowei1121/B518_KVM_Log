@@ -8,7 +8,7 @@
 - **設備 ID**: 一台設備（測試機＋測試機電腦＋JetKVM）的固定、跨站唯一識別，格式 `<站別>-<兩位數>`，例如 `DFU-01`。所有模組與協定以它為唯一設備 key；不同於 `req_id` 與輪次 ID。（ADR-0007，Accepted）
 - **設備清單**: 上位機 `~/Documents/template/devices.json`，設備 ID → 站別、KVM IP、測試通道數的唯一來源。
 - **測試通道數**: 一台設備的測試位置數 N；通道 1～N 與 Log Solution Slot 編號一致。
-- **KVM Connection Pool**: 在 Core Service 中管理所有 JetKVM 連線的機制。具備自動保活（閒置時定時背景抓圖）與閒置淘汰（例如 10 分鐘無指令即主動斷線釋放資源）功能。
+- **KVM Connection Pool**: 在 Core Service 中管理所有 JetKVM 連線的機制。具備心跳健康檢查（定時詢問連線是否仍健康；影像軌道結束或 peer connection failed／closed 即淘汰）與閒置淘汰（例如 10 分鐘無指令即主動斷線釋放資源）功能。
 - **Device Lock**: 以設備 ID 為單位的互斥鎖（一對一部署下等同鎖 KVM）。確保針對同一台 ATE 的指令被序列化，對於衝突的併發指令採用 Fail-Fast 策略直接回傳 Busy 錯誤。
 - **TCP Multiplexing (Per-Device Connection)**: LabVIEW 針對每一台測試機，建立一條專屬且獨立的 TCP Socket 連線到中繼站，確保多機台平行通訊不干擾。
 

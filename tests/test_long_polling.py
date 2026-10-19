@@ -204,6 +204,18 @@ def test_kvm_death_mid_command_returns_kvm_connect_failed_without_freeze_wait(ri
     assert again["error"] != "kvm_connect_failed"
 
 
+def test_kvm_death_inside_freeze_window_is_connection_loss_not_frozen(rig):
+    """The KVM dies while Freeze Guard is still waiting: that is kvm_connect_failed, not frame_frozen."""
+    rig.kvm().show("monitoring")
+    rig.kvm().freeze()
+    th, out = _background_check(rig, DEVICE, "req-freeze-dead", 10)
+    _settle(0.15)  # inside the 0.3 s freeze window
+    rig.kvm().end_track()
+    th.join(timeout=10)
+
+    assert out["resp"]["error"] == "kvm_connect_failed"
+
+
 def test_disconnect_during_long_poll_releases_the_device_lock(rig):
     _arm(rig)
     sock = _open(rig)
