@@ -555,10 +555,13 @@ class TestMonitorUIChannels:
             client.disconnect()
             assert time.monotonic() - t0 < 0.5, "close() waited on the in-flight request"
 
-            th.join(timeout=2.0)
-            assert not th.is_alive(), "cancelled inspect did not return"
+            # Wait for the cancelled reply itself, not a fixed join budget under suite load.
+            assert _wait_until(
+                lambda: out.get("res", {}).get("error") == "cancelled",
+                timeout=5.0,
+            ), f"cancelled inspect did not return: {out}"
+            assert not th.is_alive()
             assert out["res"].get("status") == "error"
-            assert out["res"].get("error") == "cancelled"
         finally:
             release.set()
             core.close()

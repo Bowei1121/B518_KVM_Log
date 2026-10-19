@@ -47,9 +47,11 @@ except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
 
 try:
-    from monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC
+    from monitor_flow import MONITOR_CONFIRM_SEC
 except ImportError:
-    from .monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC  # type: ignore[import-not-found,no-redef]
+    from .monitor_flow import MONITOR_CONFIRM_SEC  # type: ignore[import-not-found,no-redef]
+
+MONITOR_START_MAX_TIMEOUT_SEC = 300
 
 try:
     from bt_flow import BtStartError, run_start_all
@@ -117,12 +119,12 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
-    "check_finish": {"kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
-    "check_start": {"kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
+    "check_finish": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
+    "check_start": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
     "input": {"entered": []},
     "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
-    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
+    "inspect": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
 }
 
 
@@ -176,7 +178,9 @@ def _inspect_round(kvm: Any, box: Dict[str, Any]) -> Dict[str, Any]:
             "active": active}
     if obs.state == MarkerState.REVIEW:
         return {**base, "kind": "paused", "reason": "confirmation_required", "results": [], "active": []}
-    # inspect never delivers. A finished screen is waiting with empty results; check_finish takes it.
+    # inspect never delivers. A finished screen is waiting with empty results and no "started" channels.
+    if obs.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
+        return {**base, "kind": "waiting", "reason": obs.state.value, "results": [], "active": []}
     return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
 
 
@@ -194,7 +198,6 @@ class TcpJsonServer:
         template_root: Optional[str | Path] = None,
         inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
         monitor_confirm_sec: float = MONITOR_CONFIRM_SEC,
-        monitor_start_timeout_sec: float = MONITOR_START_TIMEOUT_SEC,
         visibility_lost_sec: float = VISIBILITY_LOST_SEC,
         dock_recheck_sec: float = DOCK_RECHECK_SEC,
         max_dock_recoveries: int = MAX_DOCK_RECOVERIES,
@@ -224,7 +227,6 @@ class TcpJsonServer:
         self._inspect_activity: Dict[str, Dict[str, Any]] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
-        self.monitor_start_timeout_sec = float(monitor_start_timeout_sec)
         self.visibility_lost_sec = float(visibility_lost_sec)
         self.dock_recheck_sec = float(dock_recheck_sec)
         self.max_dock_recoveries = int(max_dock_recoveries)
@@ -474,7 +476,10 @@ class TcpJsonServer:
         if read_only:
             return raw
         mapped = _round_observation(raw)
-        if report_activity and gate is not None and "error" not in mapped:
+        # taken / already_taken / paused keep active []. Activity is only for in-progress rounds.
+        if (report_activity and gate is not None and "error" not in mapped
+                and mapped.get("kind") == "waiting"
+                and mapped.get("state") not in ("complete", "manual_stop_complete")):
             mapped["active"] = [{"slot": slot, "evidence": evidence} for slot, evidence in gate.last_active]
         return mapped
 
@@ -514,7 +519,9 @@ class TcpJsonServer:
         if not track.start_requested:
             return _check_error("monitor_not_ready",
                                 "no round-start request; result was not taken", obs)
-        if (not track.monitoring_seen and obs.get("reason") == "deliverable_without_monitoring"):
+        # Gate not armed (or this call must not take) while a deliverable screen is up: never hang.
+        # Busy-on-monitoring must not invent monitoring_seen; capacity changes also disarm the gate.
+        if obs.get("reason") == "deliverable_without_monitoring":
             track.settle()
             return _check_error(
                 "manual_verification_required",
@@ -707,10 +714,12 @@ class TcpJsonServer:
                 if not read_only:
                     self._round_track(entry.device_id).settle()
                 return {"status": "ok", "data": obs}
-            if report_activity and obs["kind"] == "waiting" and obs.get("active"):
+            # Complete screens confirm toward taken; never promote them to started.
+            if (report_activity and obs["kind"] == "waiting" and obs.get("active")
+                    and obs.get("state") not in ("complete", "manual_stop_complete")):
                 return {"status": "ok", "data": {**obs, "kind": "started", "reason": "activity_confirmed"}}
             if read_only and obs.get("state") in ("complete", "manual_stop_complete"):
-                return {"status": "ok", "data": obs}
+                return {"status": "ok", "data": {**obs, "active": [], "results": []}}
             if timeout_sec == 0:
                 return {"status": "ok", "data": obs}
             if elapsed >= timeout_sec:
@@ -824,8 +833,9 @@ class TcpJsonServer:
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 return "invalid_argument", "timeout_sec is required and must be a number"
-            if not 1 <= timeout <= 300:
-                return "invalid_argument", "timeout_sec must be between 1 and 300"
+            if not 1 <= timeout <= MONITOR_START_MAX_TIMEOUT_SEC:
+                return "invalid_argument", (
+                    f"timeout_sec must be between 1 and {MONITOR_START_MAX_TIMEOUT_SEC}")
         return None
 
     async def _dispatch_command(

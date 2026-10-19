@@ -317,6 +317,29 @@ class RoundFrameConsumerTests(unittest.TestCase):
             fake_action_requests.append(reply)
         self.assertEqual(fake_action_requests, ["action_done,1::PASS,2::FAIL\r\n"])
 
+    def test_missing_or_out_of_order_pts_clears_started_activity(self):
+        """A4: stream-time unknowns reset the activity pair before returning."""
+        frame = render_frame(MarkerState.MONITORING, ["TESTING", "WAITING", "WAITING", "WAITING"])
+        gate = RoundFrameGate("device-1", require_presentation_time=True, max_frame_gap=1.0)
+        gate.observe(frame, 1, 1.0, now=1.0, stream_id="s", presentation_time=1.0)
+        gate.observe(frame, 2, 1.1, now=1.1, stream_id="s", presentation_time=1.1)
+        self.assertTrue(gate.last_active)
+
+        missing = gate.observe(frame, 3, 1.2, now=1.2, stream_id="s", presentation_time=None)
+        self.assertEqual(missing.kind, "unknown")
+        self.assertEqual(missing.reason, "missing_source_frame_time")
+        self.assertEqual(gate.last_active, ())
+        self.assertIsNone(gate._activity_prev)
+
+        gate.observe(frame, 4, 1.3, now=1.3, stream_id="s", presentation_time=2.0)
+        gate.observe(frame, 5, 1.4, now=1.4, stream_id="s", presentation_time=2.1)
+        self.assertTrue(gate.last_active)
+        out_of_order = gate.observe(frame, 6, 1.5, now=1.5, stream_id="s", presentation_time=2.0)
+        self.assertEqual(out_of_order.kind, "unknown")
+        self.assertEqual(out_of_order.reason, "out_of_order_source_frame")
+        self.assertEqual(gate.last_active, ())
+        self.assertIsNone(gate._activity_prev)
+
 
 if __name__ == "__main__":
     unittest.main()

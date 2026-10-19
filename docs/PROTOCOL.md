@@ -172,7 +172,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 | 欄位 | 型別 | 說明 |
 | --- | --- | --- |
-| `kind` | string | `started`／`taken`／`already_taken`／`waiting`／`paused`／`unknown` |
+| `kind` | string | `started`／`taken`／`already_taken`／`waiting`／`paused`／`unknown`。錯誤回覆尚未觀察到畫面時也是 `unknown`（不是空字串） |
 | `state` | string | `standby`／`preparing`／`monitoring`／`review`／`complete`／`manual_stop_complete`；無法辨識為 `""` |
 | `reason` | string | 細部原因，僅供記錄。LabVIEW 只依 `kind` 與 `error` 分支 |
 | `capacity` | number | 畫面結果格數 1–20；無法辨識為 `0` |
@@ -525,14 +525,14 @@ Log Solution 仍在準備中時：
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0010","device":"dfu-01","cmd":"check_finish",
  "status":"error","error":"unknown_device","message":"device 'dfu-01' is not configured","elapsed_sec":0.0,
- "data":{"kind":"","state":"","reason":"","capacity":0,"active":[],"results":[]}}
+ "data":{"kind":"unknown","state":"","reason":"","capacity":0,"active":[],"results":[]}}
 ```
 
 帶了 `kvm_ip`：
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0011","device":"DFU-01","cmd":"check_finish",
  "status":"error","error":"forbidden_field","message":"field 'kvm_ip' is not allowed","elapsed_sec":0.0,
- "data":{"kind":"","state":"","reason":"","capacity":0,"active":[],"results":[]}}
+ "data":{"kind":"unknown","state":"","reason":"","capacity":0,"active":[],"results":[]}}
 ```
 
 已移除的 `check`：

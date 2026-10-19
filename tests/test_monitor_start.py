@@ -62,7 +62,6 @@ def serve(tmp_path):
             freeze_guard=FrameFreezeGuard(freeze_threshold=3.0),
             template_root=root,
             monitor_confirm_sec=CONFIRM_SEC,
-            monitor_start_timeout_sec=START_TIMEOUT_SEC,
         )
         srv.start()
         servers.append(srv)

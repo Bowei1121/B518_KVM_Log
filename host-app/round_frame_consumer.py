@@ -405,6 +405,8 @@ class RoundFrameGate:
         if self.require_presentation_time and presentation_time is None:
             self._candidate_signature = None
             self._candidate_count = 0
+            self._activity_prev = None
+            self.last_active = ()
             return TakeDecision("unknown", self.device_id, reason="missing_source_frame_time")
         if presentation_time is not None:
             if self.last_presentation_time is not None:
@@ -416,9 +418,13 @@ class RoundFrameGate:
                         self.is_frozen = True
                         self._candidate_signature = None
                         self._candidate_count = 0
+                        self._activity_prev = None
+                        self.last_active = ()
                         return TakeDecision("frozen", self.device_id, reason="frame_frozen")
                     self._candidate_signature = None
                     self._candidate_count = 0
+                    self._activity_prev = None
+                    self.last_active = ()
                     return TakeDecision("unknown", self.device_id,
                                         reason="out_of_order_source_frame")
                 else:

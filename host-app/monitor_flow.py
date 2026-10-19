@@ -133,8 +133,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         if frame is None:
             raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
         if observation.reliable and observation.state == MarkerState.MONITORING:
-            if on_monitoring is not None:
-                on_monitoring()
+            # Busy refusal is not "seen monitoring for this round": no on_monitoring.
             raise _busy(observation.state)
         if observation.reliable and observation.state == MarkerState.REVIEW:
             raise _review("開始前")
@@ -148,8 +147,6 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 raise MonitorStartError("log_solution_not_found",
                                         f"點擊 Dock 後 {confirm_sec:g} 秒內找不到 Log Solution，未送出快捷鍵")
             if observation.state == MarkerState.MONITORING:
-                if on_monitoring is not None:
-                    on_monitoring()
                 raise _busy(observation.state)
             if observation.state == MarkerState.REVIEW:
                 raise _review("點擊 Dock 後")

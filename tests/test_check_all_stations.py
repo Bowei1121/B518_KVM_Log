@@ -228,13 +228,11 @@ def test_inspect_reads_the_band_without_consuming_the_round(rig, device):
     assert seen["data"]["state"] == "complete"
     assert seen["data"]["active"] == []
     assert seen["data"]["results"] == []
-    assert again["data"]["kind"] == "started"
+    assert again["data"]["kind"] == "waiting"
+    assert again["data"]["state"] == "complete"
     assert again["data"]["results"] == []
-    assert again["data"]["active"] == [
-        {"slot": 1, "evidence": "result"},
-        {"slot": 2, "evidence": "result"},
-        {"slot": 3, "evidence": "result"},
-    ]
+    assert again["data"]["active"] == []
+    assert again["data"]["kind"] != "started"
     assert labview["data"]["kind"] == "taken"
     assert labview["data"]["results"] == expected
 

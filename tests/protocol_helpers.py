@@ -126,6 +126,7 @@ class LogSolutionKVM:
         self.state_on_dock = None
         self.state_after_shortcut = None
         self.repeat_sequence = False
+        self.omit_presentation_time = False
         self._cover = None
         self.connected = False
 
@@ -223,7 +224,8 @@ class LogSolutionKVM:
                 x, y, w, h = DOCK_ICON_BOX
                 strip[y:y + h, x:x + w] = self._dock_icon
             frame = np.vstack([window, strip])
-            return (frame, self._seq, _time.monotonic(), "synthetic-stream", self._pts)
+            pts = None if self.omit_presentation_time else self._pts
+            return (frame, self._seq, _time.monotonic(), "synthetic-stream", pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}
@@ -308,6 +310,7 @@ def arm_round(srv, kvm, device, statuses=None):
     import time
 
     kvm.show("preparing")
+    seq_before = kvm._seq
     out = {}
 
     def run():
@@ -326,7 +329,11 @@ def arm_round(srv, kvm, device, statuses=None):
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    time.sleep(0.2)
+    # Wait until monitor_start has actually read Preparing before flipping to Monitoring,
+    # so a loaded suite cannot race past Preparing into a busy Monitoring refusal.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and kvm._seq <= seq_before:
+        time.sleep(0.01)
     kvm.show("monitoring", statuses or ())
     thread.join(timeout=5)
     resp = out.get("resp")

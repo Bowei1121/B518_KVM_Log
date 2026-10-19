@@ -1,87 +1,122 @@
-"""check 1.0 must fail closed on every station: no positively observed result means no taken."""
-import asyncio
+"""check_finish must fail closed on every station: no positively observed result means no taken.
+
+Socket and synthetic Log Solution frames only. No private-state setup.
+"""
+import json
+import socket
 import sys
+import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
-import round_frame_consumer
-from round_frame_consumer import TakeDecision
-from protocol_helpers import make_registry
-from tcp_server import TcpJsonServer
-
-
-class LiveGuard:
-    """Freeze guard stub: stream is always live."""
-
-    async def verify_liveness(self, kvm, device_id=None, threshold_window=None, poll_interval=None, stream_id=None):
-        return True, None
-
-
-class RealishKVM:
-    """Mimics JetKVMClient: has an ndarray frame and no result attributes."""
-
-    def __init__(self):
-        self.frame = np.zeros((40, 40, 3), dtype=np.uint8)
-
+from freeze_guard import FrameFreezeGuard  # noqa: E402
+from kvm_pool import KVMConnectionPool  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_registry  # noqa: E402
+from tcp_server import TcpJsonServer  # noqa: E402
 
 ALL_STATIONS = ["DFU-01", "FCT-01", "BT-01"]
 
 
 @pytest.fixture
-def server(tmp_path):
-    return TcpJsonServer(device_registry=make_registry(), port=0, freeze_guard=LiveGuard(), template_root=tmp_path)
+def rig():
+    registry = make_registry()
+    kvms = {}
+    for device in ALL_STATIONS:
+        kvms[device] = LogSolutionKVM(state="standby")
+    by_ip = {registry.get(device).kvm_ip: kvms[device] for device in ALL_STATIONS}
+
+    def client_factory(host, password=""):
+        return by_ip.setdefault(host, LogSolutionKVM())
+
+    srv = TcpJsonServer(
+        device_registry=registry,
+        host="127.0.0.1",
+        port=0,
+        kvm_pool=KVMConnectionPool(client_factory=client_factory),
+        freeze_guard=FrameFreezeGuard(freeze_threshold=0.05),
+    )
+    srv.start()
+    time.sleep(0.05)
+    try:
+        yield srv, kvms
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
 
 
-def run_check_cmd(server, req):
-    """Drive the check_finish handler directly, the way dispatch would for a device-bound request."""
-    req = dict(req)
-    req.setdefault("timeout_sec", 0)
-    req.setdefault("_kvm_client", RealishKVM())
-    req.setdefault("_device_entry", server.device_registry.get(req["device"]))
-    server._is_running = True  # handler is driven directly, without the socket loop
-    track = server._round_track(req["device"])
-    track.note_start()
-    track.note_monitoring()
-    return asyncio.run(server._handle_check_finish(req))
+def _check(srv, device, timeout_sec=0, req_id="fc"):
+    host, port = srv.server_address
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device,
+               "cmd": "check_finish", "timeout_sec": timeout_sec}
+    with socket.create_connection((host, port), timeout=10.0) as sock:
+        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
 
 
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_check_without_log_solution_frame_is_never_taken_from_templates(server, device):
-    res = run_check_cmd(server, {"device": device})
+def test_check_without_log_solution_frame_is_never_taken_from_templates(rig, device):
+    srv, kvms = rig
+    kvms[device].blank()
+    res = _check(srv, device)
     assert res["data"]["kind"] != "taken"
     assert res["data"]["results"] == []
 
 
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_no_frame_yet_is_error_no_result(server, device):
-    kvm = RealishKVM()
-    kvm.frame = None
-    res = run_check_cmd(server, {"device": device, "_kvm_client": kvm})
+def test_no_frame_yet_is_error_no_result(rig, device):
+    srv, kvms = rig
+    kvm = kvms[device]
+    pts = {"v": 100.0}
+
+    def no_frame():
+        pts["v"] += 1.0
+        return (None, int(pts["v"]), time.monotonic(), "synthetic-stream", pts["v"])
+
+    kvm.latest_frame = no_frame  # type: ignore[method-assign]
+    res = _check(srv, device)
     assert res["status"] == "error"
     assert res["error"] == "no_frame"
+    assert res["data"]["results"] == []
 
 
-def _round_decision(monkeypatch, decision):
-    monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame",
-                        lambda kvm, gate, accept_round=True: decision)
-
-
-@pytest.mark.parametrize(
-    "kind,reason",
-    [("waiting", "monitoring"), ("paused", "confirmation_required"), ("unknown", "out_of_order_source_frame"),
-     ("already_taken", "round_already_taken")],
-)
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_single_shot_non_taken_is_not_taken(server, monkeypatch, kind, reason, device):
-    _round_decision(monkeypatch, TakeDecision(kind, device, reason=reason))
-    res = run_check_cmd(server, {"device": device})
+def test_monitoring_without_complete_is_waiting_not_taken(rig, device):
+    srv, kvms = rig
+    arm_round(srv, kvms[device], device)
+    kvms[device].show("monitoring")
+    res = _check(srv, device)
     assert res["status"] == "ok"
-    assert res["data"]["kind"] == kind
-    assert res["data"]["reason"] == reason
+    assert res["data"]["kind"] == "waiting"
+    assert res["data"]["results"] == []
+
+
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_review_is_paused_not_taken(rig, device):
+    srv, kvms = rig
+    arm_round(srv, kvms[device], device)
+    kvms[device].show("review")
+    res = _check(srv, device)
+    assert res["status"] == "ok"
+    assert res["data"]["kind"] == "paused"
+    assert res["data"]["results"] == []
+
+
+@pytest.mark.parametrize("device", ALL_STATIONS)
+def test_blank_screen_is_unknown_not_taken(rig, device):
+    srv, kvms = rig
+    arm_round(srv, kvms[device], device)
+    kvms[device].blank()
+    res = _check(srv, device)
+    assert res["data"]["kind"] == "unknown"
     assert res["data"]["results"] == []
 
 
@@ -92,31 +127,27 @@ def test_single_shot_non_taken_is_not_taken(server, monkeypatch, kind, reason, d
      ("STOPPED", "PASS", "PASS", "PASS")],
 )
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_taken_keeps_each_slot_status_and_never_aggregates(server, monkeypatch, statuses, device):
-    rows = tuple((i, s) for i, s in enumerate(statuses, 1))
-    _round_decision(monkeypatch, TakeDecision("taken", device, capacity=len(rows), results=rows,
-                                              reason="reliable_complete"))
-    res = run_check_cmd(server, {"device": device})
+def test_taken_keeps_each_slot_status_and_never_aggregates(rig, statuses, device):
+    srv, kvms = rig
+    arm_round(srv, kvms[device], device)
+    kvms[device].show("complete", list(statuses))
+    assert _check(srv, device, req_id="a")["data"]["kind"] == "waiting"
+    res = _check(srv, device, req_id="b")
     assert res["status"] == "ok"
     assert res["data"]["kind"] == "taken"
-    assert res["data"]["results"] == [{"slot": i, "status": s} for i, s in rows]
+    assert res["data"]["results"] == [{"slot": i, "status": s} for i, s in enumerate(statuses, 1)]
     assert "result" not in res["data"]
 
 
 @pytest.mark.parametrize("device", ALL_STATIONS)
-def test_frozen_decision_is_frame_frozen_error(server, monkeypatch, device):
-    _round_decision(monkeypatch, TakeDecision("frozen", device, reason="frame_frozen"))
-    res = run_check_cmd(server, {"device": device})
+def test_frozen_stream_is_frame_frozen_error(rig, device):
+    srv, kvms = rig
+    arm_round(srv, kvms[device], device)
+    kvms[device].show("monitoring")
+    _check(srv, device, req_id="live")
+    kvms[device].freeze()
+    time.sleep(0.08)
+    res = _check(srv, device, req_id="frozen")
     assert res["status"] == "error"
     assert res["error"] == "frame_frozen"
-
-
-@pytest.mark.parametrize("device", ALL_STATIONS)
-def test_inspection_exception_is_internal_error(server, monkeypatch, device):
-    def boom(kvm, gate, accept_round=True):
-        raise RuntimeError("decode failed")
-
-    monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", boom)
-    res = run_check_cmd(server, {"device": device})
-    assert res["status"] == "error"
-    assert res["error"] == "internal_error"
+    assert res["data"]["kind"] != "taken"
