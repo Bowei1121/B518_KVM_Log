@@ -103,3 +103,21 @@
 ## Log Solution 正式規格與驗收責任交接
 
 2026-10-19 使用者確認Log Solution只驗收本程式能驗證的輪次／保存／真正App輸出；KVM相關由本專案自行驗收、有問題再發需求，不作為Log Solution完成門檻。兩邊狀態辨識交接快照已加入此責任說明，先橋接後App的部署順序不變。Log Solution父規格已發布至Bowei1121/B518_205_207_ATE #77（ready-for-agent），採88故事／25實作／17測試決策；本次未修改本專案程式或現行TCP規格。
+
+## grill-with-docs：橋接協定修訂（Q1–Q19，KVM_Log 本程式範圍）
+
+- Q1：移除 `check`，新增 `check_start`／`check_finish`；協定版本維持 1.0（未上線），不留別名；`inspect` 保留唯讀。
+- Q2／Q14：兩指令共用 `data`：`kind`（`started`／`taken`／`already_taken`／`waiting`／`paused`／`unknown`）、`state`（含 `preparing`、`manual_stop_complete`）、`reason`、`capacity`、`active[{slot, evidence: testing|result}]`、`results[]`。NOTEST／TIMEOUT／STOPPED／WAITING 不算活動。
+- Q3／Q11：`check_start` 以連續兩張新鮮影格判定活動（序號前進、間隔 ≤ 1 秒），通道取兩張交集，中間出現 unknown 重新計算；已見完整可交付結果時直接回 `taken`。
+- Q4：兩指令必填 `timeout_sec`（0～3600），與 Log 測試期限無關；可見性恢復兩指令皆套用。
+- Q5：本輪開始請求：送過 `monitor_start` 但未見本次 Monitoring 而出現可交付畫面 → `manual_verification_required`；從未送 `monitor_start` → `monitor_not_ready`；交付或回 `manual_verification_required` 後清除。
+- Q6：`monitor_start` 新增必填 `timeout_sec`（上限 300），PREPARING 期間持續等待；一開始即 PREPARING 時不再送快捷鍵、直接等待。
+- Q7：`monitor_start` 遇 REVIEW（開始前或送出後）立即回新錯誤碼 `log_solution_review`；`check_*` 遇 REVIEW 仍回 `paused`。
+- Q8：PREPARING 時 `input` → `log_solution_busy`、`start_test` → `monitor_not_ready`、`check_*` → `waiting`（可靠畫面，歸零可見性計時）、`inspect` 回報 `preparing`。
+- Q9：#36 併入，改由 spec #3 取代。Q10：輪次取消與新輪次 ID 不做（協定 1.1）；只針對本程式。
+- Q12／Q13：`check_start` 保留可用但非必經；可重複呼叫，回當下最新 `active`，不消耗結果。
+- Q15：`inspect` 改用同一格式（不會出現 `taken`）。
+- Q16：寫成 spec #3，範圍只限本 repo；不含 #32、#34、協定 1.1、Log Solution 修改。測試切入點沿用 spec #2，合成畫面加 PREPARING、0011、TESTING／COMPLETING。
+- Q17：`already_taken` 帶與第一次相同的完整結果，可重複查看；同輪判斷為完成種類＋格數＋各格結果相同且未開始新輪；只有 `taken` 可觸發設備動作。橋接重啟後重傳屬協定 1.1。
+- Q18：六種 `kind` 定義與 LabVIEW 動作表定案。Q19：新增 `docs/LABVIEW_HANDOFF.md` 給 LabVIEW 設計者（呼叫順序、kind 表、錯誤碼處置、何時可做設備動作）。
+- CONTEXT.md：「同輪重傳」擴充為含上位機主動重看；新增「本輪開始請求」。
