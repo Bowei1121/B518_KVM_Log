@@ -93,13 +93,14 @@ async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
     dock_g = _load_template(catalog, device, dock_key, log, diagnostics, threshold)
     if dock_g is None:
         return finish()
-    if kvm.frame is None:
+    snapshot = kvm.latest_frame()
+    if snapshot is None:
         log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
         diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
         return finish()
     if hasattr(kvm, "rpc_errors"):
         kvm.rpc_errors.clear()
-    frame = kvm.frame.copy()
+    frame = snapshot.image
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     value, left, top, width, height = locate(gray, dock_g, downscale=False)
     result["dock_icon"] = value
@@ -163,7 +164,8 @@ async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=
     btn_g = _load_template(catalog, device, button_key, log, diagnostics, threshold) if do_button else None
     if win_g is None or (do_input and inp_g is None) or (do_button and btn_g is None):
         return finish()
-    if kvm.frame is None:
+    snapshot = kvm.latest_frame()
+    if snapshot is None:
         log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
         diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
         return finish()
@@ -175,7 +177,12 @@ async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=
         dock_g = _load_template(catalog, device, pre_key, log, diagnostics, threshold)
         if dock_g is None:
             return finish()
-        dock_frame = kvm.frame.copy()
+        dock_snapshot = kvm.latest_frame()
+        if dock_snapshot is None:
+            log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
+            diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
+            return finish()
+        dock_frame = dock_snapshot.image
         dock_gray = cv2.cvtColor(dock_frame, cv2.COLOR_BGR2GRAY)
         dv, dl, dt, dw, dh = locate(dock_gray, dock_g, downscale=False)
         diagnostics.record(pre_key, dv, threshold, dock_frame,
@@ -192,7 +199,12 @@ async def run_flow(kvm, device, template_root=None, sn_text="SN_ABC", threshold=
             log(f"Dock HID 錯誤: {errs[-1]}")
             return finish()
 
-    frame = kvm.frame.copy()
+    window_snapshot = kvm.latest_frame()
+    if window_snapshot is None:
+        log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
+        diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
+        return finish()
+    frame = window_snapshot.image
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     wv, wl, wt, ww, wh = locate(gray, win_g, downscale=True)
     log(f"[視窗] 相似度 {wv:.2f}")

@@ -17,6 +17,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
@@ -28,7 +31,7 @@ MAX_DOCK_RECOVERIES = 3
 
 
 def _save_dock_template(root, kvm):
-    frame = kvm.latest_frame()[0]
+    frame = kvm.latest_frame().image
     x, y, w, h = kvm.dock_icon_box()
     TemplateCatalog(root).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "COMMON",
                                     "log_solution_dock_icon")
@@ -41,7 +44,7 @@ def _dock_click(kvm):
 
 def _neutral_move(kvm):
     """After a Dock click the pointer is parked at the top edge, mid-screen (no click, no hot corner)."""
-    frame = kvm.latest_frame()[0]
+    frame = kvm.latest_frame().image
     return ("move", frame.shape[1] // 2, 1)
 
 
@@ -84,18 +87,12 @@ def _open(srv):
 
 
 def _recv(sock):
-    buf = b""
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("closed")
-        buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    return recv_reply(sock)
 
 
 def _send(srv, payload):
     with _open(srv) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        sock.sendall(dumps_request(payload))
         return _recv(sock)
 
 

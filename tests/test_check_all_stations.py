@@ -16,6 +16,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
@@ -53,20 +56,14 @@ def _open(srv):
 
 
 def _recv(sock):
-    buf = b""
-    while b"\n" not in buf:
-        chunk = sock.recv(65536)
-        if not chunk:
-            raise ConnectionError("closed")
-        buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    return recv_reply(sock)
 
 
 def _call(srv, device, cmd="check_finish", timeout_sec=0, req_id="r"):
     payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": cmd,
                "timeout_sec": timeout_sec}
     with _open(srv) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        sock.sendall(dumps_request(payload))
         return _recv(sock)
 
 
@@ -204,8 +201,7 @@ def test_second_row_holds_channels_eleven_to_n(rig):
 
 def _status_busy(srv, device):
     with _open(srv) as sock:
-        sock.sendall((json.dumps({"protocol_version": "1.0", "req_id": "s", "device": "", "cmd": "status"})
-                      + "\n").encode("utf-8"))
+        sock.sendall(dumps_request({"protocol_version": "1.0", "req_id": "s", "device": "", "cmd": "status"}))
         devices = _recv(sock)["data"]["devices"]
     return next(d["busy"] for d in devices if d["device"] == device)
 
@@ -242,8 +238,8 @@ def test_inspect_answers_while_a_check_holds_the_device(rig, device):
     srv, kvm = rig
     kvm.show("monitoring")
     labview = _open(srv)
-    labview.sendall((json.dumps({"protocol_version": "1.0", "req_id": "lv", "device": device, "cmd": "check_finish",
-                                 "timeout_sec": 30}) + "\n").encode("utf-8"))
+    labview.sendall(dumps_request({"protocol_version": "1.0", "req_id": "lv", "device": device, "cmd": "check_finish",
+                                   "timeout_sec": 30}))
     for _ in range(200):
         if _status_busy(srv, device):
             break

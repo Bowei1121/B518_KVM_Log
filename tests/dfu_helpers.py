@@ -11,6 +11,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from fake_kvm import FakeKVM, beside, make_snapshot  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
 BOX = 14
@@ -45,10 +46,11 @@ def checkbox_templates():
     return checked, unchecked
 
 
-class SyntheticDfuKVM:
+class SyntheticDfuKVM(FakeKVM):
     """A DFU window with checkboxes at ``positions`` (screen x, y), in the given initial states."""
 
     def __init__(self, positions, checked=None, log_state="standby", log_statuses=None):
+        super().__init__()
         self.positions = list(positions)
         self.state = [False] * len(self.positions) if checked is None else list(checked)
         self.events = []
@@ -107,8 +109,9 @@ class SyntheticDfuKVM:
 
         self._frame_seq += 1
         now = _time.monotonic()
-        frame = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
-        return (frame, self._frame_seq, now, "synthetic", now)
+        app = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
+        return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
+                             stream_id="synthetic", pts=now)
 
     def checked_channels(self):
         """1-based channel numbers in order, for checkboxes currently checked."""

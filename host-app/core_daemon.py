@@ -26,6 +26,8 @@ _HOST_APP_DIR = Path(__file__).resolve().parent
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
+from core_protocol import build_request, dumps_request, read_reply  # noqa: E402
+
 # Ensure repo root is discoverable
 _REPO_ROOT = _HOST_APP_DIR.parent
 _DEFAULT_LOG_FILE = _REPO_ROOT / "logs" / "core_service.log"
@@ -244,31 +246,12 @@ def send_tcp_command(
 ) -> Dict[str, Any]:
     """Send a command over TCP and return parsed JSON response."""
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-    req: Dict[str, Any] = {
-        "protocol_version": "1.0",
-        "req_id": f"mgmt-{uuid.uuid4().hex[:8]}",
-        "device": "",
-        "cmd": cmd,
-    }
-    if payload:
-        req.update(payload)
+    req = build_request(cmd, f"mgmt-{uuid.uuid4().hex[:8]}", "", payload)
 
     with socket.create_connection((check_host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        data = (json.dumps(req) + "\n").encode("utf-8")
-        sock.sendall(data)
-
-        buf = bytearray()
-        while b"\n" not in buf:
-            chunk = sock.recv(2048)
-            if not chunk:
-                break
-            buf.extend(chunk)
-
-        line = buf.split(b"\n")[0]
-        if not line:
-            raise ConnectionError("Empty response received from Core Service")
-        return json.loads(line.decode("utf-8"))
+        sock.sendall(dumps_request(req))
+        return read_reply(sock, recv_size=2048)
 
 
 def query_status(

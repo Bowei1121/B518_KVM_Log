@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -29,6 +30,7 @@ from core_daemon import (
     is_port_free,
     query_status,
     read_pid_file,
+    send_tcp_command,
     setup_rotating_logging,
     start_core_daemon,
     write_pid_file,
@@ -418,3 +420,32 @@ def test_manage_core_cli_force_kill(tmp_path: Path):
             proc.wait(timeout=1.0)
         except Exception:
             pass
+
+
+def test_send_tcp_command_half_line_then_disconnect():
+    """Peer closes after a partial JSON line: report the disconnect, do not parse it."""
+    port = get_free_port()
+    ready = threading.Event()
+
+    def serve():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", port))
+        srv.listen(1)
+        srv.settimeout(5)
+        ready.set()
+        conn, _ = srv.accept()
+        try:
+            conn.settimeout(5)
+            conn.recv(4096)
+            conn.sendall(b'{"status": "ok"')
+        finally:
+            conn.close()
+            srv.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert ready.wait(2)
+    with pytest.raises(ConnectionError):
+        send_tcp_command("ping", host="127.0.0.1", port=port, timeout=2.0)
+    thread.join(timeout=2)

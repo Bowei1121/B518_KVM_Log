@@ -15,6 +15,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
@@ -46,14 +49,8 @@ def _check(srv, timeout_sec, req_id="c1", device=DEVICE, **extra):
     payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "check_finish",
                "timeout_sec": timeout_sec, **extra}
     with socket.create_connection((host, port), timeout=10.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        buf = b""
-        while b"\n" not in buf:
-            chunk = sock.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-    return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+        sock.sendall(dumps_request(payload))
+        return recv_reply(sock)
 
 
 def _in_background(fn):
@@ -91,7 +88,7 @@ def test_removed_check_command_is_unknown_command(rig):
     payload = {"protocol_version": "1.0", "req_id": "old", "device": DEVICE, "cmd": "check",
                "timeout_sec": 0}
     with socket.create_connection((host, port), timeout=3.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        sock.sendall(dumps_request(payload))
         resp = json.loads(sock.makefile().readline())
 
     assert resp["status"] == "error"
@@ -316,7 +313,7 @@ def test_timeout_out_of_range_or_wrong_type_is_invalid_argument(rig, timeout_sec
     if timeout_sec is not None:
         payload["timeout_sec"] = timeout_sec
     with socket.create_connection((host, port), timeout=3.0) as sock:
-        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        sock.sendall(dumps_request(payload))
         resp = json.loads(sock.makefile().readline())
 
     assert resp["status"] == "error"

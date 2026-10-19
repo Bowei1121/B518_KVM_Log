@@ -42,10 +42,11 @@ async def main():
     print(f"[OK] 已連線, 遠端 {kvm.size[0]}x{kvm.size[1]}")
 
     # 原始擷取圖不屬於正式模板，集中存到 Documents/template/_captures。
-    if kvm.frame is not None:
+    snapshot = kvm.latest_frame()
+    if snapshot is not None:
         capture = TEMPLATES.capture_path()
         capture.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(capture), kvm.frame)
+        cv2.imwrite(str(capture), snapshot.image)
 
     if DRY_RUN:
         print("[DRY_RUN] FCT 不送 HID；請在 GUI 按 Switch 驗證 Dock 前景化。")

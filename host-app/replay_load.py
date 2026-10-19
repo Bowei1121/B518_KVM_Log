@@ -12,10 +12,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Optional, Sequence
 
 import cv2
 import numpy as np
+
+from frame_snapshot import FrameSnapshot
 
 RECORDING_INDEX = "frames.jsonl"
 
@@ -100,8 +102,8 @@ class ReplayKVM:
     async def press_command_shift_m(self):
         return None
 
-    def latest_frame(self) -> Tuple[np.ndarray, int, float, str, float]:
-        """(frame, sequence, received_at, stream_id, pts) for the picture on screen now."""
+    def latest_frame(self) -> FrameSnapshot:
+        """The picture on screen now, with its sequence, received time, stream id and pts."""
         now = self.clock()
         with self._lock:
             media_time = (now - self.started) * self.speed + self.phase
@@ -114,8 +116,8 @@ class ReplayKVM:
             emitted_at = self.started + (slot * period - self.phase) / self.speed
             self._sequence += 1
             self.frame_ages.append(max(0.0, now - emitted_at))
-            return (self.recording.frames[index], self._sequence, emitted_at,
-                    f"replay:{self.name}", pts)
+            return FrameSnapshot(self.recording.frames[index].copy(), self._sequence, emitted_at,
+                                 f"replay:{self.name}", pts)
 
 
 def percentile(values: Sequence[float], fraction: float) -> Optional[float]:

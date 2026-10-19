@@ -10,22 +10,25 @@ Verifies that Presentation Timestamp (PTS) freeze guard:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import socket
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import pytest
 
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from fake_kvm import FakeKVM, make_snapshot
 from freeze_guard import FrameFreezeGuard, extract_pts, extract_frame_sequence
 from round_frame_consumer import RoundFrameGate, tcp_round_reply
-from protocol_helpers import LogSolutionKVM, arm_round, make_registry, wire, numbered, ProbeServer
+from protocol_helpers import LogSolutionKVM, arm_round, make_registry, wire, numbered, ProbeServer, recv_reply
 from tcp_server import TcpJsonServer
 from device_lock import DeviceLockManager
 from kvm_pool import KVMConnectionPool
@@ -64,7 +67,7 @@ ROUTES = {
 # Test Helpers & Mock KVM
 # ---------------------------------------------------------------------------
 
-class MockKVMClient:
+class MockKVMClient(FakeKVM):
     """Mock JetKVM WebRTC client with controllable Presentation Timestamp (PTS)."""
 
     def __init__(
@@ -74,22 +77,8 @@ class MockKVMClient:
         stream_id: str = "mock-stream-01",
         frame_data: Any = "dummy_frame_data",
     ) -> None:
-        self.frame = frame_data
-        self.frame_sequence = initial_sequence
-        self.frame_presentation_time = initial_pts
-        self.frame_received_monotonic = time.monotonic()
-        self.stream_id = stream_id
-        self.connected = True
+        super().__init__(frame_data, sequence=initial_sequence, stream_id=stream_id, pts=initial_pts)
         self._pts_delta = 0.033  # ~30fps step
-
-    def latest_frame(self) -> Tuple[Any, int, float, str, Optional[float]]:
-        return (
-            self.frame,
-            self.frame_sequence,
-            self.frame_received_monotonic,
-            self.stream_id,
-            self.frame_presentation_time,
-        )
 
     def advance(self, delta_pts: Optional[float] = None) -> float:
         """Simulate arrival of a new video frame with incremented PTS."""
@@ -114,26 +103,12 @@ class MockKVMClient:
 
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
-    payload = json.dumps(wire(data)) + "\n"
-    sock.sendall(payload.encode("utf-8"))
+    sock.sendall(dumps_request(wire(data)))
 
 
 def recv_json(sock: socket.socket, timeout: float = 3.0) -> Dict[str, Any]:
     sock.settimeout(timeout)
-    chunks: list[bytes] = []
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        if b"\n" in chunk:
-            break
-    raw = b"".join(chunks).decode("utf-8")
-    for line in raw.splitlines():
-        line = line.strip()
-        if line:
-            return json.loads(line)
-    raise RuntimeError("No JSON line received")
+    return recv_reply(sock)
 
 
 # ---------------------------------------------------------------------------
@@ -141,40 +116,20 @@ def recv_json(sock: socket.socket, timeout: float = 3.0) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class TestExtractPTS:
-    def test_extract_pts_from_tuple(self):
-        snap = ("frame", 1, 10.0, "stream-1", 123.456)
-        assert extract_pts(snap) == 123.456
+    def test_extract_pts_from_snapshot(self):
+        kvm = FakeKVM("frame", sequence=1, received_monotonic=10.0, stream_id="stream-1", pts=123.456)
+        assert extract_pts(kvm) == 123.456
 
     def test_extract_pts_from_mock_client_latest_frame(self):
         kvm = MockKVMClient(initial_pts=45.67)
         assert extract_pts(kvm) == 45.67
 
-    def test_extract_pts_from_attributes(self):
-        class ObjWithAttr:
-            frame_presentation_time = 78.9
+    def test_extract_pts_reads_the_newest_frame(self):
+        assert extract_pts(FakeKVM("frame", pts=78.9)) == 78.9
 
-        assert extract_pts(ObjWithAttr()) == 78.9
-
-        class ObjWithPts:
-            pts = 99.123
-
-        assert extract_pts(ObjWithPts()) == 99.123
-
-        class ObjWithTimestamp:
-            timestamp = 55.44
-
-        assert extract_pts(ObjWithTimestamp()) == 55.44
-
-    def test_extract_pts_missing_or_none(self):
-        assert extract_pts(None) is None
-
-        class EmptyObj:
-            pass
-
-        assert extract_pts(EmptyObj()) is None
-
-        kvm_none = MockKVMClient(initial_pts=None)
-        assert extract_pts(kvm_none) is None
+    def test_extract_pts_missing_before_first_frame_or_without_pts(self):
+        assert extract_pts(FakeKVM(None)) is None
+        assert extract_pts(MockKVMClient(initial_pts=None)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -330,15 +285,15 @@ class TestDFURoundFrameGateFreeze:
         gate = RoundFrameGate("DFU-01", freeze_threshold=1.0, require_presentation_time=True)
 
         # First frame at t=0, pts=10.0
-        dec1 = gate.observe(None, sequence=1, received_at=0.0, now=0.0, presentation_time=10.0)
+        dec1 = gate.observe(None, sequence=1, received_at=0.0, now=0.0, pts=10.0)
         assert dec1.kind != "frozen"
 
         # Frame at t=0.5, pts=10.0 (static for 0.5s < 1.0s)
-        dec2 = gate.observe(None, sequence=2, received_at=0.5, now=0.5, presentation_time=10.0)
+        dec2 = gate.observe(None, sequence=2, received_at=0.5, now=0.5, pts=10.0)
         assert dec2.kind == "unknown"
 
         # Frame at t=1.2, pts=10.0 (static for 1.2s >= 1.0s freeze_threshold)
-        dec3 = gate.observe(None, sequence=3, received_at=1.2, now=1.2, presentation_time=10.0)
+        dec3 = gate.observe(None, sequence=3, received_at=1.2, now=1.2, pts=10.0)
         assert dec3.kind == "frozen"
         assert dec3.reason == "frame_frozen"
         assert gate.is_frozen is True
@@ -348,13 +303,13 @@ class TestDFURoundFrameGateFreeze:
 
     def test_round_frame_gate_recovers_when_pts_resumes_advancing(self):
         gate = RoundFrameGate("DFU-01", freeze_threshold=1.0, require_presentation_time=True)
-        gate.observe(None, sequence=1, received_at=0.0, now=0.0, presentation_time=10.0)
+        gate.observe(None, sequence=1, received_at=0.0, now=0.0, pts=10.0)
         # Static -> frozen
-        dec_frozen = gate.observe(None, sequence=2, received_at=1.2, now=1.2, presentation_time=10.0)
+        dec_frozen = gate.observe(None, sequence=2, received_at=1.2, now=1.2, pts=10.0)
         assert dec_frozen.kind == "frozen"
 
         # Stream recovers with advanced PTS
-        dec_alive = gate.observe(None, sequence=3, received_at=1.3, now=1.3, presentation_time=10.1)
+        dec_alive = gate.observe(None, sequence=3, received_at=1.3, now=1.3, pts=10.1)
         assert dec_alive.kind != "frozen"
         assert gate.is_frozen is False
 
@@ -488,8 +443,7 @@ class _ReconnectingKVM(LogSolutionKVM):
             self._pts = 1.0  # the new stream's PTS restarts from a low value
 
     def latest_frame(self):
-        frame, seq, received_at, _, pts = super().latest_frame()
-        return (frame, seq, received_at, self._stream, pts)
+        return dataclasses.replace(super().latest_frame(), stream_id=self._stream)
 
 
 class TestStreamReconnectResetsFreezeState:
@@ -592,10 +546,11 @@ class TestStreamReconnectResetsFreezeState:
         asyncio.run(_run())
 
 
-class _ScriptedKVM:
+class _ScriptedKVM(FakeKVM):
     """Returns one (stream_id, pts) reading per latest_frame() call; repeats the last reading."""
 
     def __init__(self, readings):
+        super().__init__()
         self._readings = list(readings)
         self._current = self._readings[0]
 
@@ -603,7 +558,7 @@ class _ScriptedKVM:
         if self._readings:
             self._current = self._readings.pop(0)
         stream_id, pts = self._current
-        return (None, 1, time.monotonic(), stream_id, pts)
+        return make_snapshot(None, sequence=1, stream_id=stream_id, pts=pts)
 
 
 # Old stream runs to PTS 100; the reconnected stream's first frame has no PTS, then restarts low.

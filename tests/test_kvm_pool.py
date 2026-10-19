@@ -28,16 +28,21 @@ import pytest
 # Ensure host-app is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
+from core_protocol import dumps_request  # noqa: E402
+from protocol_helpers import recv_reply  # noqa: E402
+
 from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
+from fake_kvm import FakeKVM, make_snapshot
 from protocol_helpers import make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
 
-class MockJetKVMClient:
+class MockJetKVMClient(FakeKVM):
     """Mock WebRTC KVM client simulating JetKVMClient interface."""
 
     def __init__(self, host: str, password: str = "", should_fail_connect: bool = False) -> None:
+        super().__init__()
         self.host = host
         self.password = password
         self.should_fail_connect = should_fail_connect
@@ -59,14 +64,15 @@ class MockJetKVMClient:
         self.close_calls += 1
         self.connected = False
 
-    def latest_frame(self) -> Optional[tuple[Any, int, float, str, float]]:
+    def latest_frame(self):
         self.latest_frame_calls += 1
         if self.latest_frame_exc is not None:
             raise self.latest_frame_exc
         if not self.connected:
             return None
         self.frame_sequence += 1
-        return ("dummy_frame", self.frame_sequence, time.monotonic(), "mock_stream", 1000.0 + self.frame_sequence)
+        return make_snapshot("dummy_frame", sequence=self.frame_sequence, received_monotonic=time.monotonic(),
+                             stream_id="mock_stream", pts=1000.0 + self.frame_sequence)
 
 
 class MockClientFactory:
@@ -326,9 +332,6 @@ def test_concurrent_get_connection_deduplication() -> None:
 # Integration Tests with TcpJsonServer
 # ---------------------------------------------------------------------------
 
-_SOCK_BUFFERS: dict[int, bytearray] = {}
-
-
 def pool_registry():
     """Devices on the IPs these pool tests expect; snapshot drives KVM connections in protocol 1.0."""
     return DeviceRegistry.from_text(json.dumps({
@@ -339,29 +342,12 @@ def pool_registry():
 
 
 def send_json(sock: socket.socket, obj: dict) -> None:
-    line = json.dumps(wire(obj)) + "\n"
-    sock.sendall(line.encode("utf-8"))
+    sock.sendall(dumps_request(wire(obj)))
 
 
 def recv_json(sock: socket.socket, timeout: float = 3.0) -> dict:
     sock.settimeout(timeout)
-    buf = _SOCK_BUFFERS.setdefault(id(sock), bytearray())
-    start = time.time()
-    while True:
-        if b"\n" in buf:
-            line, _, rest = buf.partition(b"\n")
-            buf.clear()
-            buf.extend(rest)
-            return json.loads(line.decode("utf-8"))
-        try:
-            chunk = sock.recv(4096)
-        except socket.timeout:
-            raise TimeoutError(f"recv_json timed out after {timeout}s")
-        if not chunk:
-            raise ConnectionError("Socket closed while reading response")
-        buf.extend(chunk)
-        if time.time() - start > timeout:
-            raise TimeoutError("recv_json exceeded timeout")
+    return recv_reply(sock)
 
 
 def test_tcp_server_kvm_pool_reuse_and_status() -> None:
