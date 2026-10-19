@@ -2,13 +2,13 @@
 
 GitHub：https://github.com/Bowei1121/B518_KVM_Log/issues/36（Parent #21）
 
-**Status:** needs-info
+**Status:** ready-for-agent
 
 ## What to build
 
 Log Solution 1.2 人工停止時改顯示第五種狀態圖樣 MANUAL_STOP_COMPLETE（上排白白、下排黑黑，0011；2026-10-19 使用者確認，見 `docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`）。現行橋接不認得 0011，會判為 unknown，最後回 `log_solution_not_visible`，人工停止的輪次交付不到 LabVIEW。修正後：已見本次 Monitoring 的輪次在 0011 時交付全部結果並明確回報人工停止；未見本次 Monitoring 時不交付，回報需人工核對。必須在 Log Solution 1.2 部署前完成。
 
-**待確認的協定細節（建議值，確認後改為 ready-for-agent）：**
+**協定細節（2026-10-19 使用者確認）：**
 - 交付時 `data.kind = "taken"`、`data.state = "manual_stop_complete"`（`state` 新增一個值，不新增欄位，typedef 不變）；一般完成仍為 `state = "complete"`。
 - 未見本次 Monitoring 就看到 0011：`status = "error"`、`error = "manual_verification_required"`，`data.kind = "unknown"`、`results = []`。
 
@@ -27,4 +27,4 @@ Log Solution 1.2 人工停止時改顯示第五種狀態圖樣 MANUAL_STOP_COMPL
 
 ## Blocked by
 
-協定細節確認（見上方建議值）。不依賴 #32（左定位方塊幾何），可先用 1.1 幾何實作與測試。
+None (can start immediately)。不依賴 #32（左定位方塊幾何），可先用 1.1 幾何實作與測試。
