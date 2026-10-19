@@ -47,9 +47,11 @@ except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
 
 try:
-    from monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC
+    from monitor_flow import MONITOR_CONFIRM_SEC
 except ImportError:
-    from .monitor_flow import MONITOR_CONFIRM_SEC, MONITOR_START_TIMEOUT_SEC  # type: ignore[import-not-found,no-redef]
+    from .monitor_flow import MONITOR_CONFIRM_SEC  # type: ignore[import-not-found,no-redef]
+
+MONITOR_START_MAX_TIMEOUT_SEC = 300
 
 try:
     from bt_flow import BtStartError, run_start_all
@@ -93,7 +95,8 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "core_status": frozenset(),
     "shutdown": frozenset(),
     "snapshot": frozenset({"format", "quality"}),
-    "check": frozenset({"timeout_sec"}),
+    "check_finish": frozenset({"timeout_sec"}),
+    "check_start": frozenset({"timeout_sec"}),
 }
 ENVELOPE_KEYS = frozenset({
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec",
@@ -116,16 +119,17 @@ DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
     "ping": {"pong": False, "core_version": ""},
     "status": {"core_uptime_sec": 0, "devices": []},
     "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
-    "check": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+    "check_finish": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
+    "check_start": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
     "input": {"entered": []},
     "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
-    "inspect": {"kind": "", "state": "", "reason": "", "capacity": 0, "results": []},
+    "inspect": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
 }
 
 
 def _unknown(reason: str) -> Dict[str, Any]:
-    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "results": []}
+    return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "active": [], "results": []}
 
 
 def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
@@ -147,43 +151,37 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
         "state": decision.state.value if decision.state is not None else "",
         "reason": decision.reason,
         "capacity": int(decision.capacity),
+        "active": [],
         "results": [{"slot": slot, "status": status} for slot, status in decision.results],
     }
 
 
-def _inspect_round(kvm: Any, stability: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _inspect_round(kvm: Any, box: Dict[str, Any]) -> Dict[str, Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
-    Reports what the screen shows now. A complete round is reported as taken only after two
-    equal complete readings, and nothing here arms or consumes the device's round gate.
+    Reports what the screen shows now. Never returns taken and never arms or consumes
+    the device's round gate. Two agreeing fresh frames fill ``active``.
     """
-    from round_frame_consumer import MarkerState, read_latest_app_frame
+    from round_frame_consumer import MarkerState, confirm_activity, read_app_frame
 
-    frame, obs = read_latest_app_frame(kvm)
+    frame, obs, sequence, received_at = read_app_frame(kvm)
     if frame is None:
         return {"error": "no_frame", "message": "No frame received from KVM yet"}
+    prev, rows = confirm_activity(box.get("prev"), sequence, received_at, obs, 1.0)
+    box["prev"] = prev
+    active = [{"slot": slot, "evidence": evidence} for slot, evidence in rows]
     if not obs.reliable:
-        return _unknown(obs.reason)
-    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity)}
+        unknown = _unknown(obs.reason)
+        unknown["active"] = []
+        return unknown
+    base = {"state": obs.state.value if obs.state is not None else "", "capacity": int(obs.capacity),
+            "active": active}
     if obs.state == MarkerState.REVIEW:
-        return {**base, "kind": "paused", "reason": "confirmation_required", "results": []}
-    if obs.state != MarkerState.COMPLETE:
-        return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
-    if not obs.results_complete:
-        if stability is not None:
-            stability.update(sig=None, count=0)
-        return {**base, "kind": "waiting", "reason": "incomplete_or_nonterminal_results", "results": []}
-    signature = (obs.capacity, obs.statuses)
-    if stability is None:
-        return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
-    if stability["sig"] == signature:
-        stability["count"] += 1
-    else:
-        stability.update(sig=signature, count=1)
-    results = [{"slot": slot, "status": status} for slot, status in enumerate(obs.statuses, 1)]
-    if stability["count"] >= 2:
-        return {**base, "kind": "taken", "reason": "reliable_complete", "results": results}
-    return {**base, "kind": "waiting", "reason": "confirming_complete_frame", "results": []}
+        return {**base, "kind": "paused", "reason": "confirmation_required", "results": [], "active": []}
+    # inspect never delivers. A finished screen is waiting with empty results and no "started" channels.
+    if obs.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
+        return {**base, "kind": "waiting", "reason": obs.state.value, "results": [], "active": []}
+    return {**base, "kind": "waiting", "reason": obs.state.value if obs.state else "", "results": []}
 
 
 class TcpJsonServer:
@@ -200,7 +198,6 @@ class TcpJsonServer:
         template_root: Optional[str | Path] = None,
         inspection_timeout_sec: float = INSPECTION_TIMEOUT_SEC,
         monitor_confirm_sec: float = MONITOR_CONFIRM_SEC,
-        monitor_start_timeout_sec: float = MONITOR_START_TIMEOUT_SEC,
         visibility_lost_sec: float = VISIBILITY_LOST_SEC,
         dock_recheck_sec: float = DOCK_RECHECK_SEC,
         max_dock_recoveries: int = MAX_DOCK_RECOVERIES,
@@ -226,9 +223,10 @@ class TcpJsonServer:
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
         self._round_gates: Dict[str, Any] = {}
+        self._rounds: Dict[str, RoundTrack] = {}
+        self._inspect_activity: Dict[str, Dict[str, Any]] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
-        self.monitor_start_timeout_sec = float(monitor_start_timeout_sec)
         self.visibility_lost_sec = float(visibility_lost_sec)
         self.dock_recheck_sec = float(dock_recheck_sec)
         self.max_dock_recoveries = int(max_dock_recoveries)
@@ -279,11 +277,13 @@ class TcpJsonServer:
         self.register_handler("status", self._handle_status)
         self.register_handler("core_status", self._handle_core_status)
         self.register_handler("shutdown", self._handle_shutdown)
-        self.register_handler("check", self._handle_check)
+        self.register_handler("check_finish", self._handle_check_finish, device_bound=True)
+        self.register_handler("check_start", self._handle_check_start, device_bound=True)
         self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
         self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
         self.register_handler("start_test", self._handle_start_test, device_bound=True)
-        self.register_handler("monitor_start", self._handle_monitor_start, device_bound=True)
+        self.register_handler("monitor_start", self._handle_monitor_start, fields=("timeout_sec",),
+                              device_bound=True)
         self.register_handler("snapshot", self._handle_snapshot)
 
     async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
@@ -433,7 +433,7 @@ class TcpJsonServer:
         }
 
     async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any], read_only: bool = False,
-                             stability: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                             report_activity: bool = False) -> Dict[str, Any]:
         """One reading of the Log Solution screen for a device, as a 1.0 check payload.
 
         The reading runs on a worker thread with a per-frame time limit. A reading that
@@ -447,15 +447,19 @@ class TcpJsonServer:
 
         # Every station reads the Log Solution display contract; the station only affects operations.
         from round_frame_consumer import observe_latest_round_frame
+        gate = None
         if read_only:
             # Gate-less reading: never arms, takes or otherwise touches the round.
-            def job():
-                return _inspect_round(kvm, stability)
-        else:
-            gate = self._round_gate(entry.device_id)
+            box = self._inspect_box(entry.device_id)
 
             def job():
-                return observe_latest_round_frame(kvm, gate)
+                return _inspect_round(kvm, box)
+        else:
+            gate = self._round_gate(entry.device_id)
+            accept_round = self._round_track(entry.device_id).start_requested
+
+            def job():
+                return observe_latest_round_frame(kvm, gate, accept_round=accept_round)
 
         future = self._inspector.submit(job)
         self._inspections[flight_key] = future
@@ -469,7 +473,60 @@ class TcpJsonServer:
             logger.exception("Inspection error for %s", entry.device_id)
             return {"error": "internal_error", "message": f"inspection error: {exc}"}
 
-        return raw if read_only else _round_observation(raw)
+        if read_only:
+            return raw
+        mapped = _round_observation(raw)
+        # taken / already_taken / paused keep active []. Activity is only for in-progress rounds.
+        if (report_activity and gate is not None and "error" not in mapped
+                and mapped.get("kind") == "waiting"
+                and mapped.get("state") not in ("complete", "manual_stop_complete")):
+            mapped["active"] = [{"slot": slot, "evidence": evidence} for slot, evidence in gate.last_active]
+        return mapped
+
+    def _round_track(self, device_id: str) -> "RoundTrack":
+        """Per-device round-start request. Lives as long as the server; a timeout does not clear it."""
+        track = self._rounds.get(device_id)
+        if track is None:
+            track = RoundTrack()
+            self._rounds[device_id] = track
+        return track
+
+    def _inspect_box(self, device_id: str) -> Dict[str, Any]:
+        box = self._inspect_activity.get(device_id)
+        if box is None:
+            box = {"prev": None}
+            self._inspect_activity[device_id] = box
+        return box
+
+    def _account_round_screen(self, device_id: str, obs: Dict[str, Any]) -> None:
+        """Preparing or monitoring is a new-round signal. Monitoring counts only while a request exists."""
+        track = self._round_track(device_id)
+        state = obs.get("state")
+        if state == "preparing":
+            track.monitoring_seen = False
+            track.input_released = False
+        elif state == "monitoring":
+            track.input_released = False
+            if track.start_requested:
+                track.monitoring_seen = True
+
+    def _round_start_refusal(self, device_id: str, obs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """check_start / check_finish steps (4) and (5). None when judgment should continue.
+
+        (1) paused, (2) already_taken and (3) unknown are handled by the caller before this.
+        """
+        track = self._round_track(device_id)
+        if not track.start_requested:
+            return _check_error("monitor_not_ready",
+                                "no round-start request; result was not taken", obs)
+        # Gate not armed (or this call must not take) while a deliverable screen is up: never hang.
+        # Busy-on-monitoring must not invent monitoring_seen; capacity changes also disarm the gate.
+        if obs.get("reason") == "deliverable_without_monitoring":
+            track.settle()
+            return _check_error(
+                "manual_verification_required",
+                "start was requested but this round's monitoring was not seen", obs)
+        return None
 
     def _round_gate(self, device_id: str) -> Any:
         """The device's round gate, created on first use; it lives as long as the server."""
@@ -498,9 +555,10 @@ class TcpJsonServer:
             return "hid_failed", "Log Solution state unreadable"
         if observation.state == MarkerState.STANDBY:
             return None
-        if observation.state == MarkerState.COMPLETE:
-            gate = self._round_gates.get(entry.device_id)
-            if gate is not None and gate.taken:
+        # complete and manual_stop_complete are both READY. Input waits until this round
+        # was delivered or manual_verification_required was already returned.
+        if observation.state in (MarkerState.COMPLETE, MarkerState.MANUAL_STOP_COMPLETE):
+            if self._round_track(entry.device_id).input_released:
                 return None
             return "log_solution_busy", "round result not yet taken"
         return "log_solution_busy", f"Log Solution state is {observation.state.value}"
@@ -539,13 +597,20 @@ class TcpJsonServer:
         from monitor_flow import MonitorStartError, run_monitor_start
 
         entry = req["_device_entry"]
+        track = self._round_track(entry.device_id)
+        track.begin_start()
+        self._round_gate(entry.device_id).forget_delivered_round()
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
                 req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
-                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=self.monitor_start_timeout_sec,
-                log=logger.info, diagnostics_key=entry.device_id)
+                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=float(req["timeout_sec"]),
+                log=logger.info, diagnostics_key=entry.device_id,
+                on_preparing=track.note_start, on_shortcut=track.note_start,
+                on_monitoring=track.note_monitoring)
         except MonitorStartError as exc:
+            # monitor_not_started keeps the round-start request. Only a later taken or
+            # manual_verification_required reply clears it.
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"state": "", "capacity": 0}}
         return {"status": "ok", "data": result}
 
@@ -566,14 +631,18 @@ class TcpJsonServer:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
-    async def _handle_check(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_check_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """check_start: two fresh frames of activity, or a finished round delivered once."""
+        return await self._long_poll(req, read_only=False, report_activity=True)
+
+    async def _handle_check_finish(self, req: Dict[str, Any]) -> Dict[str, Any]:
         return await self._long_poll(req, read_only=False)
 
     async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Monitor UI's read-only check: no device lock, and it never consumes the round result."""
-        return await self._long_poll(req, read_only=True)
+        return await self._long_poll(req, read_only=True, report_activity=True)
 
-    async def _long_poll(self, req: Dict[str, Any], read_only: bool) -> Dict[str, Any]:
+    async def _long_poll(self, req: Dict[str, Any], read_only: bool, report_activity: bool = False) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
@@ -587,8 +656,8 @@ class TcpJsonServer:
         reader = req.get("_reader")
         writer = req.get("_writer")
         start_time = time.monotonic()
-        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "results": []}
-        stability: Dict[str, Any] = {"sig": None, "count": 0}  # read-only: two equal complete readings
+        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0,
+                                "active": [], "results": []}
         # Visibility recovery (check only): when Log Solution stopped being visible, and Dock clicks so far.
         # Only a reliable reading resets the timer; the click count never resets within a request.
         unseen_since: Optional[float] = None
@@ -619,11 +688,14 @@ class TcpJsonServer:
                     "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
                 }
 
-            obs = await self._observe_check(kvm, entry, req, read_only=read_only, stability=stability)
+            obs = await self._observe_check(kvm, entry, req, read_only=read_only,
+                                            report_activity=report_activity)
             if "error" in obs:
                 return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
 
+            if not read_only:
+                self._account_round_screen(entry.device_id, obs)
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
                 return {
                     "status": "error",
@@ -631,8 +703,23 @@ class TcpJsonServer:
                     "message": f"screen shows {obs['capacity']} slots, device is configured for {entry.channels}",
                     "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
                 }
-            if obs["kind"] in ("taken", "paused", "already_taken"):
+            # Review, then an exact re-view, both win before the round-start request check.
+            if obs["kind"] in ("paused", "already_taken"):
                 return {"status": "ok", "data": obs}
+            if not read_only and obs["kind"] != "unknown":
+                refused = self._round_start_refusal(entry.device_id, obs)
+                if refused is not None:
+                    return refused
+            if obs["kind"] == "taken":
+                if not read_only:
+                    self._round_track(entry.device_id).settle()
+                return {"status": "ok", "data": obs}
+            # Complete screens confirm toward taken; never promote them to started.
+            if (report_activity and obs["kind"] == "waiting" and obs.get("active")
+                    and obs.get("state") not in ("complete", "manual_stop_complete")):
+                return {"status": "ok", "data": {**obs, "kind": "started", "reason": "activity_confirmed"}}
+            if read_only and obs.get("state") in ("complete", "manual_stop_complete"):
+                return {"status": "ok", "data": {**obs, "active": [], "results": []}}
             if timeout_sec == 0:
                 return {"status": "ok", "data": obs}
             if elapsed >= timeout_sec:
@@ -736,12 +823,19 @@ class TcpJsonServer:
                 return "invalid_argument", "quality must be 0 for png"
             if fmt == "jpeg" and not 1 <= quality <= 100:
                 return "invalid_argument", "quality must be between 1 and 100 for jpeg"
-        if cmd in ("check", "inspect"):
+        if cmd in ("check_finish", "check_start", "inspect"):
             timeout = req.get("timeout_sec")
             if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
                 return "invalid_argument", "timeout_sec is required and must be a number"
             if not 0 <= timeout <= CHECK_MAX_TIMEOUT_SEC:
                 return "invalid_argument", f"timeout_sec must be between 0 and {CHECK_MAX_TIMEOUT_SEC}"
+        if cmd == "monitor_start":
+            timeout = req.get("timeout_sec")
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+                return "invalid_argument", "timeout_sec is required and must be a number"
+            if not 1 <= timeout <= MONITOR_START_MAX_TIMEOUT_SEC:
+                return "invalid_argument", (
+                    f"timeout_sec must be between 1 and {MONITOR_START_MAX_TIMEOUT_SEC}")
         return None
 
     async def _dispatch_command(
@@ -1058,6 +1152,35 @@ class TcpJsonServer:
             asyncio.run(self._run_server_async())
         except (KeyboardInterrupt, SystemExit):
             pass
+
+
+class RoundTrack:
+    """One device's round-start request for the life of this Core process."""
+
+    def __init__(self) -> None:
+        self.start_requested = False
+        self.monitoring_seen = False
+        self.input_released = False
+
+    def note_start(self) -> None:
+        """Shortcut sent, or monitor_start is looking at Preparing. Keeps an existing request."""
+        self.start_requested = True
+
+    def note_monitoring(self) -> None:
+        """This monitor_start call observed Monitoring, so the round is ready to judge."""
+        self.monitoring_seen = True
+        self.input_released = False
+
+    def begin_start(self) -> None:
+        """A new monitor_start. Keeps a request that monitor_not_started did not clear."""
+        self.monitoring_seen = False
+        self.input_released = False
+
+    def settle(self) -> None:
+        """taken or manual_verification_required spends the request and releases the next SN input."""
+        self.start_requested = False
+        self.monitoring_seen = False
+        self.input_released = True
 
 
 def main() -> None:

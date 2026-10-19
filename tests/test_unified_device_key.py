@@ -88,7 +88,7 @@ def test_check_rejects_raw_kvm_ip_and_station(probe_server):
     for field, value in (("kvm_ip", "192.168.1.99"), ("station", "DFU")):
         resp = _send(probe_server, {
             "protocol_version": "1.0", "req_id": f"chk-{field}", "device": "BT-01",
-            "cmd": "check", "timeout_sec": 0, field: value,
+            "cmd": "check_finish", "timeout_sec": 0, field: value,
         })
         assert resp["error"] == "forbidden_field"
 
@@ -100,7 +100,7 @@ def test_check_connects_to_the_registry_ip_for_the_device():
     time.sleep(0.05)
     try:
         resp = _send(srv, {"protocol_version": "1.0", "req_id": "c-ip", "device": "BT-01",
-                           "cmd": "check", "timeout_sec": 0})
+                           "cmd": "check_finish", "timeout_sec": 0})
         assert resp["error"] == "kvm_connect_failed"
         assert "192.168.202.1" in resp["message"]
     finally:

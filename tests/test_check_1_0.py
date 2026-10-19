@@ -16,11 +16,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 DEVICE = "DFU-01"
-DATA_KEYS = {"kind", "state", "reason", "capacity", "results"}
+DATA_KEYS = {"kind", "state", "reason", "capacity", "active", "results"}
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def rig():
 
 def _check(srv, timeout_sec, req_id="c1", device=DEVICE, **extra):
     host, port = srv.server_address
-    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "check",
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "check_finish",
                "timeout_sec": timeout_sec, **extra}
     with socket.create_connection((host, port), timeout=10.0) as sock:
         sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
@@ -72,23 +72,110 @@ def _settle(seconds=0.7):
     time.sleep(seconds)
 
 
+def test_preparing_screen_is_waiting_and_reliable(rig):
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("preparing")
+
+    resp = _check(srv, 0)
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["kind"] == "waiting"
+    assert resp["data"]["state"] == "preparing"
+    assert resp["data"]["results"] == []
+
+
+def test_removed_check_command_is_unknown_command(rig):
+    srv, _kvm = rig
+    host, port = srv.server_address
+    payload = {"protocol_version": "1.0", "req_id": "old", "device": DEVICE, "cmd": "check",
+               "timeout_sec": 0}
+    with socket.create_connection((host, port), timeout=3.0) as sock:
+        sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        resp = json.loads(sock.makefile().readline())
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "unknown_command"
+
+
+def test_manual_stop_complete_is_taken_with_its_own_state(rig):
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("manual_stop_complete", ["STOPPED", "PASS", "FAIL", "NOTEST"])
+
+    first = _check(srv, 0, req_id="ms1")
+    second = _check(srv, 0, req_id="ms2")
+
+    assert first["data"]["kind"] == "waiting"
+    assert second["status"] == "ok"
+    assert second["data"]["kind"] == "taken"
+    assert second["data"]["state"] == "manual_stop_complete"
+    assert second["data"]["active"] == []
+    assert [row["status"] for row in second["data"]["results"]] == ["STOPPED", "PASS", "FAIL", "NOTEST"]
+
+
+def test_manual_stop_without_any_stopped_slot_stays_manual_stop(rig):
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("manual_stop_complete", ["PASS", "PASS", "PASS", "PASS"])
+    _check(srv, 0, req_id="a")
+    resp = _check(srv, 0, req_id="b")
+
+    assert resp["data"]["kind"] == "taken"
+    assert resp["data"]["state"] == "manual_stop_complete"
+    assert [row["status"] for row in resp["data"]["results"]] == ["PASS", "PASS", "PASS", "PASS"]
+
+
+def test_complete_and_manual_stop_frames_do_not_share_a_stability_count(rig):
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
+    first = _check(srv, 0, req_id="c1")
+    kvm.show("manual_stop_complete", ["PASS", "PASS", "PASS", "PASS"])
+    second = _check(srv, 0, req_id="c2")
+    third = _check(srv, 0, req_id="c3")
+
+    assert first["data"]["kind"] == "waiting"
+    assert second["data"]["kind"] == "waiting"
+    assert second["data"]["state"] == "manual_stop_complete"
+    assert third["data"]["kind"] == "taken"
+    assert third["data"]["state"] == "manual_stop_complete"
+
+
+def test_preparing_after_delivery_is_not_the_same_round(rig):
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
+    _check(srv, 0, req_id="p1")
+    taken = _check(srv, 0, req_id="p2")
+    assert taken["data"]["kind"] == "taken"
+    kvm.show("preparing")
+    preparing = _check(srv, 0, req_id="p3")
+    kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
+    again = _check(srv, 0, req_id="p4")
+
+    # Delivery cleared the request. Preparing is a new-round signal, not a new request,
+    # so both reads refuse instead of replaying the delivered round.
+    assert preparing["error"] == "monitor_not_ready"
+    assert again["error"] == "monitor_not_ready"
+    assert again["data"]["kind"] != "already_taken"
+
+
 def test_single_read_on_standby_returns_waiting_without_results(rig):
     srv, kvm = rig
     kvm.show("standby")
 
     resp = _check(srv, 0)
 
-    assert resp["status"] == "ok"
-    assert resp["error"] == ""
-    assert set(resp["data"]) == DATA_KEYS
-    assert resp["data"]["kind"] == "waiting"
-    assert resp["data"]["state"] == "standby"
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_ready"
     assert resp["data"]["results"] == []
+    assert resp["data"]["kind"] != "taken"
 
 
 def test_single_read_while_monitoring_is_waiting(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
 
     resp = _check(srv, 0)
 
@@ -111,7 +198,7 @@ def test_blank_screen_is_unknown_and_never_a_product_result(rig):
 
 def test_long_poll_returns_taken_per_slot_as_soon_as_complete_is_seen(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     started = time.monotonic()
@@ -136,7 +223,7 @@ def test_long_poll_returns_taken_per_slot_as_soon_as_complete_is_seen(rig):
 
 def test_stopped_slots_are_returned_as_is(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "STOPPED", "PASS", "PASS"])
@@ -149,8 +236,7 @@ def test_stopped_slots_are_returned_as_is(rig):
 
 def test_completing_slot_is_still_waiting_not_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
-    _settle(0.2)
+    arm_round(srv, kvm, DEVICE)
     kvm.show("complete", ["PASS", "COMPLETING", "PASS", "PASS"])
 
     resp = _check(srv, 0)
@@ -162,7 +248,7 @@ def test_completing_slot_is_still_waiting_not_taken(rig):
 
 def test_review_pauses_immediately_during_long_poll(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     started = time.monotonic()
@@ -179,7 +265,7 @@ def test_review_pauses_immediately_during_long_poll(rig):
 
 def test_second_read_after_taken_is_already_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10, req_id="first"))
     _settle()
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
@@ -189,12 +275,14 @@ def test_second_read_after_taken_is_already_taken(rig):
     resp = _check(srv, 0, req_id="second")
 
     assert resp["data"]["kind"] == "already_taken"
-    assert resp["data"]["results"] == []
+    assert resp["data"]["results"] == out["resp"]["data"]["results"]
+    assert resp["data"]["active"] == []
+    assert set(resp["data"]) == DATA_KEYS
 
 
 def test_long_poll_times_out_with_last_observed_state(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
 
     resp = _check(srv, 1.0)
 
@@ -207,7 +295,7 @@ def test_long_poll_times_out_with_last_observed_state(rig):
 
 def test_capacity_mismatch_never_delivers_results(rig):
     srv, kvm = rig
-    kvm.show("monitoring", ["WAITING"] * 2)  # a two-slot round on a four-channel device
+    arm_round(srv, kvm, DEVICE, ["WAITING"] * 2)  # a two-slot round on a four-channel device
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "FAIL"])
@@ -224,7 +312,7 @@ def test_capacity_mismatch_never_delivers_results(rig):
 def test_timeout_out_of_range_or_wrong_type_is_invalid_argument(rig, timeout_sec):
     srv, _ = rig
     host, port = srv.server_address
-    payload = {"protocol_version": "1.0", "req_id": "bad", "device": DEVICE, "cmd": "check"}
+    payload = {"protocol_version": "1.0", "req_id": "bad", "device": DEVICE, "cmd": "check_finish"}
     if timeout_sec is not None:
         payload["timeout_sec"] = timeout_sec
     with socket.create_connection((host, port), timeout=3.0) as sock:
@@ -248,7 +336,7 @@ def test_frozen_picture_during_long_poll_is_frame_frozen(rig):
 
 def test_taken_is_reported_once_even_if_screen_keeps_complete(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     th, out = _in_background(lambda: _check(srv, 10))
     _settle()
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])

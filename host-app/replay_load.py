@@ -91,6 +91,15 @@ class ReplayKVM:
     async def close(self) -> None:
         self.connected = False
 
+    async def click(self, x, y):
+        return None
+
+    async def move(self, x, y):
+        return None
+
+    async def press_command_shift_m(self):
+        return None
+
     def latest_frame(self) -> Tuple[np.ndarray, int, float, str, float]:
         """(frame, sequence, received_at, stream_id, pts) for the picture on screen now."""
         now = self.clock()

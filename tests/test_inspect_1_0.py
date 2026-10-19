@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 DEVICE = "DFU-01"
@@ -67,11 +67,30 @@ def _background(fn):
     return th, out
 
 
+def test_inspect_reports_preparing_and_manual_stop_complete(rig):
+    srv, kvm = rig
+    kvm.show("preparing")
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "prep", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        preparing = _recv(ui)
+    kvm.show("manual_stop_complete", ["STOPPED", "PASS", "FAIL", "NOTEST"])
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "stop", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        stopped = _recv(ui)
+
+    assert preparing["status"] == "ok"
+    assert preparing["data"]["kind"] == "waiting"
+    assert preparing["data"]["state"] == "preparing"
+    assert stopped["data"]["kind"] == "waiting"
+    assert stopped["data"]["state"] == "manual_stop_complete"
+    assert stopped["data"]["results"] == []
+
+
 def test_inspect_is_not_blocked_by_a_labview_lock(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 10})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 10})
     time.sleep(0.3)
     assert srv.lock_manager.is_locked(DEVICE)
 
@@ -87,19 +106,22 @@ def test_inspect_is_not_blocked_by_a_labview_lock(rig):
 
 def test_inspect_never_takes_the_round_from_labview(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 15})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)
 
-    ui_th, ui_out = _background(lambda: _inspect_once(srv, 12))
     time.sleep(0.3)
     kvm.show("complete", ["PASS", "FAIL", "PASS", "PASS"])
-    ui_th.join(timeout=15)
+    with _open(srv) as ui:
+        _send(ui, {"req_id": "ui-once", "device": DEVICE, "cmd": "inspect", "timeout_sec": 0})
+        ui_resp = _recv(ui)
     lv_resp = _recv(labview)
     labview.close()
 
-    assert ui_out["resp"]["data"]["kind"] == "taken"
+    assert ui_resp["data"]["kind"] != "taken"
+    assert ui_resp["data"]["active"] == []
+    assert ui_resp["data"]["results"] == []
     assert lv_resp["status"] == "ok"
     assert lv_resp["data"]["kind"] == "taken"
     assert [row["status"] for row in lv_resp["data"]["results"]] == ["PASS", "FAIL", "PASS", "PASS"]
@@ -107,9 +129,9 @@ def test_inspect_never_takes_the_round_from_labview(rig):
 
 def test_inspect_after_labview_took_the_round_still_reports_the_screen_not_already_taken(rig):
     srv, kvm = rig
-    kvm.show("monitoring")
+    arm_round(srv, kvm, DEVICE)
     labview = _open(srv)
-    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check", "timeout_sec": 15})
+    _send(labview, {"req_id": "lv", "device": DEVICE, "cmd": "check_finish", "timeout_sec": 15})
     time.sleep(0.3)
     kvm.show("complete", ["PASS", "PASS", "PASS", "PASS"])
     assert _recv(labview)["data"]["kind"] == "taken"

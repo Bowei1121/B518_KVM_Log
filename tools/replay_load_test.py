@@ -71,13 +71,14 @@ def build_registry(args):
 
 
 class LoadClient(threading.Thread):
-    """One device's LabVIEW-like long poll: check, read the reply, pause between rounds."""
+    """One device's LabVIEW-like loop: monitor_start, then check_finish until the request is spent."""
 
     def __init__(self, host, port, device, args, stats, stop):
         super().__init__(daemon=True, name=f"load-{device}")
         self.host, self.port, self.device = host, port, device
         self.args, self.stats, self.stop_event = args, stats, stop
         self.counter = 0
+        self.need_start = True
 
     def run(self):
         sock = None
@@ -87,8 +88,15 @@ class LoadClient(threading.Thread):
                     sock = socket.create_connection((self.host, self.port), timeout=5.0)
                 self.counter += 1
                 req_id = f"{self.device}-{self.counter}"
-                payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
-                           "cmd": "check", "timeout_sec": self.args.check_timeout}
+                if self.need_start:
+                    timeout = self.args.check_timeout
+                    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 300:
+                        timeout = 8
+                    payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
+                               "cmd": "monitor_start", "timeout_sec": timeout}
+                else:
+                    payload = {"protocol_version": "1.0", "req_id": req_id, "device": self.device,
+                               "cmd": "check_finish", "timeout_sec": self.args.check_timeout}
                 started = time.monotonic()
                 sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
                 sock.settimeout(self.args.check_timeout + 15.0)
@@ -96,7 +104,13 @@ class LoadClient(threading.Thread):
                 latency = time.monotonic() - started
                 kind = (reply.get("data") or {}).get("kind", "")
                 self.stats.add_reply(latency, reply.get("status", "?"), reply.get("error", ""), kind)
-                if kind in ("taken", "already_taken") or reply.get("status") != "ok":
+                if payload["cmd"] == "monitor_start" and (
+                        reply.get("status") == "ok" or reply.get("error") == "log_solution_busy"):
+                    self.need_start = False
+                elif reply.get("error") in ("monitor_not_ready", "manual_verification_required") or kind == "taken":
+                    self.need_start = True
+                    self.stop_event.wait(self.args.round_interval)
+                elif kind == "already_taken" or reply.get("status") != "ok":
                     self.stop_event.wait(self.args.round_interval)
             except (OSError, ValueError, ConnectionError):
                 self.stats.add_connection_error()

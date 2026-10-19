@@ -87,6 +87,46 @@ logger = logging.getLogger("MonitorUI")
 # CoreServiceClient: Thread-Safe TCP Client to Core Service
 # ==============================================================================
 
+_STATE_LABELS = {
+    "standby": "待命",
+    "preparing": "準備中",
+    "monitoring": "監控就緒",
+    "review": "待確認",
+    "complete": "一般完成",
+    "manual_stop_complete": "人工停止完成",
+}
+
+_EVIDENCE_LABELS = {
+    "testing": "測試中",
+    "result": "已有結果",
+}
+
+
+def format_manual_check(res: Dict[str, Any]) -> str:
+    """Operator text for one inspect reply: Chinese Log state and started channels."""
+    status = res.get("status", "error")
+    elapsed = res.get("elapsed_sec", 0.0)
+    if status == "ok":
+        state = res.get("state") or ""
+        state_name = _STATE_LABELS.get(state, state or "未知")
+        channels = []
+        for row in res.get("active") or []:
+            evidence = _EVIDENCE_LABELS.get(row.get("evidence", ""), row.get("evidence", ""))
+            channels.append(f"通道 {row.get('slot')} {evidence}")
+        text = f"診斷結果: {state_name}"
+        if channels:
+            text += "；" + "、".join(channels)
+        if elapsed:
+            text += f" (耗時: {elapsed}s)"
+        return text
+    if status == "timeout":
+        return f"診斷結果: TIMEOUT (耗時 {elapsed}s)"
+    if res.get("error") == "device_busy":
+        return "診斷結果: BUSY (設備忙碌中/LabVIEW測試中)"
+    err = res.get("message") or res.get("error") or "未知錯誤"
+    return f"診斷錯誤: {err}"
+
+
 def _flatten(res: Dict[str, Any]) -> Dict[str, Any]:
     """Merge a 1.0 reply's ``data`` into the top level so UI code reads one dict."""
     if not isinstance(res.get("data"), dict):
@@ -903,7 +943,7 @@ class AtlasUI(_BaseTk):
         except ValueError:
             timeout_sec = 5.0
 
-        self._append_log(f"手動送出 check 指令: Device={device}, Timeout={timeout_sec}s...")
+        self._append_log(f"手動送出 inspect 指令: Device={device}, Timeout={timeout_sec}s...")
         self.btn_run_check.config(state="disabled", text="⏳ 檢查執行中...")
         self.lbl_check_result.config(text="診斷結果: 執行中...", fg="blue")
 
@@ -918,31 +958,18 @@ class AtlasUI(_BaseTk):
 
     def _display_check_result(self, res: Dict[str, Any]) -> None:
         self.btn_run_check.config(state="normal", text="⚡ 執行手動診斷檢查")
+        text = format_manual_check(res)
         status = res.get("status", "error")
-        kind = res.get("kind", "")
-        elapsed = res.get("elapsed_sec", 0.0)
-        results = res.get("results") or []
-
-        if status == "ok" and kind == "taken":
-            counts: Dict[str, int] = {}
-            for row in results:
-                counts[row.get("status", "?")] = counts.get(row.get("status", "?"), 0) + 1
-            summary = " / ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "無結果"
-            self.lbl_check_result.config(text=f"診斷結果: {summary} (耗時: {elapsed}s)", fg="#2e7d32")
-            self._append_log(f"診斷檢查取得結果: {summary} (耗時 {elapsed}s)")
-        elif status == "ok":
-            self.lbl_check_result.config(text=f"診斷結果: {kind} / {res.get('reason', '')}", fg="#555")
-            self._append_log(f"診斷檢查回覆: kind={kind} reason={res.get('reason', '')}")
+        if status == "ok":
+            fg = "#2e7d32" if res.get("active") else "#555"
         elif status == "timeout":
-            self.lbl_check_result.config(text=f"診斷結果: TIMEOUT (耗時 {elapsed}s)", fg="#d84315")
-            self._append_log(f"診斷檢查逾時: {elapsed}s 未取得結果。")
+            fg = "#d84315"
         elif res.get("error") == "device_busy":
-            self.lbl_check_result.config(text="診斷結果: BUSY (設備忙碌中/LabVIEW測試中)", fg="#e65100")
-            self._append_log("診斷檢查拒絕: 設備當前處於 BUSY 狀態 (LabVIEW 正在測試)。")
+            fg = "#e65100"
         else:
-            err = res.get("message") or res.get("error") or "未知錯誤"
-            self.lbl_check_result.config(text=f"診斷錯誤: {err}", fg="#b71c1c")
-            self._append_log(f"診斷檢查失敗: {err}")
+            fg = "#b71c1c"
+        self.lbl_check_result.config(text=text, fg=fg)
+        self._append_log(text)
 
     def on_save_capture(self) -> None:
         """Save latest snapshot frame to template capture path."""

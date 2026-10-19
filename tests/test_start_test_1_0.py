@@ -105,6 +105,19 @@ def test_dfu_start_test_clicks_ok_once_and_types_nothing(serve):
     assert not any(event[0] in ("type", "enter", "log_shortcut") for event in kvm.events)
 
 
+def test_preparing_start_test_is_monitor_not_ready_and_sends_no_hid(serve):
+    kvm = _dfu("preparing")
+    srv = serve(kvm)
+
+    resp = _start_test(srv, "DFU-01")
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_ready"
+    assert "preparing" in resp["message"]
+    assert resp["data"]["action"] == ""
+    assert kvm.events == []
+
+
 @pytest.mark.parametrize("state", ["standby", "complete", "review"])
 def test_start_test_is_monitor_not_ready_unless_log_solution_is_monitoring(serve, state):
     kvm = _dfu(state)

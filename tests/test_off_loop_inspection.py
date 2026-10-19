@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 import round_frame_consumer  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
-from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
+from protocol_helpers import LogSolutionKVM, arm_round, make_log_solution_pool, make_registry  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 
 SLOW_DEVICE = "DFU-01"
@@ -29,10 +29,10 @@ SLOW_SECONDS = 1.0
 def rig(monkeypatch):
     original = round_frame_consumer.observe_latest_round_frame
 
-    def slow_for_one_device(kvm, gate):
+    def slow_for_one_device(kvm, gate, accept_round=True):
         if gate.device_id == SLOW_DEVICE:
             time.sleep(SLOW_SECONDS)
-        return original(kvm, gate)
+        return original(kvm, gate, accept_round=accept_round)
 
     monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", slow_for_one_device)
 
@@ -82,7 +82,7 @@ def test_slow_reading_is_reported_unknown_within_the_frame_limit(rig):
     _kvm(kvms, SLOW_DEVICE).show("monitoring")
 
     started = time.monotonic()
-    resp = _call(srv, {"req_id": "slow-1", "device": SLOW_DEVICE, "cmd": "check", "timeout_sec": 0})
+    resp = _call(srv, {"req_id": "slow-1", "device": SLOW_DEVICE, "cmd": "check_finish", "timeout_sec": 0})
     elapsed = time.monotonic() - started
 
     assert resp["status"] == "ok"
@@ -95,11 +95,11 @@ def test_slow_reading_is_reported_unknown_within_the_frame_limit(rig):
 def test_slow_device_does_not_delay_another_devices_check_or_ping(rig):
     srv, kvms = rig
     _kvm(kvms, SLOW_DEVICE).show("monitoring")
-    _kvm(kvms, FAST_DEVICE).show("monitoring")
+    arm_round(srv, _kvm(kvms, FAST_DEVICE), FAST_DEVICE)
     background = {}
 
     def slow_long_poll():
-        background["resp"] = _call(srv, {"req_id": "slow-lp", "device": SLOW_DEVICE, "cmd": "check",
+        background["resp"] = _call(srv, {"req_id": "slow-lp", "device": SLOW_DEVICE, "cmd": "check_finish",
                                          "timeout_sec": 2.5})
 
     th = threading.Thread(target=slow_long_poll, daemon=True)
@@ -107,7 +107,7 @@ def test_slow_device_does_not_delay_another_devices_check_or_ping(rig):
     time.sleep(0.3)
 
     started = time.monotonic()
-    fast_check = _call(srv, {"req_id": "fast-chk", "device": FAST_DEVICE, "cmd": "check", "timeout_sec": 0})
+    fast_check = _call(srv, {"req_id": "fast-chk", "device": FAST_DEVICE, "cmd": "check_finish", "timeout_sec": 0})
     fast_check_elapsed = time.monotonic() - started
     started = time.monotonic()
     pong = _call(srv, {"req_id": "ping-1", "device": "", "cmd": "ping"})
@@ -128,7 +128,7 @@ def test_slow_reading_never_produces_a_taken_result(rig):
     holder = {}
 
     def long_poll():
-        holder["resp"] = _call(srv, {"req_id": "slow-taken", "device": SLOW_DEVICE, "cmd": "check",
+        holder["resp"] = _call(srv, {"req_id": "slow-taken", "device": SLOW_DEVICE, "cmd": "check_finish",
                                      "timeout_sec": 2.0})
 
     th = threading.Thread(target=long_poll, daemon=True)

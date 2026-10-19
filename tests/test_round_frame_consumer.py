@@ -26,7 +26,8 @@ PATTERNS = {
 }
 
 
-def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247)):
+def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247),
+                 pattern=None):
     """Render contract 1.1 with the real App's one- or two-row layout."""
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
@@ -41,7 +42,7 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
     for x, inset in ((82, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
-    for index, black in enumerate(PATTERNS[state]):
+    for index, black in enumerate(pattern if pattern is not None else PATTERNS[state]):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10,
              (0, 0, 0) if black else (255, 255, 255))
@@ -59,6 +60,29 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
 
 
 class RoundFrameConsumerTests(unittest.TestCase):
+    def test_preparing_and_manual_stop_patterns_are_recognized_and_other_patterns_are_unknown(self):
+        preparing = inspect_app_frame(
+            render_frame(MarkerState.STANDBY, ["WAITING"] * 4, pattern=(0, 1, 0, 1)), 10, 10)
+        self.assertTrue(preparing.reliable, preparing.reason)
+        self.assertEqual(preparing.state, "preparing")
+        stopped = inspect_app_frame(
+            render_frame(MarkerState.STANDBY, ["STOPPED", "PASS", "FAIL", "NOTEST"],
+                         pattern=(0, 0, 1, 1)), 10, 10)
+        self.assertTrue(stopped.reliable, stopped.reason)
+        self.assertEqual(stopped.state, "manual_stop_complete")
+        self.assertEqual(stopped.statuses, ("STOPPED", "PASS", "FAIL", "NOTEST"))
+        for bits in ((0, 0, 0, 0), (1, 1, 1, 1), (1, 0, 0, 0), (1, 1, 1, 0)):
+            with self.subTest(bits=bits):
+                unknown = inspect_app_frame(
+                    render_frame(MarkerState.STANDBY, ["WAITING"] * 4, pattern=bits), 10, 10)
+                self.assertFalse(unknown.reliable, bits)
+                self.assertEqual(unknown.reason, "unknown_marker_pattern")
+        grey = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
+        grey[31 + 4:31 + 20, 23 + 280 * 2:23 + 296 * 2] = (128, 128, 128)
+        low = inspect_app_frame(grey, 10, 10)
+        self.assertFalse(low.reliable)
+        self.assertEqual(low.reason, "marker_low_contrast_or_occluded")
+
     def test_real_single_row_layout_completes_without_a_hidden_second_row(self):
         gate = RoundFrameGate("single-row", stable_complete_frames=2)
         for capacity in (1, 10):
@@ -292,6 +316,29 @@ class RoundFrameConsumerTests(unittest.TestCase):
         if reply.startswith("action_done,"):
             fake_action_requests.append(reply)
         self.assertEqual(fake_action_requests, ["action_done,1::PASS,2::FAIL\r\n"])
+
+    def test_missing_or_out_of_order_pts_clears_started_activity(self):
+        """A4: stream-time unknowns reset the activity pair before returning."""
+        frame = render_frame(MarkerState.MONITORING, ["TESTING", "WAITING", "WAITING", "WAITING"])
+        gate = RoundFrameGate("device-1", require_presentation_time=True, max_frame_gap=1.0)
+        gate.observe(frame, 1, 1.0, now=1.0, stream_id="s", presentation_time=1.0)
+        gate.observe(frame, 2, 1.1, now=1.1, stream_id="s", presentation_time=1.1)
+        self.assertTrue(gate.last_active)
+
+        missing = gate.observe(frame, 3, 1.2, now=1.2, stream_id="s", presentation_time=None)
+        self.assertEqual(missing.kind, "unknown")
+        self.assertEqual(missing.reason, "missing_source_frame_time")
+        self.assertEqual(gate.last_active, ())
+        self.assertIsNone(gate._activity_prev)
+
+        gate.observe(frame, 4, 1.3, now=1.3, stream_id="s", presentation_time=2.0)
+        gate.observe(frame, 5, 1.4, now=1.4, stream_id="s", presentation_time=2.1)
+        self.assertTrue(gate.last_active)
+        out_of_order = gate.observe(frame, 6, 1.5, now=1.5, stream_id="s", presentation_time=2.0)
+        self.assertEqual(out_of_order.kind, "unknown")
+        self.assertEqual(out_of_order.reason, "out_of_order_source_frame")
+        self.assertEqual(gate.last_active, ())
+        self.assertIsNone(gate._activity_prev)
 
 
 if __name__ == "__main__":

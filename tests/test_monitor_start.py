@@ -8,6 +8,8 @@ Confirm and start timeouts are injected short; no test waits for the production 
 import json
 import socket
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -60,7 +62,6 @@ def serve(tmp_path):
             freeze_guard=FrameFreezeGuard(freeze_threshold=3.0),
             template_root=root,
             monitor_confirm_sec=CONFIRM_SEC,
-            monitor_start_timeout_sec=START_TIMEOUT_SEC,
         )
         srv.start()
         servers.append(srv)
@@ -93,12 +94,15 @@ def _send(srv, payload):
         return _recv(sock)
 
 
-def _monitor_start(srv, device, req_id="ms"):
-    return _send(srv, {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "monitor_start"})
+def _monitor_start(srv, device, req_id="ms", timeout_sec=1):
+    payload = {"protocol_version": "1.0", "req_id": req_id, "device": device, "cmd": "monitor_start"}
+    if timeout_sec is not None:
+        payload["timeout_sec"] = timeout_sec
+    return _send(srv, payload)
 
 
 def _check(srv, device):
-    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check",
+    return _send(srv, {"protocol_version": "1.0", "req_id": "ck", "device": device, "cmd": "check_finish",
                        "timeout_sec": 0})
 
 
@@ -133,15 +137,26 @@ def test_monitor_start_arms_the_round_so_check_takes_the_next_complete(serve, de
 
 
 @pytest.mark.parametrize("device", STATIONS)
-@pytest.mark.parametrize("state", ["monitoring", "review"])
-def test_monitoring_or_review_is_busy_and_nothing_is_sent(serve, device, state):
-    kvm = LogSolutionKVM(state=state)
+def test_monitoring_is_busy_and_nothing_is_sent(serve, device):
+    kvm = LogSolutionKVM(state="monitoring")
     srv = serve(kvm)
 
     resp = _monitor_start(srv, device)
 
     assert resp["status"] == "error"
     assert resp["error"] == "log_solution_busy"
+    assert kvm.events == []
+
+
+@pytest.mark.parametrize("device", STATIONS)
+def test_review_before_the_shortcut_is_log_solution_review_and_nothing_is_sent(serve, device):
+    kvm = LogSolutionKVM(state="review")
+    srv = serve(kvm)
+
+    resp = _monitor_start(srv, device)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_review"
     assert kvm.events == []
 
 
@@ -206,6 +221,119 @@ def test_closed_log_solution_is_reopened_by_the_dock_click_then_started(serve):
     assert resp["status"] == "ok"
     assert resp["data"] == {"state": "monitoring", "capacity": 4}
     assert kvm.events == [*_dock_recovery(kvm), SHORTCUT]
+
+
+def test_manual_stop_complete_uses_the_dock_flow_and_sends_the_shortcut(serve):
+    kvm = LogSolutionKVM(state="manual_stop_complete", statuses=["STOPPED"] * 4)
+    srv = serve(kvm)
+
+    resp = _monitor_start(srv, "DFU-01")
+
+    assert resp["status"] == "ok"
+    assert resp["data"]["state"] == "monitoring"
+    assert kvm.events == [*_dock_recovery(kvm), SHORTCUT]
+
+
+def test_preparing_at_start_waits_without_a_shortcut_then_monitoring_is_seen(serve):
+    """2026-10-19: a preparing screen establishes the round-start request and this call's monitoring counts."""
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+    out = {}
+
+    def run():
+        out["resp"] = _monitor_start(srv, "DFU-01")
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    time.sleep(0.15)
+    kvm.show("monitoring")
+    th.join(timeout=5)
+
+    assert out["resp"]["status"] == "ok"
+    assert out["resp"]["data"]["state"] == "monitoring"
+    assert SHORTCUT not in kvm.events
+    assert not any(event[0] == "click" for event in kvm.events)
+    kvm.show("complete", ["PASS", "FAIL", "NOTEST", "TIMEOUT"])
+    first = _check(srv, "DFU-01")
+    second = _check(srv, "DFU-01")
+    assert first["data"]["kind"] == "waiting"
+    assert second["data"]["kind"] == "taken"
+
+
+def test_preparing_then_review_returns_log_solution_review_without_a_shortcut(serve):
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+    out = {}
+
+    def run():
+        out["resp"] = _monitor_start(srv, "FCT-01")
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    time.sleep(0.15)
+    kvm.show("review")
+    th.join(timeout=5)
+
+    assert out["resp"]["status"] == "error"
+    assert out["resp"]["error"] == "log_solution_review"
+    assert SHORTCUT not in kvm.events
+    assert not any(event[0] == "click" for event in kvm.events)
+
+
+def test_preparing_until_timeout_is_monitor_not_started_and_sends_nothing(serve):
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+
+    resp = _monitor_start(srv, "BT-01")
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "monitor_not_started"
+    assert kvm.events == []
+    assert resp["elapsed_sec"] < 3.0
+
+
+def test_preparing_after_the_shortcut_keeps_waiting_until_monitoring(serve):
+    kvm = LogSolutionKVM(state="standby")
+    kvm.state_after_shortcut = "preparing"
+    srv = serve(kvm)
+    out = {}
+
+    def run():
+        out["resp"] = _monitor_start(srv, "DFU-01")
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    time.sleep(0.4)
+    kvm.show("monitoring")
+    th.join(timeout=5)
+
+    assert out["resp"]["status"] == "ok"
+    assert SHORTCUT in kvm.events
+
+
+def test_review_after_the_shortcut_is_log_solution_review_at_once(serve):
+    kvm = LogSolutionKVM(state="standby")
+    kvm.state_after_shortcut = "review"
+    srv = serve(kvm)
+
+    resp = _monitor_start(srv, "DFU-01")
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_review"
+    assert SHORTCUT in kvm.events
+    assert resp["elapsed_sec"] < 0.8
+
+
+@pytest.mark.parametrize("timeout_sec", [None, 0, 301, -1, "soon", True])
+def test_monitor_start_timeout_out_of_range_is_invalid_argument(serve, timeout_sec):
+    kvm = LogSolutionKVM(state="standby")
+    srv = serve(kvm)
+
+    resp = _monitor_start(srv, "DFU-01", timeout_sec=timeout_sec)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "invalid_argument"
+    assert kvm.events == []
 
 
 def test_shortcut_that_does_nothing_is_monitor_not_started_within_the_timeout(serve):

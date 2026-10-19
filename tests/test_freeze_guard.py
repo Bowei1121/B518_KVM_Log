@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from freeze_guard import FrameFreezeGuard, extract_pts, extract_frame_sequence
 from round_frame_consumer import RoundFrameGate, tcp_round_reply
-from protocol_helpers import LogSolutionKVM, make_registry, wire, numbered, ProbeServer
+from protocol_helpers import LogSolutionKVM, arm_round, make_registry, wire, numbered, ProbeServer
 from tcp_server import TcpJsonServer
 from device_lock import DeviceLockManager
 from kvm_pool import KVMConnectionPool
@@ -393,7 +393,7 @@ def freeze_rig():
 def _check_on(address, device, req_id, timeout_sec):
     with socket.create_connection(address, timeout=10.0) as sock:
         send_json(sock, {"protocol_version": "1.0", "req_id": req_id, "device": device,
-                         "cmd": "check", "timeout_sec": timeout_sec})
+                         "cmd": "check_finish", "timeout_sec": timeout_sec})
         return recv_json(sock, timeout=10.0)
 
 
@@ -421,7 +421,7 @@ class TestTCPJsonServerFreezeGuard:
 
     def test_check_live_picture_is_not_reported_frozen(self, freeze_rig):
         server, kvms, address = freeze_rig
-        _kvm_for(kvms, "DFU-01").show("monitoring")
+        arm_round(server, _kvm_for(kvms, "DFU-01"), "DFU-01")
 
         res = _check_on(address, "DFU-01", "req-chk-live", 0)
 
@@ -445,7 +445,7 @@ class TestTCPJsonServerFreezeGuard:
         frozen = _kvm_for(kvms, "DFU-01")
         frozen.show("monitoring")
         frozen.freeze()
-        _kvm_for(kvms, "DFU-02").show("monitoring")
+        arm_round(server, _kvm_for(kvms, "DFU-02"), "DFU-02")
 
         frozen_res = _check_on(address, "DFU-01", "req-f", 5)
         live_res = _check_on(address, "DFU-02", "req-l", 0)

@@ -124,13 +124,15 @@ class LogSolutionKVM:
         self.shortcut_enabled = True
         self.restore_on_dock = False
         self.state_on_dock = None
+        self.state_after_shortcut = None
         self.repeat_sequence = False
+        self.omit_presentation_time = False
         self._cover = None
         self.connected = False
 
     def show(self, state, statuses=()):
         """Show a state. Standby/monitoring/review screens default to four waiting slots."""
-        if not statuses and state in ("standby", "monitoring", "review"):
+        if not statuses and state in ("standby", "monitoring", "review", "preparing"):
             statuses = ["WAITING"] * 4
         with self._lock:
             self._state = state
@@ -195,12 +197,15 @@ class LogSolutionKVM:
     async def press_command_shift_m(self):
         with self._lock:
             self.events.append(("key", "cmd+shift+m"))
-            if self.shortcut_enabled and not self._hidden and self._state in ("standby", "complete"):
+            if self.state_after_shortcut is not None:
+                self._set_state_locked(self.state_after_shortcut)
+            elif self.shortcut_enabled and not self._hidden and self._state in (
+                    "standby", "complete", "manual_stop_complete"):
                 self._set_state_locked("monitoring")
 
     def _set_state_locked(self, state):
         self._state = state
-        if state in ("standby", "monitoring", "review"):
+        if state in ("standby", "monitoring", "review", "preparing"):
             self._statuses = ["WAITING"] * 4
 
     def latest_frame(self):
@@ -219,7 +224,8 @@ class LogSolutionKVM:
                 x, y, w, h = DOCK_ICON_BOX
                 strip[y:y + h, x:x + w] = self._dock_icon
             frame = np.vstack([window, strip])
-            return (frame, self._seq, _time.monotonic(), "synthetic-stream", self._pts)
+            pts = None if self.omit_presentation_time else self._pts
+            return (frame, self._seq, _time.monotonic(), "synthetic-stream", pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}
@@ -254,13 +260,14 @@ _LOG_COLORS = {
 def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
     """Render contract 1.1 (App layout). state None renders a blank screen."""
     import numpy as np
-    from round_frame_consumer import MarkerState
 
     patterns = {
-        MarkerState.STANDBY: (1, 0, 0, 1),
-        MarkerState.MONITORING: (1, 1, 0, 0),
-        MarkerState.REVIEW: (1, 0, 1, 0),
-        MarkerState.COMPLETE: (0, 1, 1, 0),
+        "standby": (1, 0, 0, 1),
+        "preparing": (0, 1, 0, 1),
+        "monitoring": (1, 1, 0, 0),
+        "review": (1, 0, 1, 0),
+        "complete": (0, 1, 1, 0),
+        "manual_stop_complete": (0, 0, 1, 1),
     }
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
@@ -276,7 +283,7 @@ def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
     for x, inset in ((82, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
-    for index, black in enumerate(patterns[MarkerState(state)]):
+    for index, black in enumerate(patterns[state]):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
     rows = 2 if len(statuses) > 10 else 1
@@ -289,3 +296,46 @@ def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
         color = (0, 0, 0) if status == "OUTSIDE" else _LOG_COLORS[status]
         rect(col * 34, 34 + row * 27, 34, 26, color)
     return frame
+
+
+def arm_round(srv, kvm, device, statuses=None):
+    """Establish this device's round-start request and leave Monitoring on screen.
+
+    monitor_start sees Preparing (no Dock, no shortcut) and then Monitoring, so a later
+    check_finish is allowed to judge the round.
+    """
+    import json
+    import socket
+    import threading
+    import time
+
+    kvm.show("preparing")
+    seq_before = kvm._seq
+    out = {}
+
+    def run():
+        host, port = srv.server_address
+        payload = {"protocol_version": "1.0", "req_id": f"arm-{device}", "device": device,
+                   "cmd": "monitor_start", "timeout_sec": 1}
+        with socket.create_connection((host, port), timeout=10.0) as sock:
+            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            buf = b""
+            while b"\n" not in buf:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        out["resp"] = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    # Wait until monitor_start has actually read Preparing before flipping to Monitoring,
+    # so a loaded suite cannot race past Preparing into a busy Monitoring refusal.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and kvm._seq <= seq_before:
+        time.sleep(0.01)
+    kvm.show("monitoring", statuses or ())
+    thread.join(timeout=5)
+    resp = out.get("resp")
+    assert resp is not None and resp.get("status") == "ok", resp
+    return resp
