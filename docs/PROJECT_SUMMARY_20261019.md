@@ -19,3 +19,15 @@
 ## 本日
 
 - 使用者要求閱讀 Log Solution `docs/refactoring/KVM_DISPLAY_CONTRACT.md`（1.1），評估其狀態辨識格的意義能否結合到橋接判讀流程。
+
+## 契約 1.1 與橋接判讀對照
+
+- 幾何（左右定位方塊、排數標記、狀態標記、結果格）、黑白門檻（0–80／176–255）、四種狀態圖樣，橋接 `round_frame_consumer.py` 與契約 1.1 完全一致。
+- 狀態意義對應：Standby → 本輪未見監控中為等待、已見監控中為 `round_lost`；Monitoring → 記為已開始、等待；Review → 立即 `paused`；Complete → 兩張相同完整畫面且格數 = 通道數才 `taken`。契約要求接收端自行驗證前後一致與遮擋，由兩張畫面一致與 #31 排除法涵蓋。
+- 缺口：契約沒有格子顏色表；Log Solution `STATUS_COLOURS` 中 `STALLED` 與 `TIMEOUT` 同為 `#ff9900`，且 `STALLED` 未被使用；NOTEST 兩邊差一個色階；契約「App 與上位機必須一起更新」與 A12 過渡期雙支援衝突。
+
+## 決定
+
+- Q1：1.2 建議文件新增 **C7**：格子顏色表寫進契約、移除未使用的 `STALLED`、NOTEST 以 `#f04bf1` 為準、容許誤差為 RGB 歐氏距離 ≤ 20（任兩色須 > 40；WAITING 與 STOPPED 約 45，餘裕小）。
+- Q2：橋接釘住顏色並開票 **#34**（`ready-for-agent`，#21 的 sub-issue；本機副本 `.scratch/log-solution-all-stations/issues/09-pin-status-colours.md`）。
+- Q3：C5 改為「1.2 起上位機先支援新舊兩種畫面，再更新 App」。
