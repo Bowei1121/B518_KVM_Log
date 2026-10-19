@@ -30,7 +30,12 @@ def channel_name_for(cmd: str) -> str:
 
 
 def _hard_close(sock: Optional[socket.socket]) -> None:
-    """Close a socket from any thread; shutdown wakes a recv() blocked on it."""
+    """shutdown + close. Call only from the thread blocked in request().
+
+    abort() must not close. A timeout recv polls the fd; close() from the
+    cancelling thread can drop that fd before poll runs again, and the waiter
+    then sleeps until the socket timeout.
+    """
     if sock is None:
         return
     try:
@@ -61,8 +66,9 @@ class CoreChannel:
     """One Core socket; requests on it run strictly in order (ADR-0006).
 
     The lock serializes request/reply on this socket only. abort() is lock-free so
-    closing the window or switching Core never waits behind an in-flight request;
-    it bumps a generation counter and closes the socket, which cancels that request.
+    closing the window or switching Core never waits behind an in-flight request.
+    It bumps a generation counter and shutdown()s the socket to wake a blocked
+    recv. The request thread closes that socket; abort() does not.
     """
 
     def __init__(self, name: str, host: str, port: int) -> None:
@@ -72,6 +78,9 @@ class CoreChannel:
         self._lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._gen = 0
+        # Sockets abort() detached. Held here so this thread's last reference
+        # does not close them; request() closes them under _lock.
+        self._detached: list[socket.socket] = []
 
     def is_connected(self) -> bool:
         return self._sock is not None
@@ -83,13 +92,33 @@ class CoreChannel:
             self.abort()
 
     def abort(self) -> None:
-        """Drop the socket and cancel any in-flight request. Never waits on the lock."""
+        """Cancel any in-flight request. Never waits on the lock and never closes.
+
+        shutdown() wakes a recv polling this fd. The request thread closes it
+        in _drop_locked. A request that has not started waiting still loses
+        the generation check and returns cancelled.
+        """
         self._gen += 1
-        sock, self._sock = self._sock, None
-        _hard_close(sock)
+        sock = self._sock
+        self._sock = None
+        if sock is None:
+            return
+        self._detached.append(sock)
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+
+    def _reap_locked(self) -> None:
+        """Close sockets abort() detached. Caller holds _lock."""
+        detached = self._detached
+        self._detached = []
+        for sock in detached:
+            self._drop_locked(sock)
 
     def connect(self, timeout: float = 2.0) -> bool:
         with self._lock:
+            self._reap_locked()
             if self._sock is not None:
                 return True
             try:
@@ -114,35 +143,49 @@ class CoreChannel:
 
         with self._lock:
             gen = self._gen
-            sock = self._sock
-            if sock is None:
-                try:
-                    sock = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
-                except Exception as exc:
-                    return client_error(
-                        req_id, "connection_failed",
-                        f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
-                    )
-                if gen != self._gen:
-                    _hard_close(sock)
-                    return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
-                self._sock = sock
-
             try:
-                sock.settimeout(timeout)
-                sock.sendall(data)
-                reply = json.loads(_read_line(sock).decode("utf-8"))
-            except Exception as exc:
-                self._drop_locked(sock)
-                if gen != self._gen:
-                    return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
-                return client_error(req_id, "communication_error", f"Communication error with Core Service: {exc}")
+                return self._request_locked(req_id, data, timeout, gen)
+            finally:
+                self._reap_locked()
 
-            if not isinstance(reply, dict) or reply.get("req_id") != req_id:
-                # Stale or foreign reply: never hand it to the UI; start clean on the next request.
-                self._drop_locked(sock)
+    def _request_locked(
+        self,
+        req_id: str,
+        data: bytes,
+        timeout: float,
+        gen: int,
+    ) -> Dict[str, Any]:
+        """Send one request. Caller holds _lock. gen is the generation at entry."""
+        self._reap_locked()
+        sock = self._sock
+        if sock is None:
+            try:
+                sock = socket.create_connection((self.host, self.port), timeout=min(timeout, 2.0))
+            except Exception as exc:
                 return client_error(
-                    req_id, "req_id_mismatch",
-                    f"Reply req_id did not match request {req_id}; connection reset",
+                    req_id, "connection_failed",
+                    f"Cannot connect to Core Service at {self.host}:{self.port}: {exc}",
                 )
-            return reply
+            if gen != self._gen:
+                _hard_close(sock)
+                return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
+            self._sock = sock
+
+        try:
+            sock.settimeout(timeout)
+            sock.sendall(data)
+            reply = json.loads(_read_line(sock).decode("utf-8"))
+        except Exception as exc:
+            self._drop_locked(sock)
+            if gen != self._gen:
+                return client_error(req_id, "cancelled", "Request cancelled: Core target changed or UI closing")
+            return client_error(req_id, "communication_error", f"Communication error with Core Service: {exc}")
+
+        if not isinstance(reply, dict) or reply.get("req_id") != req_id:
+            # Stale or foreign reply: never hand it to the UI; start clean on the next request.
+            self._drop_locked(sock)
+            return client_error(
+                req_id, "req_id_mismatch",
+                f"Reply req_id did not match request {req_id}; connection reset",
+            )
+        return reply

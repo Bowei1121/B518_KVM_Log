@@ -566,6 +566,38 @@ class TestMonitorUIChannels:
             release.set()
             core.close()
 
+    def test_disconnect_cancels_inflight_inspect_within_one_second(self):
+        """disconnect() makes an in-flight manual_check return cancelled within 1 second."""
+        release = threading.Event()
+
+        def behaviour(req, idx):
+            release.wait(10.0)
+            return _envelope(req, {"kind": "waiting", "state": "monitoring", "reason": "monitoring",
+                                   "capacity": 4, "results": []})
+
+        core = _FakeCore(behaviour)
+        client = CoreServiceClient(host="127.0.0.1", port=core.port)
+        out: Dict[str, Any] = {}
+        th = threading.Thread(
+            target=lambda: out.update(res=client.manual_check(device="DFU-01", timeout_sec=30.0)),
+            daemon=True,
+        )
+        try:
+            th.start()
+            assert _wait_until(lambda: len(core.requests) == 1)
+
+            started = time.monotonic()
+            client.disconnect()
+            assert time.monotonic() - started < 0.5, "disconnect() waited on the in-flight inspect"
+            th.join(timeout=1.0)
+            assert not th.is_alive(), f"inspect did not return within 1s: {out}"
+            assert time.monotonic() - started < 1.0
+            assert out["res"].get("status") == "error"
+            assert out["res"].get("error") == "cancelled"
+        finally:
+            release.set()
+            core.close()
+
     def test_set_target_does_not_wait_for_inflight_request(self):
         """Switching Core address while an inspect is pending must not block the caller."""
         release = threading.Event()
