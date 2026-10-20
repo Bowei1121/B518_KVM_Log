@@ -96,7 +96,11 @@ def locate(gray, tmpl, downscale=True):
 
 
 class HidSession:
-    """``kvm`` plus the template catalog and the run's diagnostics recorder."""
+    """``kvm`` plus the template catalog and the run's diagnostics recorder.
+
+    Each command builds its own session. Construction drops HID errors left by
+    the previous command. Errors that arrive during this command are reported.
+    """
 
     def __init__(self, kvm, template_root, diagnostics, *, threshold=0.8, log=print):
         self.kvm = kvm
@@ -104,6 +108,9 @@ class HidSession:
         self.diagnostics = diagnostics
         self.threshold = threshold
         self.log = log
+        errors = getattr(kvm, "rpc_errors", None)
+        if errors is not None:
+            errors.clear()
 
     def load(self, device, key, *, record_missing=True):
         """Gray template, or None. Missing files are logged and recorded unless ``record_missing`` is false."""
@@ -157,6 +164,9 @@ class HidSession:
     def _raise_if_hid(self, failure, entered=()):
         error = self.last_hid_error()
         if error:
+            errors = getattr(self.kvm, "rpc_errors", None)
+            if errors is not None:
+                errors.clear()
             raise FlowError("hid_failed", f"{failure}: {error}", entered)
 
     async def click(self, box, *, failure, settle=0.0, after=None, entered=()):

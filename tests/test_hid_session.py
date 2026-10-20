@@ -107,8 +107,8 @@ def test_click_raises_before_clearing_a_previous_hid_error(tmp_path):
     root = tmp_path / "template"
     frame = _dock(root)
     kvm = ClickKvm(frame)
-    kvm.rpc_errors.append("late from previous step")
     session = _session(kvm, root)
+    kvm.rpc_errors.append("late from previous step")
     template = session.load("BT", "dock_icon")
     box = session.find("dock_icon", template, frame, downscale=False)
 
@@ -118,7 +118,22 @@ def test_click_raises_before_clearing_a_previous_hid_error(tmp_path):
     assert excinfo.value.code == "hid_failed"
     assert str(excinfo.value) == "Dock HID 錯誤: late from previous step"
     assert kvm.clicks == []
-    assert kvm.rpc_errors == ["late from previous step"]
+    assert kvm.rpc_errors == []
+
+
+def test_new_session_drops_a_hid_error_left_by_the_previous_command(tmp_path):
+    root = tmp_path / "template"
+    frame = _dock(root)
+    kvm = ClickKvm(frame)
+    kvm.rpc_errors.append("stale from previous command")
+    session = _session(kvm, root)
+    template = session.load("BT", "dock_icon")
+    box = session.find("dock_icon", template, frame, downscale=False)
+
+    asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+
+    assert kvm.clicks == [(35, 25)]
+    assert kvm.rpc_errors == []
 
 
 def test_type_text_raises_when_hid_reports_an_error(tmp_path):
@@ -173,6 +188,26 @@ def test_press_command_shift_m_raises_when_hid_reports_an_error(tmp_path):
     assert excinfo.value.code == "hid_failed"
     assert str(excinfo.value) == "快捷鍵 HID 錯誤: shortcut lost"
     assert excinfo.value.entered == []
+
+
+def test_press_command_shift_m_runs_after_before_the_hid_error(tmp_path):
+    root = tmp_path / "template"
+    kvm = ClickKvm(_dock(root))
+    session = _session(kvm, root)
+    calls = []
+
+    async def shortcut_then_fail():
+        kvm.rpc_errors.append("shortcut lost")
+
+    async def after():
+        calls.append("after")
+
+    kvm.press_command_shift_m = shortcut_then_fail
+
+    with pytest.raises(FlowError):
+        asyncio.run(session.press_command_shift_m(failure="快捷鍵 HID 錯誤", after=after))
+
+    assert calls == ["after"]
 
 
 def test_find_within_raises_when_the_template_is_only_outside_the_roi(tmp_path):
