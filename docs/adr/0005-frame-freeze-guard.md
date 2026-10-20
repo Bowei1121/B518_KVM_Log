@@ -27,3 +27,10 @@ Accepted
 4. 凍結狀態只影響該設備，不影響其他設備。
 
 原文保留，不刪除原規定。
+
+## 修訂（2026-10-20）
+1. 修訂 2026-10-16 第 1 點的「呼叫端必須明確傳入串流編號」：串流編號由影格快照（`FrameSnapshot.stream_id`）帶入，每台設備一個凍結狀態自行比對；換串流重置基準的規定不變。原先兩套凍結判斷（Freeze Guard 與 RoundFrameGate）合併為一套。
+2. 沒有 PTS 一律回 `frame_frozen`（message 註明無 PTS）。
+3. 凍結檢查擴及送 HID 的指令：`input`、`start_test`、`monitor_start` 送 HID 前檢查一次，凍結時回 `frame_frozen` 且不送 HID。
+4. PTS 只證明串流活著，無法偵測測試電腦或 Log Solution 當機（HDMI 仍持續輸出、PTS 仍前進）；該情境由「Log Solution 心跳」處理（見 CONTEXT.md、1.2 建議 C8）。
+
