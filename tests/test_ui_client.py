@@ -352,7 +352,7 @@ CORE_STATUS_DATA = {
     "active_connections": 1,
     "busy_devices": [],
     "stations": [],
-    "version": "1.0.0",
+    "core_version": "2.0.0",
 }
 
 

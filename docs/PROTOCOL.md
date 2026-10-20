@@ -327,6 +327,25 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 - 兩張新鮮影格確認活動通道時回 `started`，否則依畫面回 `waiting`／`paused`／`unknown`。
 - LabVIEW 不得使用。
 
+### 5.9 `core_status`（僅供 Monitor UI 與 `manage_core.py`，非 LabVIEW 協定）
+
+請求只有共同欄位，`device` 填 `""`。不在 4 節一覽表內，LabVIEW 不得使用。
+
+`data`：
+
+| 欄位 | 型別 | 說明 |
+| --- | --- | --- |
+| `status` | string | 固定 `"running"` |
+| `core_version` | string | Core Service 版本，與 `ping.core_version` 相同（`CORE_VERSION`） |
+| `uptime_seconds` | number | Core 已運行秒數 |
+| `active_connections` | number | 目前 TCP 連線數 |
+| `busy_devices` | array of string | 上鎖中的設備 ID |
+| `kvm_pool` | object | `active_connections`、`cached_ips` |
+| `freeze_guard` | object | 凍結檢查狀態 |
+| `stations` | array of object | 各設備的 `station`、`device`、`kvm_ip`、`status`（`BUSY`／`FROZEN`／`IDLE`／`DISCONNECTED`）等 |
+
+變更紀錄：版本欄位原為 `version`（固定 `"1.0.0"`），改為 `core_version`（`CORE_VERSION`，即 `ping` 回的版本）。
+
 ## 6. 錯誤碼
 
 | `error` | `status` | 何時發生 | LabVIEW 建議 |

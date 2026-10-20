@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from core_protocol import PROTOCOL_VERSION, build_request, dumps_request, read_reply  # noqa: E402
 from device_registry import DeviceRegistry  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
-from tcp_server import TcpJsonServer  # noqa: E402
+from tcp_server import CommandSpec, TcpJsonServer  # noqa: E402
 from fake_kvm import FakeKVM, make_snapshot  # noqa: E402
 
 # Leftover bytes per open test connection. Weak keys: a closed socket drops its buffer, and a
@@ -69,7 +69,7 @@ class ProbeServer(TcpJsonServer):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.register_handler("probe", lambda req: {"pong": True}, device_bound=True)
+        self.register_handler(CommandSpec("probe", lambda ctx, args: {"pong": True}, device_bound=True))
 
 
 def make_pool() -> KVMConnectionPool:

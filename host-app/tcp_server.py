@@ -18,7 +18,8 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Coroutine, Dict, Mapping, Optional, Set, Tuple
 
 try:
     from device_lock import DeviceLockManager
@@ -79,45 +80,92 @@ INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
 VISIBILITY_LOST_SEC = 30.0  # time "Log Solution not visible" (no reliable reading) before a Dock click
 DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
 MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
-NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
-# Extra fields allowed per command.
-COMMAND_FIELDS: Dict[str, frozenset] = {
-    "ping": frozenset(),
-    "status": frozenset(),
-    "core_status": frozenset(),
-    "shutdown": frozenset(),
-    "snapshot": frozenset({"format", "quality"}),
-    "check_finish": frozenset({"timeout_sec"}),
-    "check_start": frozenset({"timeout_sec"}),
-}
-ERROR_CODE_MAP = {
-    "missing_kvm": "kvm_connect_failed",
-}
-# Station-limited commands: the operation each station runs. A station without an entry is refused
-# with unsupported_command during request validation, before any HID.
-STATION_OPERATIONS: Dict[str, Dict[str, Callable[..., Any]]] = {
-    "input": {"DFU": run_dfu_input},
-    "start_test": {"DFU": run_dfu_ok, "BT": run_start_all},
-}
-UNSUPPORTED_STATION_MESSAGES = {
-    "input": "'input' is only supported for DFU devices",
-    "start_test": "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in",
-}
-DEFAULT_DATA: Dict[str, Dict[str, Any]] = {
-    "ping": {"pong": False, "core_version": ""},
-    "status": {"core_uptime_sec": 0, "devices": []},
-    "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
-    "check_finish": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
-    "check_start": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
-    "input": {"entered": []},
-    "start_test": {"action": ""},
-    "monitor_start": {"state": "", "capacity": 0},
-    "inspect": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
-}
-
-
 def _unknown(reason: str) -> Dict[str, Any]:
     return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "active": [], "results": []}
+
+
+def _no_args(req: Dict[str, Any], entry: Any) -> None:
+    """``parse`` for a command that takes no fields beyond the common ones."""
+    return None
+
+
+def _timeout_arg(req: Dict[str, Any], low: int, high: int) -> float:
+    """``timeout_sec`` within [low, high] as a float; otherwise FlowError(invalid_argument)."""
+    timeout = req.get("timeout_sec")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise FlowError("invalid_argument", "timeout_sec is required and must be a number")
+    if not low <= timeout <= high:
+        raise FlowError("invalid_argument", f"timeout_sec must be between {low} and {high}")
+    return float(timeout)
+
+
+def _check_timeout(req: Dict[str, Any], entry: Any) -> float:
+    return _timeout_arg(req, 0, CHECK_MAX_TIMEOUT_SEC)
+
+
+def _monitor_timeout(req: Dict[str, Any], entry: Any) -> float:
+    return _timeout_arg(req, 1, MONITOR_START_MAX_TIMEOUT_SEC)
+
+
+def _snapshot_args(req: Dict[str, Any], entry: Any) -> Tuple[str, int]:
+    """``(format, quality)`` for snapshot, checked before the KVM is touched."""
+    fmt = req.get("format")
+    if fmt not in ("jpeg", "png"):
+        raise FlowError("invalid_argument", "format must be 'jpeg' or 'png'")
+    quality = req.get("quality")
+    if isinstance(quality, bool) or not isinstance(quality, int):
+        raise FlowError("invalid_argument", "quality is required and must be an integer")
+    if fmt == "png" and quality != 0:
+        raise FlowError("invalid_argument", "quality must be 0 for png")
+    if fmt == "jpeg" and not 1 <= quality <= 100:
+        raise FlowError("invalid_argument", "quality must be between 1 and 100 for jpeg")
+    return fmt, quality
+
+
+def _input_items(req: Dict[str, Any], entry: Any) -> Any:
+    """The validated ``items``. run_dfu_input parses them once more: that is dfu_flow's own entry point."""
+    parse_items(req.get("items"), entry.channels)
+    return req.get("items")
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    """Every rule of one protocol command: what validation accepts, how dispatch runs it, what the reply carries.
+
+    ``parse(req, entry)`` runs once during validation (``entry`` is None for a device-less command). It returns
+    the args the handler gets, or raises ``FlowError(invalid_argument)``. ``handler(ctx, args)`` is the work.
+    ``stations`` maps station → the operation for that station (``ctx.operation``); None accepts every station.
+    ``takes_lock`` False is a read-only device command that never returns ``device_busy``.
+    ``default_data`` fills the ``data`` of every reply for this command.
+    """
+    name: str
+    handler: Callable[..., Any]
+    fields: frozenset = frozenset()
+    device_bound: bool = False
+    takes_lock: bool = True
+    stations: Optional[Mapping[str, Callable[..., Any]]] = None
+    parse: Callable[[Dict[str, Any], Any], Any] = _no_args
+    default_data: Mapping[str, Any] = field(default_factory=dict)
+    unsupported_message: str = ""
+
+
+@dataclass(frozen=True)
+class CommandContext:
+    """What a handler may use. Device-less commands leave every device field None."""
+    entry: Any = None
+    kvm: Any = None
+    slot: Optional[DeviceSlot] = None
+    operation: Optional[Callable[..., Any]] = None
+    reader: Any = None
+    writer: Any = None
+
+
+@dataclass(frozen=True)
+class _Admitted:
+    """A request that passed validation: its spec, its device entry (None if device-less), and its parsed args."""
+    spec: CommandSpec
+    entry: Any
+    args: Any
 
 
 def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str, Any], Any]:
@@ -156,12 +204,12 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str
     return {**base, "kind": "waiting", "reason": state.value, "results": []}, state
 
 
-def _kvm_lost(req: Dict[str, Any]) -> Dict[str, Any]:
+def _kvm_lost(ctx: CommandContext) -> Dict[str, Any]:
     """check reply when the KVM died during the command (protocol error kvm_connect_failed, ADR-0001 補註 #58)."""
     return {
         "status": "error",
         "error": "kvm_connect_failed",
-        "message": f"KVM '{req.get('kvm_ip')}' connection lost during the command",
+        "message": f"KVM '{ctx.entry.kvm_ip}' connection lost during the command",
     }
 
 
@@ -202,7 +250,6 @@ class TcpJsonServer:
         self._shutdown_event: Optional[asyncio.Event] = None
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
-        self._handlers: Dict[str, Callable[..., Any]] = {}
         self._slots: Dict[str, DeviceSlot] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
@@ -211,8 +258,7 @@ class TcpJsonServer:
         self.max_dock_recoveries = int(max_dock_recoveries)
         # Frame readings run on worker threads so the event loop keeps serving requests.
         self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
-        self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
-        self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
+        self._commands: Dict[str, CommandSpec] = {}
 
         self._start_time: float = 0.0
         self._is_running = False
@@ -224,51 +270,46 @@ class TcpJsonServer:
         """Return True if the server is currently running."""
         return self._is_running
 
-    def register_handler(
-        self,
-        cmd: str,
-        handler: Callable[[Dict[str, Any]], Any],
-        fields: Optional[Iterable[str]] = None,
-        device_bound: Optional[bool] = None,
-    ) -> None:
-        """Register a command handler.
-
-        Handler can be either a synchronous callable or an async coroutine.
-        It accepts the request dict and returns the data/response dict.
-        ``fields`` lists the extra request fields the command accepts; ``device_bound``
-        makes the command require a registered device ID.
-        """
-        self._handlers[cmd] = handler
-        if fields is not None:
-            self._command_fields[cmd] = frozenset(fields)
-        else:
-            self._command_fields.setdefault(cmd, frozenset())
-        if device_bound is None:
-            device_bound = cmd in COMMAND_FIELDS and cmd not in NO_DEVICE_COMMANDS
-        if device_bound:
-            self._no_device_cmds.discard(cmd)
-        else:
-            self._no_device_cmds.add(cmd)
+    def register_handler(self, spec: CommandSpec) -> None:
+        """Add or replace one command in the table. Production commands come from ``_default_specs``."""
+        self._commands[spec.name] = spec
 
     def _register_default_handlers(self) -> None:
-        self.register_handler("ping", self._handle_ping)
-        self.register_handler("status", self._handle_status)
-        self.register_handler("core_status", self._handle_core_status)
-        self.register_handler("shutdown", self._handle_shutdown)
-        self.register_handler("check_finish", self._handle_check_finish, device_bound=True)
-        self.register_handler("check_start", self._handle_check_start, device_bound=True)
-        self.register_handler("inspect", self._handle_inspect, fields=("timeout_sec",), device_bound=True)
-        self.register_handler("input", self._handle_input, fields=("items",), device_bound=True)
-        self.register_handler("start_test", self._handle_start_test, device_bound=True)
-        self.register_handler("monitor_start", self._handle_monitor_start, fields=("timeout_sec",),
-                              device_bound=True)
-        self.register_handler("snapshot", self._handle_snapshot)
+        for spec in self._default_specs():
+            self.register_handler(spec)
 
-    async def _handle_ping(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def _default_specs(self) -> list[CommandSpec]:
+        """The protocol 1.0 command table: one CommandSpec per command, the only place its rules live."""
+        return [
+            CommandSpec("ping", self._handle_ping),
+            CommandSpec("status", self._handle_status),
+            CommandSpec("core_status", self._handle_core_status),
+            CommandSpec("shutdown", self._handle_shutdown),
+            CommandSpec("snapshot", self._handle_snapshot, fields=frozenset({"format", "quality"}),
+                        device_bound=True, takes_lock=False, parse=_snapshot_args,
+                        default_data={"width": 0, "height": 0, "format": "", "image_base64": ""}),
+            CommandSpec("check_start", self._handle_check_start, fields=frozenset({"timeout_sec"}),
+                        device_bound=True, parse=_check_timeout, default_data=_unknown("")),
+            CommandSpec("check_finish", self._handle_check_finish, fields=frozenset({"timeout_sec"}),
+                        device_bound=True, parse=_check_timeout, default_data=_unknown("")),
+            CommandSpec("inspect", self._handle_inspect, fields=frozenset({"timeout_sec"}),
+                        device_bound=True, takes_lock=False, parse=_check_timeout, default_data=_unknown("")),
+            CommandSpec("input", self._handle_input, fields=frozenset({"items"}), device_bound=True,
+                        stations={"DFU": run_dfu_input}, parse=_input_items, default_data={"entered": []},
+                        unsupported_message="'input' is only supported for DFU devices"),
+            CommandSpec("start_test", self._handle_start_test, device_bound=True,
+                        stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"action": ""},
+                        unsupported_message=(
+                            "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in")),
+            CommandSpec("monitor_start", self._handle_monitor_start, fields=frozenset({"timeout_sec"}),
+                        device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0}),
+        ]
+
+    async def _handle_ping(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         return {"pong": True, "core_version": CORE_VERSION}
 
-    async def _handle_stations(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Return real-time status of all configured test stations."""
+    def _station_rows(self) -> list[Dict[str, Any]]:
+        """Real-time status of every configured test station (the ``stations`` list of core_status)."""
         active_devices = set(self.lock_manager.get_active_devices())
         fg_status = self.freeze_guard.get_status()
         frozen_devices = set(fg_status.get("frozen_devices", []))
@@ -302,13 +343,9 @@ class TcpJsonServer:
                 "is_frozen": is_frozen,
                 "is_connected": is_connected,
             })
+        return stations_list
 
-        return {
-            "status": "ok",
-            "stations": stations_list,
-        }
-
-    async def _handle_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_status(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """LabVIEW status: Core uptime and per-device state. KVM IPs are never returned."""
         uptime = time.time() - self._start_time if self._start_time else 0.0
         active_devices = set(self.lock_manager.get_active_devices())
@@ -326,11 +363,10 @@ class TcpJsonServer:
             })
         return {"core_uptime_sec": int(uptime), "devices": devices}
 
-    async def _handle_core_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_core_status(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """Full internal Core state for Monitor UI / admin tools (not part of the LabVIEW protocol)."""
         uptime = time.time() - self._start_time if self._start_time else 0.0
         active_devices = self.lock_manager.get_active_devices()
-        stations_res = await self._handle_stations(req)
         return {
             "status": "running",
             "uptime_seconds": round(uptime, 2),
@@ -341,36 +377,23 @@ class TcpJsonServer:
                 "cached_ips": self.kvm_pool.get_active_ips(),
             },
             "freeze_guard": self.freeze_guard.get_status(),
-            "stations": stations_res.get("stations", []),
-            "version": "1.0.0",
+            "stations": self._station_rows(),
+            "core_version": CORE_VERSION,
         }
 
-    async def _handle_snapshot(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_snapshot(self, ctx: CommandContext, args: Tuple[str, int]) -> Dict[str, Any]:
         """Request and return a single frame snapshot as base64 without acquiring device locks."""
-        kvm = req.get("_kvm_client")
-        device_id = str(req.get("device") or "")
-
-        if kvm is None:
-            return {
-                "status": "error",
-                "error": "missing_kvm",
-                "message": "KVM connection not available for this device",
-                "device": device_id,
-            }
-
-        latest = kvm.latest_frame()
+        fmt, quality = args
+        latest = ctx.kvm.latest_frame()
         if latest is None:
             return {
                 "status": "error",
                 "error": "no_frame",
                 "message": "No frame received from KVM yet",
-                "device": device_id,
             }
         frame, pts = latest.image, latest.pts
 
         # Encode to JPEG/PNG base64
-        fmt = req["format"]
-        quality = req["quality"]
         img_b64 = ""
         width = 0
         height = 0
@@ -451,7 +474,7 @@ class TcpJsonServer:
             return Reading.from_decision(decision, slot.gate.last_active if report_active else None)
         return job
 
-    async def _picture_refusal(self, kvm: Any, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    async def _picture_refusal(self, ctx: CommandContext) -> Optional[Tuple[str, str]]:
         """Why a HID-sending command must not run, as (code, message), before any HID (ADR-0005 2026-10-20 第 3 點).
 
         Order: KVM health, then one FrameStream window (live PTS advance within the threshold passes at once),
@@ -459,13 +482,15 @@ class TcpJsonServer:
         """
         from frame_stream import FROZEN
 
+        kvm = ctx.kvm
+
         def lost() -> Tuple[str, str]:
-            reply = _kvm_lost(req)
+            reply = _kvm_lost(ctx)
             return reply["error"], reply["message"]
 
         if not kvm.is_healthy():
             return lost()
-        verdict = await self.freeze_guard.stream(req["_device_entry"].device_id).wait_live(kvm.latest_frame)
+        verdict = await self.freeze_guard.stream(ctx.entry.device_id).wait_live(kvm.latest_frame)
         if not kvm.is_healthy():
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
@@ -509,81 +534,75 @@ class TcpJsonServer:
         state = observation.state.value if observation.reliable else "unreadable"
         return "monitor_not_ready", f"Log Solution is not monitoring ({state}); no HID sent"
 
-    async def _handle_start_test(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_start_test(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
-        kvm = req["_kvm_client"]
-        entry = req["_device_entry"]
-        refusal = await self._picture_refusal(kvm, req)
+        refusal = await self._picture_refusal(ctx)
         if refusal is None:
-            refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
+            refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, ctx.kvm))
         if refusal is not None:
             code, message = refusal
-            return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
+            return {"status": "error", "error": code, "message": message}
 
-        start = STATION_OPERATIONS["start_test"][entry.station]
         try:
-            result = await start(kvm, template_root=self._template_root(),
-                                 log=logger.info, diagnostics_key=entry.device_id)
+            result = await ctx.operation(ctx.kvm, template_root=self._template_root(),
+                                         log=logger.info, diagnostics_key=ctx.entry.device_id)
         except FlowError as exc:
-            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
+            return {"status": "error", "error": exc.code, "message": str(exc)}
         return {"status": "ok", "data": result}
 
-    async def _handle_monitor_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_monitor_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """monitor_start 1.0: open Log Solution from the Dock and start monitoring (all stations)."""
         from monitor_flow import run_monitor_start
 
-        entry = req["_device_entry"]
         # Before begin_start: a frozen refusal must not drop the previous delivery or the input release.
-        refusal = await self._picture_refusal(req["_kvm_client"], req)
+        refusal = await self._picture_refusal(ctx)
         if refusal is not None:
             code, message = refusal
-            return {"status": "error", "error": code, "message": message, "data": {"state": "", "capacity": 0}}
-        slot = self._slot(entry.device_id)
+            return {"status": "error", "error": code, "message": message}
+        slot = ctx.slot
         slot.round.begin_start()
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
-                req["_kvm_client"], slot.gate, template_root=template_root,
-                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=float(req["timeout_sec"]),
-                log=logger.info, diagnostics_key=entry.device_id,
+                ctx.kvm, slot.gate, template_root=template_root,
+                confirm_sec=self.monitor_confirm_sec, start_timeout_sec=args,
+                log=logger.info, diagnostics_key=ctx.entry.device_id,
                 on_preparing=slot.round.note_start, on_shortcut=slot.round.note_start)
         except FlowError as exc:
             # monitor_not_started keeps the round-start request. Only a later taken or
             # manual_verification_required reply clears it.
-            return {"status": "error", "error": exc.code, "message": str(exc), "data": {"state": "", "capacity": 0}}
+            return {"status": "error", "error": exc.code, "message": str(exc)}
         return {"status": "ok", "data": result}
 
-    async def _handle_input(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_input(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
-        kvm = req.get("_kvm_client")
-        entry = req["_device_entry"]
-        refusal = await self._picture_refusal(kvm, req)
+        refusal = await self._picture_refusal(ctx)
         if refusal is None:
-            refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
+            refusal = await asyncio.wrap_future(
+                self._inspector.submit(self._log_solution_refusal, ctx.kvm, ctx.entry))
         if refusal is not None:
             code, message = refusal
-            return {"status": "error", "error": code, "message": message, "data": {"entered": []}}
+            return {"status": "error", "error": code, "message": message}
 
-        enter = STATION_OPERATIONS["input"][entry.station]
         try:
-            result = await enter(kvm, entry.channels, req.get("items"), template_root=self._template_root(),
-                                 log=logger.info, diagnostics_key=entry.device_id)
+            result = await ctx.operation(ctx.kvm, ctx.entry.channels, args, template_root=self._template_root(),
+                                         log=logger.info, diagnostics_key=ctx.entry.device_id)
         except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
-    async def _handle_check_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_check_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """check_start: two fresh frames of activity, or a finished round delivered once."""
-        return await self._long_poll(req, CheckMode.CHECK_START)
+        return await self._long_poll(ctx, args, CheckMode.CHECK_START)
 
-    async def _handle_check_finish(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._long_poll(req, CheckMode.CHECK_FINISH)
+    async def _handle_check_finish(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
+        return await self._long_poll(ctx, args, CheckMode.CHECK_FINISH)
 
-    async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_inspect(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """Monitor UI's read-only check: no device lock, and it never consumes the round result."""
-        return await self._long_poll(req, CheckMode.INSPECT)
+        return await self._long_poll(ctx, args, CheckMode.INSPECT)
 
-    async def _long_poll(self, req: Dict[str, Any], mode: CheckMode) -> Dict[str, Any]:
+    async def _long_poll(self, ctx: CommandContext, timeout_sec: float, mode: CheckMode) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
@@ -592,12 +611,11 @@ class TcpJsonServer:
         """
         from monitor_flow import bring_log_solution_forward
 
-        kvm = req.get("_kvm_client")
-        entry = req.get("_device_entry")
-        timeout_sec = float(req["timeout_sec"])
-        reader = req.get("_reader")
-        writer = req.get("_writer")
-        slot = self._slot(entry.device_id)
+        kvm = ctx.kvm
+        entry = ctx.entry
+        reader = ctx.reader
+        writer = ctx.writer
+        slot = ctx.slot
         check = RoundCheck(
             mode, entry.channels, timeout_sec, time.monotonic(),
             round_state=None if mode is CheckMode.INSPECT else slot.round,
@@ -618,14 +636,14 @@ class TcpJsonServer:
                 return {"status": "error", "error": "server_shutting_down"}
             # KVM died mid-command (track ended or peer failed): report now, without waiting for the freeze.
             if not kvm.is_healthy():
-                return _kvm_lost(req)
+                return _kvm_lost(ctx)
 
             reading = await self._read_reading(slot, kvm, mode)
             if reading.error is not None:
                 code, message = reading.error
                 # The KVM can die while its last picture is frozen: a lost connection, not a frozen picture.
                 if code == "frame_frozen" and not kvm.is_healthy():
-                    return _kvm_lost(req)
+                    return _kvm_lost(ctx)
                 return check.fail(code, message)
 
             outcome = check.step(reading, time.monotonic())
@@ -643,126 +661,89 @@ class TcpJsonServer:
                 continue
             await asyncio.sleep(outcome.sleep_sec)
 
-    async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_shutdown(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         # Schedule the server loop to stop after replying cleanly to the client
         if self._loop and self._shutdown_event:
             self._loop.call_later(0.05, self._shutdown_event.set)
         return {}
 
     def _validate_request(self, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-        """Protocol 1.0 request validation. Returns (error, message) for the first violation."""
+        """Protocol 1.0 validation only: (error, message) for the first violation, or None."""
+        return self._admit(req)[0]
+
+    def _admit(self, req: Dict[str, Any]) -> Tuple[Optional[Tuple[str, str]], Optional[_Admitted]]:
+        """Protocol 1.0 request validation against the command table.
+
+        Returns ``((error, message), None)`` for the first violation, or ``(None, _Admitted)``. Each command's
+        ``parse`` runs once here; the handler gets its result as args.
+        """
         if req.get("protocol_version") != PROTOCOL_VERSION:
-            return "unsupported_protocol_version", f"protocol_version must be '{PROTOCOL_VERSION}'"
+            return ("unsupported_protocol_version", f"protocol_version must be '{PROTOCOL_VERSION}'"), None
 
         req_id = req.get("req_id")
         if req_id is None or req_id == "":
-            return "missing_req_id", "req_id is required"
+            return ("missing_req_id", "req_id is required"), None
         if not isinstance(req_id, str):
-            return "invalid_request", "req_id must be a string"
+            return ("invalid_request", "req_id must be a string"), None
 
         cmd = req.get("cmd")
         if cmd is None or cmd == "":
-            return "missing_command", "cmd is required"
+            return ("missing_command", "cmd is required"), None
         if not isinstance(cmd, str):
-            return "invalid_request", "cmd must be a string"
+            return ("invalid_request", "cmd must be a string"), None
 
         device = req.get("device")
         if not isinstance(device, str):
-            return "invalid_request", "device must be a string"
+            return ("invalid_request", "device must be a string"), None
 
-        if cmd not in self._command_fields:
-            return "unknown_command", f"unknown command '{cmd}'"
+        spec = self._commands.get(cmd)
+        if spec is None:
+            return ("unknown_command", f"unknown command '{cmd}'"), None
 
-        allowed = self._command_fields[cmd]
         for key in req:
-            if key in COMMON_FIELDS or key in allowed:
+            if key in COMMON_FIELDS or key in spec.fields:
                 continue
             if key in ("kvm_ip", "station"):
-                return "forbidden_field", f"field '{key}' is not allowed; address the device by 'device' ID"
-            return "unknown_field", f"field '{key}' is not defined for '{cmd}'"
+                return ("forbidden_field", f"field '{key}' is not allowed; address the device by 'device' ID"), None
+            return ("unknown_field", f"field '{key}' is not defined for '{cmd}'"), None
 
-        if cmd in self._no_device_cmds:
+        entry = None
+        if not spec.device_bound:
             if device != "":
-                return "invalid_argument", f"device must be empty for '{cmd}'"
-            return None
+                return ("invalid_argument", f"device must be empty for '{cmd}'"), None
+        else:
+            if device == "":
+                return ("missing_device", f"'{cmd}' requires a 'device' ID"), None
+            entry = self.device_registry.get(device)
+            if entry is None:
+                return ("unknown_device", f"device '{device}' is not configured"), None
+            if spec.stations is not None and entry.station not in spec.stations:
+                return ("unsupported_command", spec.unsupported_message), None
 
-        if device == "":
-            return "missing_device", f"'{cmd}' requires a 'device' ID"
-        if self.device_registry.get(device) is None:
-            return "unknown_device", f"device '{device}' is not configured"
-        entry = self.device_registry.get(device)
-        operations = STATION_OPERATIONS.get(cmd)
-        if operations is not None and entry.station not in operations:
-            return "unsupported_command", UNSUPPORTED_STATION_MESSAGES[cmd]
-        if cmd == "input":
-            try:
-                parse_items(req.get("items"), entry.channels)
-            except FlowError as exc:
-                return exc.code, str(exc)
-        if cmd == "snapshot":
-            fmt = req.get("format")
-            if fmt not in ("jpeg", "png"):
-                return "invalid_argument", "format must be 'jpeg' or 'png'"
-            quality = req.get("quality")
-            if isinstance(quality, bool) or not isinstance(quality, int):
-                return "invalid_argument", "quality is required and must be an integer"
-            if fmt == "png" and quality != 0:
-                return "invalid_argument", "quality must be 0 for png"
-            if fmt == "jpeg" and not 1 <= quality <= 100:
-                return "invalid_argument", "quality must be between 1 and 100 for jpeg"
-        if cmd in ("check_finish", "check_start", "inspect"):
-            timeout = req.get("timeout_sec")
-            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-                return "invalid_argument", "timeout_sec is required and must be a number"
-            if not 0 <= timeout <= CHECK_MAX_TIMEOUT_SEC:
-                return "invalid_argument", f"timeout_sec must be between 0 and {CHECK_MAX_TIMEOUT_SEC}"
-        if cmd == "monitor_start":
-            timeout = req.get("timeout_sec")
-            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-                return "invalid_argument", "timeout_sec is required and must be a number"
-            if not 1 <= timeout <= MONITOR_START_MAX_TIMEOUT_SEC:
-                return "invalid_argument", (
-                    f"timeout_sec must be between 1 and {MONITOR_START_MAX_TIMEOUT_SEC}")
-        return None
+        try:
+            args = spec.parse(req, entry)
+        except FlowError as exc:
+            return (exc.code, str(exc)), None
+        return None, _Admitted(spec, entry, args)
 
     async def _dispatch_command(
         self,
         req_id: str,
-        cmd: str,
-        req: Dict[str, Any],
+        admitted: _Admitted,
         reader: Optional[asyncio.StreamReader] = None,
         writer: Optional[asyncio.StreamWriter] = None,
     ) -> Dict[str, Any]:
-        if reader is not None:
-            req["_reader"] = reader
-        if writer is not None:
-            req["_writer"] = writer
+        spec = admitted.spec
+        entry = admitted.entry
+        # Check per-device locking. Only the device ID is trusted from the wire: KVM IP and station come from the registry.
+        device_id: Optional[str] = entry.device_id if entry is not None else None
 
-        handler = self._handlers[cmd]
-
-        # Check per-device locking
-        raw_device = req.get("device")
-        device_id: Optional[str] = (
-            str(raw_device)
-            if raw_device is not None and str(raw_device) != ""
-            else None
-        )
-
-        # Only the device ID is trusted from the wire: KVM IP and station come from the registry.
-        if device_id is not None:
-            entry = self.device_registry.get(device_id)
-            if entry is not None:
-                req["_device_entry"] = entry
-                req["kvm_ip"] = entry.kvm_ip
-
-        is_read_only = cmd in ("snapshot", "inspect")
-
-        if device_id is not None and not is_read_only:
+        if device_id is not None and spec.takes_lock:
             if not self.lock_manager.try_acquire(device_id, req_id=req_id):
                 logger.warning(
                     "Device %s busy; rejecting command '%s' (req_id=%s)",
                     device_id,
-                    cmd,
+                    spec.name,
                     req_id,
                 )
                 return {
@@ -774,17 +755,17 @@ class TcpJsonServer:
 
         # Check KVM connection pooling (kvm_ip comes from the device registry)
         # The lease is taken here and released in the finally below, so the KVM stays alive for the whole handler run.
-        raw_kvm_ip = req.get("kvm_ip")
+        raw_kvm_ip = entry.kvm_ip if entry is not None else None
         leased_kvm_ip: Optional[str] = None
+        kvm_client: Any = None
         if raw_kvm_ip is not None and str(raw_kvm_ip).strip() != "":
             kvm_ip = str(raw_kvm_ip).strip()
             try:
                 kvm_client = await self.kvm_pool.acquire_connection(kvm_ip)
                 leased_kvm_ip = kvm_ip
-                req["_kvm_client"] = kvm_client
             except Exception as exc:
                 logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id)
-                if device_id is not None and not is_read_only:
+                if device_id is not None and spec.takes_lock:
                     self.lock_manager.release(device_id)
                 err_resp = {
                     "req_id": req_id,
@@ -796,11 +777,19 @@ class TcpJsonServer:
                     err_resp["device"] = device_id
                 return err_resp
 
+        ctx = CommandContext(
+            entry=entry,
+            kvm=kvm_client,
+            slot=self._slot(device_id) if device_id is not None else None,
+            operation=spec.stations[entry.station] if spec.stations is not None else None,
+            reader=reader,
+            writer=writer,
+        )
         try:
-            if inspect.iscoroutinefunction(handler):
-                result = await handler(req)
+            if inspect.iscoroutinefunction(spec.handler):
+                result = await spec.handler(ctx, admitted.args)
             else:
-                result = await asyncio.to_thread(handler, req)
+                result = await asyncio.to_thread(spec.handler, ctx, admitted.args)
 
             # If handler explicitly returns an envelope with custom status like busy/error/timeout/cancelled/ok
             if isinstance(result, dict) and result.get("status") in ("ok", "error", "busy", "timeout", "cancelled"):
@@ -820,7 +809,7 @@ class TcpJsonServer:
                 resp["device"] = device_id
             return resp
         except Exception as exc:
-            logger.exception("Error executing command '%s'", cmd)
+            logger.exception("Error executing command '%s'", spec.name)
             err_resp = {
                 "req_id": req_id,
                 "status": "error",
@@ -831,7 +820,7 @@ class TcpJsonServer:
                 err_resp["device"] = device_id
             return err_resp
         finally:
-            if device_id is not None and not is_read_only:
+            if device_id is not None and spec.takes_lock:
                 self.lock_manager.release(device_id)
             if leased_kvm_ip is not None:
                 await self.kvm_pool.release_connection(leased_kvm_ip)
@@ -859,12 +848,12 @@ class TcpJsonServer:
         device = req.get("device") if isinstance(req.get("device"), str) else ""
         cmd = req.get("cmd") if isinstance(req.get("cmd"), str) else ""
 
-        invalid = self._validate_request(req)
+        invalid, admitted = self._admit(req)
         if invalid is not None:
             error, message = invalid
             return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
 
-        raw = await self._dispatch_command(req_id, cmd, req, reader=reader, writer=writer)
+        raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
         if raw.get("error") == "client_disconnected":
             return b""  # PROTOCOL 7: the client is gone, so nothing is written
         return self._encode_result(started, req_id, device, cmd, raw)
@@ -888,7 +877,7 @@ class TcpJsonServer:
         if status == "timeout":
             error = "timeout"
         elif status != "ok":
-            error = ERROR_CODE_MAP.get(str(raw.get("error") or "internal_error"), str(raw.get("error") or "internal_error"))
+            error = str(raw.get("error") or "internal_error")
         return self._encode_envelope(started, req_id, device, cmd, status, error, message, payload)
 
     def _encode_envelope(
@@ -902,7 +891,8 @@ class TcpJsonServer:
         message: str,
         payload: Dict[str, Any],
     ) -> bytes:
-        data = {**DEFAULT_DATA.get(cmd, {}), **payload}
+        spec = self._commands.get(cmd)
+        data = {**(spec.default_data if spec is not None else {}), **payload}
         envelope = {
             "protocol_version": PROTOCOL_VERSION,
             "req_id": req_id,

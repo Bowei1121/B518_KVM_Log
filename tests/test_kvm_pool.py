@@ -35,7 +35,7 @@ from kvm_pool import KVMConnectionPool, KVMUnavailableError, normalize_kvm_ip
 from device_registry import DeviceRegistry
 from fake_kvm import FakeKVM
 from protocol_helpers import make_registry, wire, numbered
-from tcp_server import TcpJsonServer
+from tcp_server import CommandSpec, TcpJsonServer
 
 
 class MockJetKVMClient(FakeKVM):
@@ -569,7 +569,7 @@ def _wait_for(predicate: Callable[[], bool], timeout: float = 3.0) -> bool:
 def _probe_server(pool: KVMConnectionPool, cmd: str, handler: Any) -> Iterator[socket.socket]:
     """A TCP server with one device-bound probe command; yields a client socket connected to it."""
     server = TcpJsonServer(device_registry=pool_registry(), host="127.0.0.1", port=0, kvm_pool=pool)
-    server.register_handler(cmd, handler, device_bound=True)
+    server.register_handler(CommandSpec(cmd, handler, device_bound=True))
     server.start()
     sock = None
     try:
@@ -589,7 +589,7 @@ def test_tcp_command_holds_lease_for_whole_handler_run() -> None:
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=0.15, heartbeat_interval=0.05)
 
-    async def slow_handler(req):
+    async def slow_handler(ctx, args):
         await asyncio.sleep(0.4)
         return {"slept": True}
 
@@ -609,7 +609,7 @@ def test_tcp_command_releases_lease_when_handler_raises() -> None:
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
 
-    def boom_handler(req):
+    def boom_handler(ctx, args):
         raise RuntimeError("boom")
 
     with _probe_server(pool, "boom_probe", boom_handler) as sock:
@@ -626,7 +626,7 @@ def test_tcp_command_releases_lease_when_client_disconnects() -> None:
     factory = MockClientFactory()
     pool = KVMConnectionPool(client_factory=factory, idle_timeout=600.0)
 
-    async def slow_handler(req):
+    async def slow_handler(ctx, args):
         await asyncio.sleep(0.3)
         return {"slept": True}
 
