@@ -25,6 +25,13 @@ PATTERNS = {
 }
 
 
+def requested_gate(*args, **kwargs):
+    """A gate whose device has a round-start request, as monitor_start leaves it: Monitoring may arm the round."""
+    gate = RoundFrameGate(*args, **kwargs)
+    gate.round.note_start()
+    return gate
+
+
 def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247),
                  pattern=None):
     """Render contract 1.1 with the real App's one- or two-row layout."""
@@ -83,10 +90,10 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(low.reason, "marker_low_contrast_or_occluded")
 
     def test_real_single_row_layout_completes_without_a_hidden_second_row(self):
-        gate = RoundFrameGate("single-row", stable_complete_frames=2)
+        gate = requested_gate("single-row", stable_complete_frames=2)
         for capacity in (1, 10):
             with self.subTest(capacity=capacity):
-                gate = RoundFrameGate("single-row", stable_complete_frames=2)
+                gate = requested_gate("single-row", stable_complete_frames=2)
                 frames = []
                 for state, statuses in ((MarkerState.MONITORING, ["WAITING"] * capacity),
                                         (MarkerState.COMPLETE, ["PASS"] * capacity)):
@@ -161,7 +168,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertFalse(inspect_app_frame(covered, 1, 1).reliable)
         cropped = complete[:31 + 61 * 2]
         self.assertEqual(inspect_app_frame(cropped, 1, 1).reason, "app_band_cropped")
-        gate = RoundFrameGate("occluded", stable_complete_frames=2)
+        gate = requested_gate("occluded", stable_complete_frames=2)
         gate.observe(render_frame(MarkerState.MONITORING, ["WAITING"] * 20), 1, 1, now=1)
         self.assertNotEqual(gate.observe(covered, 2, 1.1, now=1.1).kind, "taken")
         self.assertNotEqual(gate.observe(covered, 3, 1.2, now=1.2).kind, "taken")
@@ -179,7 +186,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertFalse(inspect_app_frame(corrupted, 10, 10).results_complete)
 
     def test_monitoring_arms_gate_review_pauses_and_complete_is_taken_once(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=2, clock=lambda: 10.0)
+        gate = requested_gate("device-1", stable_complete_frames=2, clock=lambda: 10.0)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 4)
         review = render_frame(MarkerState.REVIEW, ["PASS", "FAIL", "WAITING", "WAITING"])
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL", "NOTEST", "TIMEOUT"])
@@ -193,14 +200,14 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(gate.observe(complete, 5, 10.4, now=10.4).kind, "already_taken")
 
     def test_startup_residual_complete_never_takes_without_monitoring(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=2, clock=lambda: 10.0)
+        gate = requested_gate("device-1", stable_complete_frames=2, clock=lambda: 10.0)
         complete = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
         self.assertEqual(gate.observe(complete, 1, 10, now=10).kind, "waiting")
         self.assertEqual(gate.observe(complete, 2, 10.1, now=10.1).kind, "waiting")
         self.assertFalse(gate.round.taken)
 
     def test_new_round_monitoring_rearms_and_duplicate_or_old_sequence_cannot_vote(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 5.0)
+        gate = requested_gate("device-1", stable_complete_frames=1, clock=lambda: 5.0)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 4)
         complete = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
         self.assertEqual(gate.observe(monitoring, 1, 1, now=1).kind, "waiting")
@@ -210,7 +217,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(gate.observe(complete, 4, 5, now=5).kind, "taken")
 
     def test_prior_round_complete_with_older_source_timestamp_is_rejected(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=2,
+        gate = requested_gate("device-1", stable_complete_frames=2,
                               require_presentation_time=True)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
@@ -226,7 +233,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
                                       pts=50.2).kind, "taken")
 
     def test_complete_capacity_must_match_observed_monitoring_round(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=1)
+        gate = requested_gate("device-1", stable_complete_frames=1)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         changed_capacity = render_frame(MarkerState.COMPLETE, ["PASS"] * 3)
         gate.observe(monitoring, 1, 1, now=1)
@@ -235,8 +242,8 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertFalse(gate.round.taken)
 
     def test_device_gates_do_not_share_taken_state(self):
-        first = RoundFrameGate("one", stable_complete_frames=1)
-        second = RoundFrameGate("two", stable_complete_frames=1)
+        first = requested_gate("one", stable_complete_frames=1)
+        second = requested_gate("two", stable_complete_frames=1)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
         self.assertEqual(first.observe(monitoring, 1, 1, now=1).kind, "waiting")
@@ -245,7 +252,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertFalse(second.round.taken)
 
     def test_reconnect_requires_monitoring_again_before_residual_complete_can_be_taken(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 4.0)
+        gate = requested_gate("device-1", stable_complete_frames=1, clock=lambda: 4.0)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
         self.assertEqual(gate.observe(monitoring, 1, 1, now=1, stream_id="stream-a").kind,
@@ -258,7 +265,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertFalse(gate.round.taken)
 
     def test_complete_frame_spacing_and_same_image_status_changes_are_checked(self):
-        gate = RoundFrameGate("device-1", stable_complete_frames=2,
+        gate = requested_gate("device-1", stable_complete_frames=2,
                               max_frame_gap=0.5, clock=lambda: 4.0)
         monitoring = render_frame(MarkerState.MONITORING, ["WAITING"] * 2)
         complete = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
@@ -272,7 +279,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
     def test_public_latest_frame_interface_and_tcp_reply_are_one_shot(self):
         kvm = FakeKVM(render_frame(MarkerState.MONITORING, ["WAITING"] * 2), sequence=1,
                       received_monotonic=10, stream_id="controlled", pts=1.0)
-        gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 12,
+        gate = requested_gate("device-1", stable_complete_frames=1, clock=lambda: 12,
                               require_presentation_time=True)
         decision = observe_latest_round_frame(kvm, gate, now=10)
         self.assertEqual(decision.kind, "waiting")
@@ -299,7 +306,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
     def test_missing_or_out_of_order_pts_clears_started_activity(self):
         """A4: stream-time unknowns reset the activity pair before returning."""
         frame = render_frame(MarkerState.MONITORING, ["TESTING", "WAITING", "WAITING", "WAITING"])
-        gate = RoundFrameGate("device-1", require_presentation_time=True, max_frame_gap=1.0)
+        gate = requested_gate("device-1", require_presentation_time=True, max_frame_gap=1.0)
         gate.observe(frame, 1, 1.0, now=1.0, stream_id="s", pts=1.0)
         gate.observe(frame, 2, 1.1, now=1.1, stream_id="s", pts=1.1)
         self.assertTrue(gate.last_active)

@@ -108,7 +108,8 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                             log=print, on_preparing=None, on_shortcut=None):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
-    ``gate`` is the device's RoundFrameGate; the Monitoring reading arms it. ``diagnostics_key`` is the
+    ``gate`` is the device's RoundFrameGate; a Monitoring reading arms its round once a start was requested
+    (Preparing or the shortcut, through the callbacks below). ``diagnostics_key`` is the
     device ID; match diagnostics are kept per device (ADR-0007). Raises ``FlowError`` with the
     protocol error code otherwise. Callbacks record the round-start request; a timeout does not undo them.
     """

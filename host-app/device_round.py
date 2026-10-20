@@ -65,10 +65,6 @@ class DeviceRound:
         self.clear_delivery()
         self.input_released = False
 
-    def accepts_round(self):
-        """True while a start was requested: a Monitoring reading may arm the round."""
-        return self.start_requested
-
     def check_verdict(self, reason):
         """Verdict for a reliable check reading that is not paused, already_taken or unknown.
 
@@ -120,8 +116,11 @@ class DeviceRound:
         self.drop_candidate()
         self.activity.reset()
 
-    def judge(self, observation, sequence, received_at, accept_round=True):
-        """Decide what a frame that passed the stream checks means for this device's round."""
+    def judge(self, observation, sequence, received_at):
+        """Decide what a frame that passed the stream checks means for this device's round.
+
+        A Monitoring reading arms the round only while a start was requested (start_requested).
+        """
         previous_received_at = self.last_received_at
         self.last_received_at = received_at
         self.activity.observe(observation, sequence, received_at)
@@ -134,7 +133,7 @@ class DeviceRound:
             return TakeDecision("paused", self.device_id, observation.state,
                                 observation.capacity, reason=CONFIRMATION_REQUIRED)
         if observation.state in (MarkerState.PREPARING, MarkerState.MONITORING):
-            return self._new_round_seen(observation, accept_round)
+            return self._new_round_seen(observation)
         if observation.state == MarkerState.STANDBY:
             # Standby after this round was seen in Monitoring (and not yet taken) means the round is gone.
             round_lost = self.armed
@@ -151,7 +150,7 @@ class DeviceRound:
                 and observation.results_complete):
             return TakeDecision("already_taken", self.device_id, observation.state,
                                 observation.capacity, self.delivered_results, "round_already_taken")
-        if not self.armed or not accept_round:
+        if not self.armed or not self.start_requested:
             # A deliverable screen this call must not take. The server turns it into
             # manual_verification_required when a start was requested but monitoring was not seen.
             if observation.results_complete:
@@ -187,11 +186,11 @@ class DeviceRound:
         return TakeDecision("taken", self.device_id, observation.state,
                             observation.capacity, rows, "reliable_complete")
 
-    def _new_round_seen(self, observation, accept_round):
+    def _new_round_seen(self, observation):
         """The one place for "Preparing / Monitoring = a new round".
 
         The previous delivery goes and no SN input is released. Preparing also disarms the round;
-        Monitoring arms it when this call accepts the round.
+        Monitoring arms it when a start was requested.
         """
         if observation.state == MarkerState.PREPARING:
             self.clear_delivery()
@@ -202,7 +201,7 @@ class DeviceRound:
         self.delivered_signature = None
         self.delivered_results = ()
         self.drop_candidate()
-        if accept_round:
+        if self.start_requested:
             self.armed = True
             self.taken = False
             self.armed_capacity = observation.capacity

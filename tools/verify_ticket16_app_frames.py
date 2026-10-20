@@ -27,6 +27,7 @@ def verify(evidence_dir):
     evidence_dir = Path(evidence_dir)
     gate = RoundFrameGate("ticket16-controlled-device", stable_complete_frames=2,
                           max_age=10.0, max_frame_gap=2.0)
+    gate.round.note_start()  # monitor_start leaves this request; without it Monitoring never arms
     records = []
     fake_action_requests = []
     for sequence, (name, expected) in enumerate(EXPECTED.items(), 1):
