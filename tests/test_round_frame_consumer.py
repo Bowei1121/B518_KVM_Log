@@ -305,8 +305,8 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertTrue(gate.last_active)
 
         missing = gate.observe(frame, 3, 1.2, now=1.2, stream_id="s", pts=None)
-        self.assertEqual(missing.kind, "unknown")
-        self.assertEqual(missing.reason, "missing_source_frame_time")
+        self.assertEqual(missing.kind, "frozen")
+        self.assertEqual(missing.reason, "frame_frozen")
         self.assertEqual(gate.last_active, ())
         self.assertIsNone(gate.round.activity.previous)
 

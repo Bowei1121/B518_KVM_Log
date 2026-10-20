@@ -74,7 +74,7 @@ MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
 # visible" nor reset the visibility timer. Every other unknown reading counts as not visible
 # (wholly or partly covered, closed, minimised), including reasons added later.
 STREAM_PROBLEM_REASONS = frozenset({
-    "no_frame", "invalid_frame", "stale_frame", "missing_source_frame_time", "out_of_order_source_frame",
+    "no_frame", "invalid_frame", "stale_frame", "out_of_order_source_frame", "freshness_pending",
     "duplicate_or_out_of_order_frame", "inspection_busy", "inspection_timeout",
 })
 
@@ -136,11 +136,9 @@ def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any
 def _round_observation(decision: Any) -> Dict[str, Any]:
     """Map a round-gate decision onto the check 1.0 data shape."""
     if decision.kind == "frozen" or decision.reason == "frame_frozen":
-        return {"error": "frame_frozen", "message": "Log Solution frame stream is frozen"}
+        return {"error": "frame_frozen", "message": decision.detail or "Log Solution frame stream is frozen"}
     if decision.kind == "round_lost":
         return {"error": "round_lost", "message": "Log Solution returned to standby before this round was taken"}
-    if decision.reason == "no_frame":
-        return {"error": "no_frame", "message": "No frame received from KVM yet"}
     return {
         "kind": decision.kind,
         "state": decision.state.value if decision.state is not None else "",
@@ -151,19 +149,28 @@ def _round_observation(decision: Any) -> Dict[str, Any]:
     }
 
 
-def _inspect_round(kvm: Any, tracker: Any) -> Tuple[Dict[str, Any], Any]:
+def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str, Any], Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
     Returns ``(reply, state)``. Reports what the screen shows now. Never returns taken and never
     arms or consumes the device's round gate. Two agreeing fresh frames fill ``active``.
+    With ``stream``, the reading also observes the device's FrameStream: a frozen picture is frame_frozen.
     """
+    from frame_stream import FRESHNESS_PENDING
     from log_solution_reader import (
         CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
     )
 
     snapshot, obs = read_app_frame(kvm)
+    if stream is not None:
+        verdict = stream.observe_snapshot(snapshot)
+        if verdict.kind == "frozen":
+            return {"error": "frame_frozen", "message": verdict.message}, None
+        if not verdict.advanced:
+            # PTS has not been seen to move: not judged, and the tracker does not see this frame.
+            return _unknown(FRESHNESS_PENDING), None
     if snapshot is None:
-        return {"error": "no_frame", "message": "No frame received from KVM yet"}, None
+        return {"error": "frame_frozen", "message": "No frame received from KVM yet"}, None
     rows = tracker.observe(obs, snapshot.sequence, snapshot.received_monotonic)
     kind = screen_kind(obs)
     if kind is ScreenKind.UNKNOWN:
@@ -443,9 +450,10 @@ class TcpJsonServer:
         if read_only:
             # Gate-less reading: never arms, takes or otherwise touches the round.
             tracker = self._inspect_tracker(entry.device_id)
+            stream = self.freeze_guard.stream(entry.device_id)
 
             def job():
-                return _inspect_round(kvm, tracker)
+                return _inspect_round(kvm, tracker, stream)
         else:
             gate = self._round_gate(entry.device_id)
             accept_round = self._device_round(entry.device_id).accepts_round()
@@ -520,7 +528,8 @@ class TcpJsonServer:
         gate = self._round_gates.get(device_id)
         if gate is None:
             gate = RoundFrameGate(device_id, require_presentation_time=True,
-                                  round_state=self._device_round(device_id))
+                                  round_state=self._device_round(device_id),
+                                  frame_stream=self.freeze_guard.stream(device_id), require_proof=True)
             self._round_gates[device_id] = gate
         return gate
 
@@ -658,31 +667,32 @@ class TcpJsonServer:
                 return {"status": "cancelled", "error": "client_disconnected"}
             if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
                 return {"status": "error", "error": "server_shutting_down"}
-            # KVM died mid-command (track ended or peer failed): report now, without waiting for Freeze Guard.
+            # KVM died mid-command (track ended or peer failed): report now, without waiting for the freeze.
             if not kvm.is_healthy():
                 return _kvm_lost(req)
 
-            # Frame Freeze Guard: the picture's timestamps must keep advancing.
-            is_live, freeze_err = await self.freeze_guard.verify_liveness(
-                kvm,
-                device_id=entry.device_id,
-                poll_interval=0.05,
-            )
-            if not is_live:
-                # The KVM can die inside the freeze window; that is a lost connection, not a frozen picture.
-                if not kvm.is_healthy():
-                    return _kvm_lost(req)
-                return {
-                    "status": "error",
-                    "error": "frame_frozen",
-                    "message": (freeze_err or {}).get("message", "frame presentation timestamp is static"),
-                }
-
+            # Every reading observes the device's FrameStream: its PTS must keep advancing (ADR-0005).
             obs, state = await self._observe_check(kvm, entry, req, read_only=read_only,
                                                    report_activity=report_activity)
             if "error" in obs:
+                # The KVM can die while its last picture is frozen: a lost connection, not a frozen picture.
+                if obs["error"] == "frame_frozen" and not kvm.is_healthy():
+                    return _kvm_lost(req)
                 return _check_error(obs["error"], obs.get("message", ""), last)
             last = obs
+
+            # No judgement until the picture has shown PTS moving (a first frame proves nothing). The
+            # reading said so; a frozen one still ends as frame_frozen above, at the threshold.
+            proof_wait = self.freeze_guard.freeze_threshold + CHECK_POLL_INTERVAL_SEC
+            if obs.get("reason") == "freshness_pending" and elapsed < proof_wait:
+                if timeout_sec > 0 and elapsed >= timeout_sec:
+                    return {"status": "timeout", "error": "timeout",
+                            "message": f"no reliable result within {timeout_sec:g} s", "data": last}
+                remaining = proof_wait - elapsed
+                if timeout_sec > 0:
+                    remaining = min(remaining, timeout_sec - elapsed)
+                await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, remaining)))
+                continue
 
             if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
                 return {
