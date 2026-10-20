@@ -145,10 +145,11 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             if observation.state == MarkerState.REVIEW:
                 raise _review("點擊 Dock 後")
             if observation.may_open_round:
-                await session.press_command_shift_m()
-                if on_shortcut is not None:
-                    on_shortcut()
-                session.raise_if_hid("快捷鍵 HID 錯誤")
+                async def note_shortcut():
+                    if on_shortcut is not None:
+                        on_shortcut()
+
+                await session.press_command_shift_m(failure="快捷鍵 HID 錯誤", after=note_shortcut)
 
         if observation.reliable and observation.state == MarkerState.PREPARING:
             preparing()

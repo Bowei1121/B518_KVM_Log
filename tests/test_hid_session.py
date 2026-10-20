@@ -101,3 +101,88 @@ def test_click_raises_flow_error_when_hid_reports_an_error(tmp_path):
     assert excinfo.value.code == "hid_failed"
     assert str(excinfo.value) == "Dock HID 錯誤: hidg endpoint disconnected"
     assert kvm.clicks == [(35, 25)]
+
+
+def test_click_raises_before_clearing_a_previous_hid_error(tmp_path):
+    root = tmp_path / "template"
+    frame = _dock(root)
+    kvm = ClickKvm(frame)
+    kvm.rpc_errors.append("late from previous step")
+    session = _session(kvm, root)
+    template = session.load("BT", "dock_icon")
+    box = session.find("dock_icon", template, frame, downscale=False)
+
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value) == "Dock HID 錯誤: late from previous step"
+    assert kvm.clicks == []
+    assert kvm.rpc_errors == ["late from previous step"]
+
+
+def test_type_text_raises_when_hid_reports_an_error(tmp_path):
+    root = tmp_path / "template"
+    kvm = ClickKvm(_dock(root))
+    session = _session(kvm, root)
+
+    async def type_then_fail(text):
+        kvm.rpc_errors.append("keyboard lost")
+
+    kvm.type_text = type_then_fail
+
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(session.type_text("SN1", failure="SN 輸入 HID 錯誤", entered=[1]))
+
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value) == "SN 輸入 HID 錯誤: keyboard lost"
+    assert excinfo.value.entered == [1]
+
+
+def test_press_enter_raises_when_hid_reports_an_error(tmp_path):
+    root = tmp_path / "template"
+    kvm = ClickKvm(_dock(root))
+    session = _session(kvm, root)
+
+    async def press_then_fail():
+        kvm.rpc_errors.append("keyboard lost")
+
+    kvm.press_enter = press_then_fail
+
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(session.press_enter(failure="SN 輸入 HID 錯誤", entered=[1]))
+
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value) == "SN 輸入 HID 錯誤: keyboard lost"
+    assert excinfo.value.entered == [1]
+
+
+def test_press_command_shift_m_raises_when_hid_reports_an_error(tmp_path):
+    root = tmp_path / "template"
+    kvm = ClickKvm(_dock(root))
+    session = _session(kvm, root)
+
+    async def shortcut_then_fail():
+        kvm.rpc_errors.append("shortcut lost")
+
+    kvm.press_command_shift_m = shortcut_then_fail
+
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(session.press_command_shift_m(failure="快捷鍵 HID 錯誤"))
+
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value) == "快捷鍵 HID 錯誤: shortcut lost"
+    assert excinfo.value.entered == []
+
+
+def test_find_within_raises_when_the_template_is_only_outside_the_roi(tmp_path):
+    root = tmp_path / "template"
+    frame = _dock(root)
+    session = _session(ClickKvm(frame), root)
+    template = session.load("BT", "dock_icon")
+
+    with pytest.raises(FlowError) as excinfo:
+        session.find("dock_icon", template, frame, within=(80, 50, 40, 30), downscale=False)
+
+    assert excinfo.value.code == "hid_failed"
+    assert excinfo.value.score is not None

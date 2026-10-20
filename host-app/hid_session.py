@@ -154,13 +154,14 @@ class HidSession:
         errors = getattr(self.kvm, "rpc_errors", [])
         return errors[-1] if errors else None
 
-    def raise_if_hid(self, failure, entered=()):
+    def _raise_if_hid(self, failure, entered=()):
         error = self.last_hid_error()
         if error:
             raise FlowError("hid_failed", f"{failure}: {error}", entered)
 
     async def click(self, box, *, failure, settle=0.0, after=None, entered=()):
-        """Clear HID errors, click the box center, then raise ``FlowError("hid_failed")``."""
+        """Raise a leftover HID error, then clear, click the box center, and raise ``FlowError("hid_failed")``."""
+        self._raise_if_hid(failure, entered)
         errors = getattr(self.kvm, "rpc_errors", None)
         if errors is not None:
             errors.clear()
@@ -174,7 +175,7 @@ class HidSession:
             await after()
         if settle:
             await asyncio.sleep(settle)
-        self.raise_if_hid(failure, entered)
+        self._raise_if_hid(failure, entered)
 
     async def focus_dock(self, key, template, frame, *, message, failure="Dock HID 錯誤", settle=0.0, after=None):
         """Find ``key`` on the full frame and click it."""
@@ -182,14 +183,19 @@ class HidSession:
         await self.click(box, failure=failure, settle=settle, after=after)
         return box
 
-    async def type_text(self, text):
+    async def type_text(self, text, *, failure, entered=()):
         await self.kvm.type_text(text)
+        self._raise_if_hid(failure, entered)
 
-    async def press_enter(self):
+    async def press_enter(self, *, failure, entered=()):
         await self.kvm.press_enter()
+        self._raise_if_hid(failure, entered)
 
-    async def press_command_shift_m(self):
+    async def press_command_shift_m(self, *, failure, entered=(), after=None):
         await self.kvm.press_command_shift_m()
+        if after is not None:
+            await after()
+        self._raise_if_hid(failure, entered)
 
 
 async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):

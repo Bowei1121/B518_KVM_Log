@@ -175,9 +175,8 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         input_box = _control(session, frame, window, templates["input"], "input")
         await session.click(input_box, failure="SN 輸入 HID 錯誤", entered=entered)
         for slot, sn in serials:
-            await session.type_text(sn)
-            await session.press_enter()
-            session.raise_if_hid("SN 輸入 HID 錯誤", entered)
+            await session.type_text(sn, failure="SN 輸入 HID 錯誤", entered=entered)
+            await session.press_enter(failure="SN 輸入 HID 錯誤", entered=entered)
             entered.append(slot)
         ok = True
         return {"entered": entered}
