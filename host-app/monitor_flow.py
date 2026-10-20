@@ -114,7 +114,7 @@ def _review(where):
 
 async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
-                            log=print, on_preparing=None, on_shortcut=None, on_monitoring=None):
+                            log=print, on_preparing=None, on_shortcut=None):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
     ``gate`` is the device's RoundFrameGate; the Monitoring reading arms it. ``diagnostics_key`` is the
@@ -134,7 +134,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         if frame is None:
             raise MonitorStartError("hid_failed", "沒有 JetKVM 影格")
         if observation.reliable and observation.state == MarkerState.MONITORING:
-            # Busy refusal is not "seen monitoring for this round": no on_monitoring.
+            # Busy refusal is not "seen monitoring for this round": the request stays unanswered.
             raise _busy(observation.state)
         if observation.reliable and observation.state == MarkerState.REVIEW:
             raise _review("開始前")
@@ -165,8 +165,6 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         while True:
             decision = await asyncio.to_thread(observe_latest_round_frame, kvm, gate)
             if decision.state == MarkerState.MONITORING:
-                if on_monitoring is not None:
-                    on_monitoring()
                 ok = True
                 return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}
             if decision.state == MarkerState.REVIEW:

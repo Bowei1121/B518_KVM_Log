@@ -1,106 +1,77 @@
-"""Round logic for one device: arm on Monitoring, take each finished round once.
+"""Frame consumer for one device: stream order, PTS freeze, then the device's round.
 
-Reading the screen is log_solution_reader's job. This module decides what a reading means for
-the device's round (RoundFrameGate) and shapes the legacy reply (tcp_round_reply).
+Reading the screen is log_solution_reader's job. The device's round progress lives in
+device_round.DeviceRound; this module owns what is about the frame stream (sequence, stream
+identity, presentation-time freeze) and shapes the legacy reply (tcp_round_reply).
 """
 
-from dataclasses import dataclass
 import time
-from typing import Optional, Tuple
 
-from log_solution_reader import (
-    CONFIRMATION_REQUIRED, ActivityTracker, MarkerState, ScreenKind, inspect_app_frame, screen_kind,
-)
-
-
-@dataclass(frozen=True)
-class TakeDecision:
-    kind: str
-    device_id: str
-    state: Optional[MarkerState] = None
-    capacity: int = 0
-    results: Tuple[Tuple[int, str], ...] = ()
-    reason: str = ""
+from device_round import DeviceRound, TakeDecision
+from log_solution_reader import inspect_app_frame
 
 
 class RoundFrameGate:
-    """Require monitoring then a stable complete frame, and take each device round once."""
+    """Frame-stream checks for one device, then its DeviceRound decides what the frame means."""
 
     def __init__(self, device_id, stable_complete_frames=2, max_age=1.0,
                  max_frame_gap=1.0, clock=time.monotonic,
                  require_presentation_time=False,
-                 freeze_threshold=1.0):
+                 freeze_threshold=1.0, round_state=None):
         self.device_id = str(device_id)
-        self.stable_complete_frames = max(1, int(stable_complete_frames))
         self.max_age = float(max_age)
-        self.max_frame_gap = float(max_frame_gap)
         self.clock = clock
         self.require_presentation_time = bool(require_presentation_time)
         self.freeze_threshold = float(freeze_threshold)
-        self.armed = False
-        self.taken = False
+        # The server shares one DeviceRound per device. When round_state is given, its
+        # stable_complete_frames and max_frame_gap win and this gate ignores those two arguments.
+        self.round = round_state if round_state is not None else DeviceRound(
+            self.device_id, stable_complete_frames, max_frame_gap)
         self.is_frozen = False
         self.last_sequence = None
         self.last_stream_id = None
-        self.last_received_at = None
         self.last_presentation_time = None
         self.first_static_presentation_time = None
-        self.armed_capacity = None
-        self.delivered_signature = None
-        self.delivered_results = ()
-        self._candidate_signature = None
-        self._candidate_count = 0
-        self._activity = ActivityTracker(self.max_frame_gap)
+
+    @property
+    def taken(self):
+        """Compatibility: the round's taken flag, read by tests/test_round_frame_consumer.py."""
+        return self.round.taken
 
     @property
     def last_active(self):
         """Channels the last reading confirmed as started (check's ``active``)."""
-        return self._activity.last_active
+        return self.round.activity.last_active
 
     @property
     def _activity_prev(self):
-        """Compatibility only: tests/test_round_frame_consumer.py reads it. Remove with #55, not a public API."""
-        return self._activity.previous
+        """Compatibility only: tests/test_round_frame_consumer.py reads it. Drop it once that test stops
+        reading it; changing that test is out of scope for #55."""
+        return self.round.activity.previous
 
-    def forget_delivered_round(self):
-        """A new monitor_start drops the previous delivery. Monitoring must be seen again."""
-        self.armed = False
-        self.taken = False
-        self.armed_capacity = None
-        self.delivered_signature = None
-        self.delivered_results = ()
-        self._candidate_signature = None
-        self._candidate_count = 0
-        self._activity.reset()
+    def _reset_freeze_baseline(self):
+        """Stream change: the sequence and presentation-time baseline starts over."""
+        self.last_sequence = None
+        self.is_frozen = False
+        self.last_presentation_time = None
+        self.first_static_presentation_time = None
 
     def observe(self, frame, sequence, received_at, now=None, stream_id=None,
                 pts=None, accept_round=True):
         """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown/frozen."""
         now = self.clock() if now is None else now
         if stream_id != self.last_stream_id:
-            self.last_sequence = None
             self.last_stream_id = stream_id
+            self._reset_freeze_baseline()
             # A reconnect may show a retained Complete screen from a previous
             # process/session. Require a fresh Monitoring frame on this stream.
-            self.armed = False
-            self.taken = False
-            self.is_frozen = False
-            self.last_presentation_time = None
-            self.first_static_presentation_time = None
-            self.armed_capacity = None
-            self.delivered_signature = None
-            self.delivered_results = ()
-            self._candidate_signature = None
-            self._candidate_count = 0
-            self._activity.reset()
+            self.round.clear_delivery()
         if self.last_sequence is not None and sequence <= self.last_sequence:
-            self._activity.clear_active()
+            self.round.activity.clear_active()
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")
         self.last_sequence = sequence
         if self.require_presentation_time and pts is None:
-            self._candidate_signature = None
-            self._candidate_count = 0
-            self._activity.reset()
+            self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason="missing_source_frame_time")
         if pts is not None:
             if self.last_presentation_time is not None:
@@ -110,13 +81,9 @@ class RoundFrameGate:
                     static_duration = max(0.0, now - self.first_static_presentation_time)
                     if static_duration >= self.freeze_threshold:
                         self.is_frozen = True
-                        self._candidate_signature = None
-                        self._candidate_count = 0
-                        self._activity.reset()
+                        self.round.lose_continuity()
                         return TakeDecision("frozen", self.device_id, reason="frame_frozen")
-                    self._candidate_signature = None
-                    self._candidate_count = 0
-                    self._activity.reset()
+                    self.round.lose_continuity()
                     return TakeDecision("unknown", self.device_id,
                                         reason="out_of_order_source_frame")
                 else:
@@ -125,95 +92,8 @@ class RoundFrameGate:
             else:
                 self.first_static_presentation_time = now
             self.last_presentation_time = pts
-        previous_received_at = self.last_received_at
-        self.last_received_at = received_at
         observation = inspect_app_frame(frame, received_at, now, self.max_age)
-        self._activity.observe(observation, sequence, received_at)
-        kind = screen_kind(observation)
-        if kind is ScreenKind.UNKNOWN:
-            self._candidate_signature = None
-            self._candidate_count = 0
-            return TakeDecision("unknown", self.device_id, reason=observation.reason)
-
-        if kind is ScreenKind.PAUSED:
-            self._candidate_signature = None
-            self._candidate_count = 0
-            return TakeDecision("paused", self.device_id, observation.state,
-                                observation.capacity, reason=CONFIRMATION_REQUIRED)
-        if observation.state == MarkerState.PREPARING:
-            # Reliable reading, and a new-round signal: drop the previous delivery.
-            self.forget_delivered_round()
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="preparing")
-        if observation.state == MarkerState.STANDBY:
-            # Standby after this round was seen in Monitoring (and not yet taken) means the round is gone.
-            round_lost = self.armed
-            self.armed = False
-            self.armed_capacity = None
-            self._candidate_signature = None
-            self._candidate_count = 0
-            if round_lost:
-                return TakeDecision("round_lost", self.device_id, observation.state,
-                                    observation.capacity, reason="round_lost")
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="standby")
-        if observation.state == MarkerState.MONITORING:
-            # Monitoring is a new-round signal: drop the previous delivery. Arm only when
-            # this check is allowed to accept the round.
-            self.delivered_signature = None
-            self.delivered_results = ()
-            self._candidate_signature = None
-            self._candidate_count = 0
-            if accept_round:
-                self.armed = True
-                self.taken = False
-                self.armed_capacity = observation.capacity
-            else:
-                self.armed = False
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="monitoring")
-        signature = (observation.state, observation.capacity, observation.statuses)
-        if (self.delivered_signature is not None and signature == self.delivered_signature
-                and observation.results_complete):
-            return TakeDecision("already_taken", self.device_id, observation.state,
-                                observation.capacity, self.delivered_results, "round_already_taken")
-        if not self.armed or not accept_round:
-            # A deliverable screen that this call must not take. The server turns it into
-            # manual_verification_required when a start was requested but monitoring was not seen.
-            if observation.results_complete:
-                return TakeDecision("waiting", self.device_id, observation.state,
-                                    observation.capacity, reason="deliverable_without_monitoring")
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="monitoring_not_observed")
-        if observation.capacity != self.armed_capacity:
-            self.armed = False
-            self._candidate_signature = None
-            self._candidate_count = 0
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="round_capacity_changed")
-        if not observation.results_complete:
-            self._candidate_signature = None
-            self._candidate_count = 0
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="incomplete_or_nonterminal_results")
-
-        gap = (None if previous_received_at is None else
-               max(0.0, received_at - previous_received_at))
-        if signature == self._candidate_signature and gap <= self.max_frame_gap:
-            self._candidate_count += 1
-        else:
-            self._candidate_signature = signature
-            self._candidate_count = 1
-        if self._candidate_count < self.stable_complete_frames:
-            return TakeDecision("waiting", self.device_id, observation.state,
-                                observation.capacity, reason="confirming_complete_frame")
-        self.taken = True
-        self.armed = False
-        rows = tuple((index, status) for index, status in enumerate(observation.statuses, 1))
-        self.delivered_signature = signature
-        self.delivered_results = rows
-        return TakeDecision("taken", self.device_id, observation.state,
-                            observation.capacity, rows, "reliable_complete")
+        return self.round.judge(observation, sequence, received_at, accept_round)
 
 
 def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):

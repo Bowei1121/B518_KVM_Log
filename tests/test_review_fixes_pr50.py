@@ -88,8 +88,8 @@ def test_inspect_complete_screen_is_waiting_not_started(rig):
     assert kvm.events == []
 
 
-def test_busy_on_monitoring_does_not_count_as_seen_monitoring(rig):
-    """A3: log_solution_busy must not invent monitoring_seen and hang check_finish."""
+def test_busy_plus_monitoring_does_not_hang_and_returns_manual_verification_required(rig):
+    """A3: Busy 加上 Monitoring 不會卡住，check_finish 會回 manual_verification_required。"""
     srv, kvm = rig
     kvm.show("preparing")
     timed_out = _send(srv, "monitor_start", 1, "m1")
