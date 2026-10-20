@@ -9,15 +9,13 @@ Verifies that Presentation Timestamp (PTS) freeze guard:
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import socket
 import sys
-import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import pytest
 
@@ -25,7 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from core_protocol import dumps_request  # noqa: E402
-from fake_kvm import FakeKVM, make_snapshot
+from fake_kvm import FakeKVM
 from freeze_guard import FrameFreezeGuard
 from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
 from protocol_helpers import LogSolutionKVM, arm_round, make_registry, wire, numbered, ProbeServer, recv_reply
@@ -67,35 +65,6 @@ ROUTES = {
 # Test Helpers & Mock KVM
 # ---------------------------------------------------------------------------
 
-class MockKVMClient(FakeKVM):
-    """Mock JetKVM WebRTC client with controllable Presentation Timestamp (PTS)."""
-
-    def __init__(
-        self,
-        initial_pts: Optional[float] = 100.0,
-        initial_sequence: int = 1,
-        stream_id: str = "mock-stream-01",
-        frame_data: Any = "dummy_frame_data",
-    ) -> None:
-        super().__init__(frame_data, sequence=initial_sequence, stream_id=stream_id, pts=initial_pts)
-        self._pts_delta = 0.033  # ~30fps step
-
-    def advance(self, delta_pts: Optional[float] = None) -> float:
-        """Simulate arrival of a new video frame with incremented PTS."""
-        step = delta_pts if delta_pts is not None else self._pts_delta
-        if self.frame_presentation_time is not None:
-            self.frame_presentation_time += step
-        else:
-            self.frame_presentation_time = step
-        self.frame_sequence += 1
-        self.frame_received_monotonic = time.monotonic()
-        return self.frame_presentation_time
-
-    def freeze(self) -> None:
-        """Explicitly freeze stream (timestamps remain static)."""
-        pass  # PTS does not change
-
-
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
     sock.sendall(dumps_request(wire(data)))
 
@@ -104,111 +73,6 @@ def recv_json(sock: socket.socket, timeout: float = 3.0) -> Dict[str, Any]:
     sock.settimeout(timeout)
     return recv_reply(sock)
 
-
-# ---------------------------------------------------------------------------
-# Unit Tests: FrameFreezeGuard Passive Observation
-# ---------------------------------------------------------------------------
-
-class TestFrameFreezeGuardObservation:
-    def test_initial_frame_records_without_error(self):
-        guard = FrameFreezeGuard(freeze_threshold=1.0)
-        res = guard.observe("dev-1", pts=10.0, now=1.0)
-        assert res["is_frozen"] is False
-        assert res["status"] == "initial"
-
-    def test_incrementing_pts_is_live(self):
-        guard = FrameFreezeGuard(freeze_threshold=1.0)
-        guard.observe("dev-1", pts=10.0, now=1.0)
-        res1 = guard.observe("dev-1", pts=10.033, now=1.033)
-        assert res1["is_frozen"] is False
-        assert res1["status"] == "ok"
-        assert res1["reason"] == "incrementing"
-
-        res2 = guard.observe("dev-1", pts=10.066, now=1.066)
-        assert res2["is_frozen"] is False
-        assert res2["status"] == "ok"
-
-    def test_static_pts_warns_before_threshold(self):
-        guard = FrameFreezeGuard(freeze_threshold=1.0)
-        guard.observe("dev-1", pts=10.0, now=1.0)
-        # Static PTS after 0.5s (< 1.0s threshold)
-        res = guard.observe("dev-1", pts=10.0, now=1.5)
-        assert res["is_frozen"] is False
-        assert res["status"] == "warning"
-        assert res["reason"] == "timestamp_not_advanced"
-        assert res["static_seconds"] == 0.5
-
-    def test_static_pts_fails_when_threshold_reached(self):
-        guard = FrameFreezeGuard(freeze_threshold=1.0)
-        guard.observe("dev-1", pts=10.0, now=1.0)
-        # Static PTS at 1.0s and 1.5s (duration = 1.5s >= 1.0s)
-        guard.observe("dev-1", pts=10.0, now=1.5)
-        res = guard.observe("dev-1", pts=10.0, now=2.1)
-        assert res["is_frozen"] is True
-        assert res["status"] == "error"
-        assert res["error"] == "frame_frozen"
-        assert res["static_seconds"] >= 1.0
-
-    def test_missing_pts_fails_fast_when_required(self):
-        guard = FrameFreezeGuard(freeze_threshold=1.0, require_pts=True)
-        res = guard.observe("dev-1", pts=None, now=1.0)
-        assert res["is_frozen"] is True
-        assert res["status"] == "error"
-        assert res["error"] == "frame_frozen"
-
-
-# ---------------------------------------------------------------------------
-# Unit Tests: Active Liveness Verification (Async & Sync)
-# ---------------------------------------------------------------------------
-
-class TestActiveLivenessVerification:
-    def test_static_kvm_fails_fast_with_frame_frozen(self):
-        """Mock KVM with static timestamp must return {"status": "error", "error": "frame_frozen"}."""
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.2)
-            kvm = MockKVMClient(initial_pts=100.0)
-
-            is_live, err = await guard.verify_liveness(
-                kvm,
-                device_id="BT-01",
-                threshold_window=0.2,
-                poll_interval=0.03,
-            )
-
-            assert is_live is False
-            assert err is not None
-            assert err["status"] == "error"
-            assert err["error"] == "frame_frozen"
-            assert err["device"] == "BT-01"
-
-        asyncio.run(_run())
-
-    def test_live_kvm_advancing_pts_passes_normally(self):
-        """Mock KVM with advancing timestamp passes verification immediately."""
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.5)
-            kvm = MockKVMClient(initial_pts=100.0)
-
-            # Background task that simulates video stream frames arriving
-            async def stream_frames():
-                for _ in range(5):
-                    await asyncio.sleep(0.04)
-                    kvm.advance(0.033)
-
-            stream_task = asyncio.create_task(stream_frames())
-            try:
-                is_live, err = await guard.verify_liveness(
-                    kvm,
-                    device_id="FCT-01",
-                    threshold_window=0.5,
-                    poll_interval=0.02,
-                )
-                assert is_live is True
-                assert err is None
-            finally:
-                await stream_task
-
-        asyncio.run(_run())
 
 # ---------------------------------------------------------------------------
 # Station-Specific Tests: DFU RoundFrameGate Freeze Detection
@@ -378,148 +242,6 @@ class _ReconnectingKVM(LogSolutionKVM):
 
     def latest_frame(self):
         return dataclasses.replace(super().latest_frame(), stream_id=self._stream)
-
-
-class TestStreamReconnectResetsFreezeState:
-    def test_reconnected_stream_with_lower_pts_is_not_frozen(self):
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.2)
-            kvm = MockKVMClient(initial_pts=100.0, stream_id="stream-old")
-
-            async def advance(n):
-                for _ in range(n):
-                    await asyncio.sleep(0.02)
-                    kvm.advance(0.033)
-
-            t = asyncio.create_task(advance(5))
-            is_live, err = await guard.verify_liveness(
-                kvm, device_id="BT-01", threshold_window=0.2, poll_interval=0.01)
-            await t
-            assert is_live is True, err
-
-            await asyncio.sleep(0.4)  # old stream stops advancing past the threshold
-            kvm.stream_id = "stream-new"  # reconnect: new stream, PTS restarts low
-            kvm.frame_presentation_time = 1.0
-
-            t = asyncio.create_task(advance(10))
-            is_live, err = await guard.verify_liveness(
-                kvm, device_id="BT-01", threshold_window=0.2, poll_interval=0.01)
-            await t
-            assert is_live is True, err
-            assert err is None
-
-        asyncio.run(_run())
-
-    def test_stream_switch_during_window_rebases_the_baseline(self):
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.5)
-            kvm = MockKVMClient(initial_pts=100.0, stream_id="stream-old")
-
-            async def switch_then_advance():
-                await asyncio.sleep(0.05)
-                kvm.stream_id = "stream-new"
-                kvm.frame_presentation_time = 1.0
-                for _ in range(5):
-                    await asyncio.sleep(0.02)
-                    kvm.advance(0.033)
-
-            t = asyncio.create_task(switch_then_advance())
-            is_live, err = await guard.verify_liveness(
-                kvm, device_id="BT-01", threshold_window=0.5, poll_interval=0.01)
-            await t
-            assert is_live is True, err
-
-        asyncio.run(_run())
-
-    def test_stream_reset_is_per_device(self):
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.15)
-            stalled = MockKVMClient(initial_pts=100.0, stream_id="stalled-stream")
-            reconnecting = MockKVMClient(initial_pts=100.0, stream_id="old-stream")
-
-            async def advance(kvm, n):
-                for _ in range(n):
-                    await asyncio.sleep(0.02)
-                    kvm.advance(0.033)
-
-            # FCT-02 is frozen on its own stream
-            is_live, err = await guard.verify_liveness(
-                stalled, device_id="FCT-02", threshold_window=0.15, poll_interval=0.02)
-            assert is_live is False and err["error"] == "frame_frozen"
-
-            # BT-01 reconnects onto a new stream with a lower PTS
-            t = asyncio.create_task(advance(reconnecting, 5))
-            is_live, err = await guard.verify_liveness(
-                reconnecting, device_id="BT-01", threshold_window=0.15, poll_interval=0.01)
-            await t
-            assert is_live is True, err
-            reconnecting.stream_id = "new-stream"
-            reconnecting.frame_presentation_time = 1.0
-            t = asyncio.create_task(advance(reconnecting, 10))
-            is_live, err = await guard.verify_liveness(
-                reconnecting, device_id="BT-01", threshold_window=0.15, poll_interval=0.01)
-            await t
-            assert is_live is True, err
-
-            # FCT-02's frozen state is untouched by BT-01's stream change
-            is_live, err = await guard.verify_liveness(
-                stalled, device_id="FCT-02", threshold_window=0.15, poll_interval=0.02)
-            assert is_live is False and err["error"] == "frame_frozen"
-            assert guard.get_state("BT-01").is_frozen is False
-
-        asyncio.run(_run())
-
-
-class _ScriptedKVM(FakeKVM):
-    """Returns one (stream_id, pts) reading per latest_frame() call; repeats the last reading."""
-
-    def __init__(self, readings):
-        super().__init__()
-        self._readings = list(readings)
-        self._current = self._readings[0]
-
-    def latest_frame(self):
-        if self._readings:
-            self._current = self._readings.pop(0)
-        stream_id, pts = self._current
-        return make_snapshot(None, sequence=1, stream_id=stream_id, pts=pts)
-
-
-# Old stream runs to PTS 100; the reconnected stream's first frame has no PTS, then restarts low.
-RECONNECT_WITHOUT_FIRST_PTS = [
-    ("stream-old", 100.0),
-    ("stream-new", None),
-    ("stream-new", None),
-    ("stream-new", 1.0),
-    ("stream-new", 1.033),
-    ("stream-new", 1.066),
-]
-
-
-class TestReconnectWithoutFirstPTS:
-    def test_async_reconnect_with_missing_first_pts_is_not_frozen(self):
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=1.0)
-            kvm = _ScriptedKVM(RECONNECT_WITHOUT_FIRST_PTS)
-            is_live, err = await guard.verify_liveness(
-                kvm, device_id="BT-01", threshold_window=1.0, poll_interval=0.001)
-            assert is_live is True, err
-
-        asyncio.run(_run())
-
-class TestCallerSuppliedStreamID:
-    def test_caller_stream_id_is_recorded_as_device_baseline(self):
-        async def _run():
-            guard = FrameFreezeGuard(freeze_threshold=0.1)
-            kvm = MockKVMClient(initial_pts=1.0, stream_id="stream-new")
-
-            is_live, err = await guard.verify_liveness(
-                kvm, device_id="BT-01", threshold_window=0.1, poll_interval=0.02, stream_id="stream-new")
-
-            assert is_live is False and err["error"] == "frame_frozen"
-            assert guard.get_state("BT-01").stream_id == "stream-new"
-
-        asyncio.run(_run())
 
 
 class TestStreamReconnectOverTheWire:

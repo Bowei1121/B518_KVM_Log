@@ -2,7 +2,7 @@
 
 一台設備一個實例，以設備 ID 為 key，Core 存活期間常駐。輸入是 log_solution_reader 的觀察結果
 （FrameObservation）；輸出是 TakeDecision，加上指令 handler 問的「現在可以做什麼」。
-影格序號與 PTS 凍結判斷留在 round_frame_consumer.RoundFrameGate。
+影格序號與 PTS 凍結判斷留在 frame_stream.FrameStream（經 round_frame_consumer.RoundFrameGate 使用）。
 """
 
 from dataclasses import dataclass
@@ -28,6 +28,7 @@ class TakeDecision:
     capacity: int = 0
     results: Tuple[Tuple[int, str], ...] = ()
     reason: str = ""
+    detail: str = ""  # human-readable message for frozen (why the picture was judged frozen)
 
 
 class DeviceRound:

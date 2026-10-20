@@ -217,6 +217,27 @@ def test_reconnect_while_armed_still_requires_manual_verification(monkeypatch):
     assert gate.round.check_verdict(result.reason) == MANUAL_VERIFICATION_REQUIRED
 
 
+def test_stream_switch_seen_first_by_another_reader_still_disarms(monkeypatch):
+    """Inspect observes the new stream before the gate does; the gate must still disarm (#56)."""
+    import round_frame_consumer
+    from frame_stream import FrameStream
+    from round_frame_consumer import RoundFrameGate
+
+    monkeypatch.setattr(round_frame_consumer, "inspect_app_frame",
+                        lambda frame, received_at, now, max_age: frame)
+    stream = FrameStream("DFU-01", clock=lambda: 0.0)
+    gate = RoundFrameGate("DFU-01", require_presentation_time=True, frame_stream=stream)
+    gate.round.note_start()
+    _look(gate, monitoring(), 1, 0.0, pts=1)
+    assert gate.round.armed is True
+
+    stream.observe("after-reconnect", 1, 10.0, now=0.5)  # another reader sees the new stream first
+    result = _look(gate, complete(), 2, 1.0, pts=10.1, stream_id="after-reconnect")
+
+    assert gate.round.armed is False
+    assert result.kind != "taken"
+
+
 def test_new_stream_starts_its_own_freeze_baseline(monkeypatch):
     """A new stream's first frame sets the presentation-time baseline; the old stream's PTS does not carry over."""
     gate = _gate_with_observations(monkeypatch)
