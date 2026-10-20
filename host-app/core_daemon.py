@@ -589,6 +589,7 @@ def run_service_foreground(
     except DeviceRegistryError as exc:
         for line in exc.errors:
             log.error("Device list error: %s", line)
+            print(f"Device list error: {line}", file=sys.stderr)
         _cleanup()
         raise SystemExit(1) from exc
 

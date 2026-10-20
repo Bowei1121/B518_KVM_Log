@@ -9,19 +9,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("DeviceLockManager")
-
-
-class DeviceBusyError(Exception):
-    """Raised when an operation cannot acquire a device lock."""
-
-    def __init__(self, device: str, req_id: Optional[str] = None) -> None:
-        self.device = str(device)
-        self.req_id = req_id
-        super().__init__(f"Device '{self.device}' is busy (req_id={self.req_id})")
 
 
 class DeviceLockManager:
@@ -93,30 +83,7 @@ class DeviceLockManager:
             lock = self._locks.get(key)
             return lock.locked() if lock is not None else False
 
-    def get_owner(self, device: Any) -> Optional[Dict[str, Any]]:
-        """Get ownership metadata for an active device lock, if any."""
-        try:
-            key = self._normalize_key(device)
-        except ValueError:
-            return None
-        with self._manager_lock:
-            return dict(self._owners.get(key, {})) if key in self._owners else None
-
     def get_active_devices(self) -> List[str]:
         """Return list of device IDs that are currently locked."""
         with self._manager_lock:
             return [k for k, lock in self._locks.items() if lock.locked()]
-
-    @contextmanager
-    def lock_device(self, device: Any, req_id: Optional[str] = None):
-        """Context manager for non-blocking device locking.
-
-        Raises DeviceBusyError if the device is currently locked.
-        """
-        key = self._normalize_key(device)
-        if not self.try_acquire(key, req_id=req_id):
-            raise DeviceBusyError(device=key, req_id=req_id)
-        try:
-            yield
-        finally:
-            self.release(key)

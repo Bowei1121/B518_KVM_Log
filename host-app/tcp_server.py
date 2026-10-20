@@ -7,7 +7,6 @@ client connections, req_id correlation, and graceful shutdown.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import base64
 import inspect
@@ -20,11 +19,6 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
-
-try:
-    from device_registry import DeviceRegistryError
-except ImportError:
-    from .device_registry import DeviceRegistryError  # type: ignore[import-not-found,no-redef]
 
 try:
     from device_lock import DeviceLockManager
@@ -102,7 +96,6 @@ COMMAND_FIELDS: Dict[str, frozenset] = {
     "check_start": frozenset({"timeout_sec"}),
 }
 ERROR_CODE_MAP = {
-    "kvm_connection_failed": "kvm_connect_failed",
     "missing_kvm": "kvm_connect_failed",
 }
 # Station-limited commands: the operation each station runs. A station without an entry is refused
@@ -1144,50 +1137,3 @@ class TcpJsonServer:
             asyncio.run(self._run_server_async())
         except (KeyboardInterrupt, SystemExit):
             pass
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Headless TCP JSON Server for B518 JetKVM Relay")
-    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
-    parser.add_argument("--devices-file", default=None, help="Device list JSON (default: ~/Documents/template/devices.json)")
-    parser.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
-    parser.add_argument("--log-file", default=None, help="Path to rotating log file")
-    parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log file size before rotation")
-    parser.add_argument("--backup-count", type=int, default=5, help="Number of rotating backup log files to retain")
-    args = parser.parse_args()
-
-    if args.log_file:
-        try:
-            from core_daemon import setup_rotating_logging
-            setup_rotating_logging(
-                log_file=args.log_file,
-                log_level=args.log_level,
-                max_bytes=args.max_bytes,
-                backup_count=args.backup_count,
-            )
-        except ImportError:
-            logging.basicConfig(
-                level=getattr(logging, args.log_level.upper(), logging.INFO),
-                format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            )
-    else:
-        logging.basicConfig(
-            level=getattr(logging, args.log_level.upper(), logging.INFO),
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        )
-
-    try:
-        registry = DeviceRegistry.load(args.devices_file)
-    except DeviceRegistryError as exc:
-        for line in exc.errors:
-            logging.error("Device list error: %s", line)
-        raise SystemExit(1) from exc
-
-    server = TcpJsonServer(host=args.host, port=args.port, device_registry=registry)
-    print(f"Starting Headless TCP JSON Server on {args.host}:{args.port}...")
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    main()

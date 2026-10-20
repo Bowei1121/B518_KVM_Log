@@ -13,33 +13,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
     from frame_snapshot import FrameSnapshot
 
 logger = logging.getLogger("FrameFreezeGuard")
-
-
-class StationType(str, Enum):
-    """Supported ATE station types."""
-    BT = "BT"
-    FCT = "FCT"
-    DFU = "DFU"
-
-
-def extract_pts(kvm: Any) -> Optional[float]:
-    """PTS in seconds of the KVM's newest frame, or None before the first frame."""
-    snapshot = kvm.latest_frame()
-    return None if snapshot is None or snapshot.pts is None else float(snapshot.pts)
-
-
-def extract_frame_sequence(kvm: Any) -> Optional[int]:
-    """Frame sequence number of the KVM's newest frame, or None before the first frame."""
-    snapshot = kvm.latest_frame()
-    return None if snapshot is None else int(snapshot.sequence)
 
 
 @dataclass(frozen=True)
@@ -63,7 +43,7 @@ class FrameMeta:
 
 @dataclass
 class DevicePTSState:
-    """Tracks PTS history and freeze state for a specific device or station."""
+    """Tracks freeze state for a specific device or station."""
     device_id: str
     last_pts: Optional[float] = None
     first_static_time: Optional[float] = None
@@ -72,7 +52,6 @@ class DevicePTSState:
     stream_id: Optional[str] = None
     observation_count: int = 0
     is_frozen: bool = False
-    history: List[Tuple[float, float]] = field(default_factory=list)  # [(clock_time, pts), ...]
 
 
 class _FreezeWindow:
@@ -158,13 +137,6 @@ class FrameFreezeGuard:
         self._states: Dict[str, DevicePTSState] = {}
         self._lock = asyncio.Lock()
 
-    def reset(self, device_id: Optional[str] = None) -> None:
-        """Reset tracking state for a specific device or all devices."""
-        if device_id is not None:
-            self._states.pop(str(device_id), None)
-        else:
-            self._states.clear()
-
     def get_state(self, device_id: str) -> DevicePTSState:
         """Get or initialize tracking state for a device."""
         key = str(device_id)
@@ -188,7 +160,6 @@ class FrameFreezeGuard:
         state.first_static_time = None
         state.last_sequence = None
         state.is_frozen = False
-        state.history.clear()
         state.stream_id = stream_id
 
     def _follow_stream(self, device_id: str, frame: FrameMeta) -> bool:
@@ -246,9 +217,6 @@ class FrameFreezeGuard:
             }
 
         pts = float(pts)
-        state.history.append((now, pts))
-        if len(state.history) > 20:
-            state.history.pop(0)
 
         # First observation for this device
         if state.last_pts is None:
@@ -384,28 +352,6 @@ class FrameFreezeGuard:
         # Inspection window loop: actively poll KVM for PTS progression
         while not window.expired(self.clock()):
             await asyncio.sleep(poll_interval)
-            if window.step(self._read_frame(kvm)):
-                return True, None
-        return window.frozen(self.clock())
-
-    def verify_liveness_sync(
-        self,
-        kvm: Any,
-        device_id: Optional[str] = None,
-        threshold_window: Optional[float] = None,
-        poll_interval: float = 0.05,
-        stream_id: Optional[str] = None,
-    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
-        """Synchronous version of verify_liveness for non-async flows or unittests."""
-        dev_key = str(device_id) if device_id is not None else "default"
-        threshold = float(threshold_window) if threshold_window is not None else self.freeze_threshold
-
-        window, verdict = self._open_window(dev_key, stream_id, threshold, self._read_frame(kvm))
-        if verdict is not None:
-            return verdict
-
-        while not window.expired(self.clock()):
-            time.sleep(poll_interval)
             if window.step(self._read_frame(kvm)):
                 return True, None
         return window.frozen(self.clock())

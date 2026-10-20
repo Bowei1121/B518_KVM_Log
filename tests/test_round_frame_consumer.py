@@ -8,9 +8,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from fake_kvm import FakeKVM  # noqa: E402
 from log_solution_reader import MarkerState, inspect_app_frame
-from round_frame_consumer import (
-    RoundFrameGate, observe_latest_round_frame, tcp_round_reply,
-)
+from round_frame_consumer import RoundFrameGate, observe_latest_round_frame
 
 
 COLORS = {
@@ -199,7 +197,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         complete = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
         self.assertEqual(gate.observe(complete, 1, 10, now=10).kind, "waiting")
         self.assertEqual(gate.observe(complete, 2, 10.1, now=10.1).kind, "waiting")
-        self.assertFalse(gate.taken)
+        self.assertFalse(gate.round.taken)
 
     def test_new_round_monitoring_rearms_and_duplicate_or_old_sequence_cannot_vote(self):
         gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 5.0)
@@ -221,7 +219,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         stale = gate.observe(complete, 2, 10.1, now=10.1, stream_id="s",
                              pts=49.9)
         self.assertEqual((stale.kind, stale.reason), ("unknown", "out_of_order_source_frame"))
-        self.assertFalse(gate.taken)
+        self.assertFalse(gate.round.taken)
         self.assertEqual(gate.observe(complete, 3, 10.2, now=10.2, stream_id="s",
                                       pts=50.1).kind, "waiting")
         self.assertEqual(gate.observe(complete, 4, 10.3, now=10.3, stream_id="s",
@@ -234,7 +232,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         gate.observe(monitoring, 1, 1, now=1)
         decision = gate.observe(changed_capacity, 2, 2, now=2)
         self.assertEqual((decision.kind, decision.reason), ("waiting", "round_capacity_changed"))
-        self.assertFalse(gate.taken)
+        self.assertFalse(gate.round.taken)
 
     def test_device_gates_do_not_share_taken_state(self):
         first = RoundFrameGate("one", stable_complete_frames=1)
@@ -244,7 +242,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(first.observe(monitoring, 1, 1, now=1).kind, "waiting")
         self.assertEqual(first.observe(complete, 2, 2, now=2).kind, "taken")
         self.assertEqual(second.observe(complete, 1, 2, now=2).kind, "waiting")
-        self.assertFalse(second.taken)
+        self.assertFalse(second.round.taken)
 
     def test_reconnect_requires_monitoring_again_before_residual_complete_can_be_taken(self):
         gate = RoundFrameGate("device-1", stable_complete_frames=1, clock=lambda: 4.0)
@@ -257,7 +255,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         # #56: the same round re-asked after a reconnect is already_taken, not taken again.
         self.assertEqual(gate.observe(complete, 1, 3, now=3, stream_id="stream-b").kind,
                          "already_taken")
-        self.assertFalse(gate.taken)
+        self.assertFalse(gate.round.taken)
 
     def test_complete_frame_spacing_and_same_image_status_changes_are_checked(self):
         gate = RoundFrameGate("device-1", stable_complete_frames=2,
@@ -278,35 +276,25 @@ class RoundFrameConsumerTests(unittest.TestCase):
                               require_presentation_time=True)
         decision = observe_latest_round_frame(kvm, gate, now=10)
         self.assertEqual(decision.kind, "waiting")
-        self.assertEqual(tcp_round_reply(decision), "action_waiting,monitoring\r\n")
+        self.assertEqual(decision.reason, "monitoring")
         kvm.frame = render_frame(MarkerState.REVIEW, ["PASS", "FAIL"])
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
         kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.1)
         self.assertEqual(decision.kind, "paused")
-        self.assertEqual(tcp_round_reply(decision), "action_paused,review\r\n")
         kvm.frame = render_frame(MarkerState.COMPLETE, ["PASS", "FAIL"])
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
         kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.2)
         self.assertEqual(decision.kind, "taken")
-        reply = tcp_round_reply(decision)
-        self.assertEqual(reply, "action_done,1::PASS,2::FAIL\r\n")
-        fake_action_requests = []
-        if reply.startswith("action_done,"):
-            fake_action_requests.append(reply)
+        self.assertEqual(decision.results, ((1, "PASS"), (2, "FAIL")))
         kvm.frame_sequence += 1
         kvm.frame_received_monotonic += 0.1
         kvm.frame_presentation_time += 0.1
         decision = observe_latest_round_frame(kvm, gate, now=10.3)
         self.assertEqual(decision.kind, "already_taken")
-        reply = tcp_round_reply(decision)
-        self.assertNotEqual(reply, "action_done,1::PASS,2::FAIL\r\n")
-        if reply.startswith("action_done,"):
-            fake_action_requests.append(reply)
-        self.assertEqual(fake_action_requests, ["action_done,1::PASS,2::FAIL\r\n"])
 
     def test_missing_or_out_of_order_pts_clears_started_activity(self):
         """A4: stream-time unknowns reset the activity pair before returning."""
@@ -320,7 +308,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(missing.kind, "unknown")
         self.assertEqual(missing.reason, "missing_source_frame_time")
         self.assertEqual(gate.last_active, ())
-        self.assertIsNone(gate._activity_prev)
+        self.assertIsNone(gate.round.activity.previous)
 
         gate.observe(frame, 4, 1.3, now=1.3, stream_id="s", pts=2.0)
         gate.observe(frame, 5, 1.4, now=1.4, stream_id="s", pts=2.1)
@@ -329,7 +317,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         self.assertEqual(out_of_order.kind, "unknown")
         self.assertEqual(out_of_order.reason, "out_of_order_source_frame")
         self.assertEqual(gate.last_active, ())
-        self.assertIsNone(gate._activity_prev)
+        self.assertIsNone(gate.round.activity.previous)
 
 
 if __name__ == "__main__":

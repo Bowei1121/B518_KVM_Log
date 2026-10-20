@@ -189,7 +189,7 @@ def test_reconnect_same_round_reask_is_already_taken_with_original_results(monke
 
     assert again.kind == "already_taken"
     assert again.results == ((1, "PASS"), (2, "PASS"), (3, "PASS"), (4, "PASS"))
-    assert gate.taken is False
+    assert gate.round.taken is False
 
 
 def test_reconnect_with_changed_screen_is_not_already_taken(monkeypatch):
