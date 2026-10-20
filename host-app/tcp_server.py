@@ -533,6 +533,27 @@ class TcpJsonServer:
             self._round_gates[device_id] = gate
         return gate
 
+    async def _picture_refusal(self, kvm: Any, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Why a HID-sending command must not run, as (code, message), before any HID (ADR-0005 2026-10-20 第 3 點).
+
+        Order: KVM health, then one FrameStream window (live PTS advance within the threshold passes at once),
+        then the command's own Log Solution refusal. No frame is left to that refusal, as before.
+        """
+        from frame_stream import FROZEN
+
+        def lost() -> Tuple[str, str]:
+            reply = _kvm_lost(req)
+            return reply["error"], reply["message"]
+
+        if not kvm.is_healthy():
+            return lost()
+        verdict = await self.freeze_guard.stream(req["_device_entry"].device_id).wait_live(kvm.latest_frame)
+        if not kvm.is_healthy():
+            return lost()
+        if verdict.kind == FROZEN and verdict.reason != "no_frame":
+            return "frame_frozen", verdict.message
+        return None
+
     def _template_root(self) -> Any:
         """Configured template root, or TemplateCatalog.default_root() (~/Documents/template)."""
         from template_catalog import TemplateCatalog
@@ -574,7 +595,9 @@ class TcpJsonServer:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
         kvm = req["_kvm_client"]
         entry = req["_device_entry"]
-        refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
+        refusal = await self._picture_refusal(kvm, req)
+        if refusal is None:
+            refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, kvm))
         if refusal is not None:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"action": ""}}
@@ -592,6 +615,11 @@ class TcpJsonServer:
         from monitor_flow import run_monitor_start
 
         entry = req["_device_entry"]
+        # Before begin_start: a frozen refusal must not drop the previous delivery or the input release.
+        refusal = await self._picture_refusal(req["_kvm_client"], req)
+        if refusal is not None:
+            code, message = refusal
+            return {"status": "error", "error": code, "message": message, "data": {"state": "", "capacity": 0}}
         rnd = self._device_round(entry.device_id)
         rnd.begin_start()
         template_root = self._template_root()
@@ -611,7 +639,9 @@ class TcpJsonServer:
         """DFU input 1.0: refuse while a round runs, otherwise enter SNs by channel."""
         kvm = req.get("_kvm_client")
         entry = req["_device_entry"]
-        refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
+        refusal = await self._picture_refusal(kvm, req)
+        if refusal is None:
+            refusal = await asyncio.wrap_future(self._inspector.submit(self._log_solution_refusal, kvm, entry))
         if refusal is not None:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"entered": []}}

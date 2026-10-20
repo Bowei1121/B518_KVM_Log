@@ -99,6 +99,10 @@ def _review(where):
     return FlowError("log_solution_review", f"Log Solution 為待確認（{where}），未繼續開始監控")
 
 
+def _kvm_lost_waiting():
+    return FlowError("kvm_connect_failed", "KVM 連線於等待監控中斷線")
+
+
 async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
                             log=print, on_preparing=None, on_shortcut=None):
@@ -150,7 +154,14 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
 
         deadline = time.monotonic() + start_timeout_sec
         while True:
+            if not kvm.is_healthy():
+                raise _kvm_lost_waiting()
             decision = await asyncio.to_thread(observe_latest_round_frame, kvm, gate)
+            if decision.kind == "frozen":
+                # A dead KVM also freezes its last picture: report the lost connection, not the freeze.
+                if not kvm.is_healthy():
+                    raise _kvm_lost_waiting()
+                raise FlowError("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
             if decision.state == MarkerState.MONITORING:
                 ok = True
                 return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}

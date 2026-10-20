@@ -64,7 +64,7 @@
 | `log_solution_not_visible` | Log Solution 被遮住，自動拉回 3 次仍看不到 | 暫停並請人員把 Log Solution 視窗移出來 |
 | `round_lost` | 本輪已監控就緒後，Log Solution 回到待命（例如當掉重開） | 本輪結果已無法取得，暫停並交人工 |
 | `capacity_mismatch` | 畫面格數和設定的測試通道數不同 | 設定錯誤，暫停檢查 Log Solution 與設備清單 |
-| `frame_frozen` | 畫面停止更新 | 設備異常，暫停 |
+| `frame_frozen` | 畫面停止更新（或沒有時間戳）。`input`、`start_test`、`monitor_start` 回此碼時沒有送出任何 HID：ATE 沒有開測、Log Solution 也沒有開始監控，**不可視為本輪已開始** | 設備異常，暫停 |
 | `device_busy` | 同一台設備已有指令在執行 | 不要並行送指令，稍後再送 |
 | 其他（`invalid_*`、`unknown_*`、`forbidden_field` 等） | 請求格式錯誤 | 修正 LabVIEW 程式 |
 

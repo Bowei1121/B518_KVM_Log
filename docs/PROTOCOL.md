@@ -258,10 +258,13 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | --- | --- | --- |
 | `entered` | array of number | 實際完成輸入的位置 |
 
+送 HID 前先做畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線回 `kvm_connect_failed`，凍結回 `frame_frozen`，兩者都不送 HID。
+
 是否允許輸入（2026-10-19 決定；一般完成與人工停止完成都屬 READY）：
 
 | Log 狀態 | 結果 |
 | --- | --- |
+| 畫面凍結（PTS 未前進，或無 PTS） | `frame_frozen`，不送 HID |
 | 待命 | 可以輸入 |
 | 一般完成或人工停止完成，且本輪已 `taken` 或已回過 `manual_verification_required` | 可以輸入下一輪 SN |
 | 一般完成或人工停止完成，但本輪尚未交付、也沒回過 `manual_verification_required` | `log_solution_busy`，不送 HID |
@@ -280,13 +283,14 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 流程（依序，任一步失敗即停止）：
 
+0. 畫面凍結檢查（`input`、`start_test`、`monitor_start` 共用，ADR-0005 2026-10-20 第 3 點）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`。不送 HID，不建立本輪開始請求。凍結判定是主動窗口：最近 1 秒內 PTS 有前進就直接放行，否則最多等 2 秒讀到 PTS 前進。窗口內 KVM 死亡回 `kvm_connect_failed`。檢查只做一次，之後的點擊不再逐次檢查。沒有影格不算凍結，仍依下列各步回 `hid_failed`。
 1. 沒有影格 → `hid_failed`。
 2. 已在監控中 → `log_solution_busy`，不送 HID，也不建立新的本輪開始請求。
 3. 待確認 → `log_solution_review`，不送 HID。
 4. 準備中 → 不點 Dock、不送快捷鍵，直接等監控中。這一張準備中就建立（或保留）該設備的本輪開始請求。
 5. 其餘（待命、一般完成、人工停止完成，或當時看不清楚）：點共用 Dock 圖示 `COMMON/COMMON_log_solution_dock_icon.png`。模板缺失或 HID 錯誤 → `hid_failed`；圖示不在畫面上 → `log_solution_not_found`。
 6. 點擊後 3 秒內須讀到可靠畫面，否則 `log_solution_not_found`。讀到監控中 → `log_solution_busy`；待確認 → `log_solution_review`；準備中則不送快捷鍵、改為等待。待命、一般完成、人工停止完成才送 Cmd+Shift+M，並建立本輪開始請求。
-7. 在 `timeout_sec` 內：準備中繼續等（並保留請求）；待確認立即 `log_solution_review`；看到監控中即成功。這一次呼叫中看到監控中，視為「已見本次監控就緒」。逾時回 `monitor_not_started`。
+7. 在 `timeout_sec` 內：準備中繼續等（並保留請求）；待確認立即 `log_solution_review`；看到監控中即成功。這一次呼叫中看到監控中，視為「已見本次監控就緒」。等待中畫面凍結 → 立即 `frame_frozen`，不等到 `timeout_sec`（保留已建立的請求）；等待中 KVM 斷線 → 立即 `kvm_connect_failed`，凍結時也先查斷線。逾時回 `monitor_not_started`。
 
 `monitor_not_started` 不清除本輪開始請求。只有 `taken` 或 `manual_verification_required` 才清除。因此準備逾時之後，若畫面變成可交付結果，`check_finish` 回 `manual_verification_required`，不交付。
 
@@ -303,6 +307,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 流程：
 
+0. 畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`，不送 HID。
 1. 讀取最新畫面。不是監控中（含準備中、待命、待確認、完成、看不清楚、沒有影格）→ `monitor_not_ready`，不送 HID。
 2. DFU：點 DFU Dock 圖示，找到視窗與 OK 後點一次。BT：點 BT Dock 圖示，找到 Start All 後點一次。
 3. 模板找不到或 HID 錯誤 → `hid_failed`。
@@ -344,7 +349,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
-| `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
+| `frame_frozen` | error | 畫面時間戳不再前進，或畫面沒有 PTS（ADR-0005）。`input`、`start_test`、`monitor_start` 送 HID 前檢查，`monitor_start` 等待中也會檢查；這三個指令回此碼時未送出任何 HID | 設備異常，暫停，不得判產品 FAIL |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
 | `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |

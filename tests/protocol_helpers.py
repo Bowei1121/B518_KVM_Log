@@ -305,7 +305,10 @@ def arm_round(srv, kvm, device, statuses=None):
     import time
 
     kvm.show("preparing")
-    seq_before = kvm._seq
+    # monitor_start first takes a FrameStream window (ADR-0005), which reads the picture before its own
+    # Preparing reading. Wait on the round's start request instead: it is set exactly when Preparing is seen.
+    rnd = srv._device_round(device)
+    assert not rnd.start_requested, f"arm_round needs {device} without a pending round-start request"
     out = {}
 
     def run():
@@ -322,7 +325,7 @@ def arm_round(srv, kvm, device, statuses=None):
     # Wait until monitor_start has actually read Preparing before flipping to Monitoring,
     # so a loaded suite cannot race past Preparing into a busy Monitoring refusal.
     deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline and kvm._seq <= seq_before:
+    while time.monotonic() < deadline and not rnd.start_requested:
         time.sleep(0.01)
     kvm.show("monitoring", statuses or ())
     thread.join(timeout=5)
