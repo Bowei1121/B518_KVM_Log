@@ -59,6 +59,8 @@
 
 ## 5. 啟動與重啟
 
+Core Service 的唯一進入點是 `core_daemon.py run`（或 `start` / `restart`）。`tcp_server.py` 已不可直接執行。
+
 Core Service 在上位機上以前景或背景方式執行：
 
 ```sh
