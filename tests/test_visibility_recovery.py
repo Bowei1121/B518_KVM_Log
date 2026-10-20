@@ -258,8 +258,8 @@ def _armed_complete_behind_cover(serve, cover):
 
 @pytest.mark.parametrize("colour", ["grey", "black", "noise"])
 def test_left_side_covering_only_result_cells_is_recovered_by_a_dock_click(serve, colour):
-    # Cut at 40 units: cells 1-2 hidden, the left locator (x=82) still on screen.
-    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, colour))
+    # Cut at 40 units through the result band only: cells 1-2 hidden, locators (x=0, x=320) and marker row still on screen.
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, colour, y_range=(32, 110)))
     kvm.restore_on_dock = True
 
     resp = _check(srv, "DFU-01", timeout_sec=10)
@@ -282,7 +282,7 @@ def test_covering_only_the_result_band_is_recovered_by_a_dock_click(serve):
 
 
 def test_partly_covered_window_that_never_comes_back_returns_not_visible_with_last_reason(serve):
-    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, "grey"))
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, "grey", y_range=(32, 110)))
 
     resp = _check(srv, "DFU-01", timeout_sec=30)
 

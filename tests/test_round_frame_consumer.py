@@ -34,7 +34,7 @@ def requested_gate(*args, **kwargs):
 
 def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246, 247),
                  pattern=None):
-    """Render contract 1.1 with the real App's one- or two-row layout."""
+    """Render contract 1.3 with the real App's one- or two-row layout."""
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
     frame = np.full((height + oy, width + ox, 3), background, dtype=np.uint8)
@@ -44,13 +44,13 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), background=(245, 246
         x1, y1 = round(ox + (x + w) * scale), round(oy + (y + h) * scale)
         frame[y0:y1, x0:x1] = color
 
-    # The asymmetric locator geometry is identical to App contract 1.0.
-    for x, inset in ((82, 3), (320, 11)):
+    # Locators at (0, 2) and (320, 2) in contract 1.3.
+    for x, inset in ((0, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
     for index, black in enumerate(pattern if pattern is not None else PATTERNS[state]):
         row, col = divmod(index, 2)
-        rect(278 + 2 + col * 12, 2 + row * 12, 10, 10,
+        rect(250 + 2 + col * 12, 2 + row * 12, 10, 10,
              (0, 0, 0) if black else (255, 255, 255))
     rows = 2 if len(statuses) > 10 else 1
     rect(130, 2, 26, 14, (255, 255, 255))
@@ -84,7 +84,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
                 self.assertFalse(unknown.reliable, bits)
                 self.assertEqual(unknown.reason, "unknown_marker_pattern")
         grey = render_frame(MarkerState.COMPLETE, ["PASS"] * 4)
-        grey[31 + 4:31 + 20, 23 + 280 * 2:23 + 296 * 2] = (128, 128, 128)
+        grey[31 + 4:31 + 20, 23 + 252 * 2:23 + 274 * 2] = (128, 128, 128)
         low = inspect_app_frame(grey, 10, 10)
         self.assertFalse(low.reliable)
         self.assertEqual(low.reason, "marker_low_contrast_or_occluded")
@@ -145,7 +145,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         rotated = cv2.rotate(frame, cv2.ROTATE_180)
         self.assertFalse(inspect_app_frame(rotated, 10, 10).reliable)
         covered = frame.copy()
-        covered[31:90, 170:230] = (255, 255, 255)
+        covered[31:90, 23:70] = (255, 255, 255)
         self.assertFalse(inspect_app_frame(covered, 10, 10).reliable)
         waiting = inspect_app_frame(render_frame(MarkerState.COMPLETE,
                                   ["PASS", "WAITING"]), 10, 10)
@@ -182,7 +182,7 @@ class RoundFrameConsumerTests(unittest.TestCase):
         blurred = cv2.GaussianBlur(frame, (11, 11), 4)
         self.assertFalse(inspect_app_frame(blurred, 10, 10).results_complete)
         corrupted = frame.copy()
-        corrupted[31 + 4:31 + 56, 23 + 278 * 2:23 + 304 * 2] = (128, 128, 128)
+        corrupted[31 + 4:31 + 56, 23 + 250 * 2:23 + 276 * 2] = (128, 128, 128)
         self.assertFalse(inspect_app_frame(corrupted, 10, 10).results_complete)
 
     def test_monitoring_arms_gate_review_pauses_and_complete_is_taken_once(self):

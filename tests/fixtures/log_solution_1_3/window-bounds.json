@@ -1,0 +1,319 @@
+{
+  "ls6-heartbeat": {
+    "title": "B518 FCT ATE Log Solution-V0.1.0",
+    "geometry": "376x808+1052+32",
+    "size": [
+      376,
+      808
+    ],
+    "controls": {
+      "kvm": [
+        8,
+        95,
+        360,
+        61
+      ],
+      "state_marker": [
+        258,
+        95,
+        26,
+        26
+      ],
+      "heartbeat_marker": [
+        286,
+        95,
+        26,
+        26
+      ],
+      "left_locator": [
+        8,
+        97,
+        22,
+        22
+      ],
+      "right_locator": [
+        328,
+        97,
+        22,
+        22
+      ],
+      "first_result": [
+        8,
+        129,
+        34,
+        26
+      ]
+    },
+    "native_bounds": {
+      "X": 1052.0,
+      "Y": 32.0,
+      "Width": 376.0,
+      "Height": 836.0
+    },
+    "image_pixels": {
+      "width": 752,
+      "height": 1672
+    },
+    "screenshot": "ls6-heartbeat-state-00-en.png",
+    "capture_method": "window-server",
+    "heartbeat": {
+      "interval_ms": 500,
+      "states": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        0,
+        1
+      ],
+      "patterns": [
+        [
+          [
+            false,
+            false
+          ],
+          [
+            false,
+            false
+          ]
+        ],
+        [
+          [
+            false,
+            false
+          ],
+          [
+            false,
+            true
+          ]
+        ],
+        [
+          [
+            false,
+            false
+          ],
+          [
+            true,
+            false
+          ]
+        ],
+        [
+          [
+            false,
+            false
+          ],
+          [
+            true,
+            true
+          ]
+        ],
+        [
+          [
+            false,
+            true
+          ],
+          [
+            false,
+            false
+          ]
+        ],
+        [
+          [
+            false,
+            true
+          ],
+          [
+            false,
+            true
+          ]
+        ],
+        [
+          [
+            false,
+            true
+          ],
+          [
+            true,
+            false
+          ]
+        ],
+        [
+          [
+            false,
+            true
+          ],
+          [
+            true,
+            true
+          ]
+        ],
+        [
+          [
+            true,
+            false
+          ],
+          [
+            false,
+            false
+          ]
+        ],
+        [
+          [
+            true,
+            false
+          ],
+          [
+            false,
+            true
+          ]
+        ],
+        [
+          [
+            true,
+            false
+          ],
+          [
+            true,
+            false
+          ]
+        ],
+        [
+          [
+            true,
+            false
+          ],
+          [
+            true,
+            true
+          ]
+        ],
+        [
+          [
+            true,
+            true
+          ],
+          [
+            false,
+            false
+          ]
+        ],
+        [
+          [
+            true,
+            true
+          ],
+          [
+            false,
+            true
+          ]
+        ],
+        [
+          [
+            true,
+            true
+          ],
+          [
+            true,
+            false
+          ]
+        ],
+        [
+          [
+            true,
+            true
+          ],
+          [
+            true,
+            true
+          ]
+        ],
+        [
+          [
+            false,
+            false
+          ],
+          [
+            false,
+            false
+          ]
+        ],
+        [
+          [
+            false,
+            false
+          ],
+          [
+            false,
+            true
+          ]
+        ]
+      ],
+      "initial_state_zero_verified": true,
+      "cycle_start_state": 1,
+      "transition_elapsed_seconds": [
+        0.0,
+        0.518,
+        1.008,
+        1.513,
+        2.026,
+        2.529,
+        3.025,
+        3.556,
+        4.038,
+        4.536,
+        5.038,
+        5.54,
+        6.042,
+        6.552,
+        7.048,
+        7.566,
+        8.058
+      ],
+      "measured_intervals_seconds": [
+        0.518,
+        0.49,
+        0.505,
+        0.513,
+        0.503,
+        0.496,
+        0.531,
+        0.482,
+        0.498,
+        0.502,
+        0.502,
+        0.503,
+        0.51,
+        0.496,
+        0.517,
+        0.493
+      ],
+      "state_coverage": [
+        "standby",
+        "preparing",
+        "monitoring",
+        "review",
+        "complete",
+        "manual_stop_complete",
+        "standby"
+      ],
+      "actionable_close_save_ui_verified": true,
+      "blocked_ui_state_before_and_after_sleep": [
+        9,
+        9
+      ],
+      "state_after_ui_resumed": 11
+    }
+  }
+}

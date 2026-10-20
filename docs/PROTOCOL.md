@@ -77,6 +77,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 - 站別不支援的指令回 `unsupported_command`（例如 FCT 的 `start_test`、DFU 以外的 `input`）。
 - `button` 與 `check` 已移除。送出回 `unknown_command`。
 - 三站的 `check_start`／`check_finish`／`inspect` 一律以 Log Solution 顯示契約判讀，站別只影響操作指令。三者共用同一個 `data`。
+- 只支援**顯示契約 1.3**（Log Solution `kvm_display_contract.CONTRACT_VERSION = "1.3"`）：左定位 (0, 2)、右定位 (320, 2)、狀態標記 (250, 0)、心跳 (278, 0)、色帶首排 y=34。定位點距離不是 320 的畫面（例如 1.1 的 238）一律判不可見，不讀 1.1／1.2。橋接與 Log Solution 1.3 必須同時部署。比例由定位點實際大小換算；換算後每個結果格寬或高低於 12 px 判讀不到（依既有定位點尺寸下限，實際上更早判為不可見）。
 
 ### 4.1 三站呼叫順序
 

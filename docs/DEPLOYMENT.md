@@ -55,7 +55,7 @@
 - **通道數一致**：每站 Log Solution profile 的通道數（Slot 數）必須等於 `devices.json` 的 `channels`。不一致時 `check` 回 `capacity_mismatch`，不交付結果。
 - **共用 Dock 模板**：在「創建 Pattern」建立 COMMON 的 `log_solution_dock_icon`，檔案為 `~/Documents/template/COMMON/COMMON_log_solution_dock_icon.png`。三站共用，缺檔時 `monitor_start` 回 `hid_failed`。
 - **FCT 推入前發訊號**：治具推入不由 LabVIEW 控制。設備須在推入前發訊號給 LabVIEW，LabVIEW 先呼叫 `monitor_start`，再呼叫 `check`。Log Solution FCT profile 的 start 期限需涵蓋「訊號到首次寫檔」的時間，建議先設 120 秒。
-- **Log Solution 1.2**：本橋接不依賴 1.2。1.2 的修改建議（人工停止顯示 Complete、視窗前景時機）見 [LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md](LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md)，由 Log Solution 開發者自行開票。1.1 下人工停止的輪次會回 `round_lost`，LabVIEW 應暫停並人工處理，不得判 FAIL。
+- **顯示契約 1.3（必須同時部署）**：橋接只支援 Log Solution 顯示契約 1.3，不讀 1.1／1.2。橋接與 Log Solution 1.3 須在同一次部署切換；Log Solution 仍為 1.1 或 1.2 時，橋接判為不可見，流程暫停，不得判 FAIL。1.2 的修改建議見 [LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md](LOG_SOLUTION_CONTRACT_1.2_PROPOSAL.md)，由 Log Solution 開發者自行開票。
 
 ## 5. 啟動與重啟
 
@@ -86,6 +86,7 @@ python host-app/core_daemon.py restart --port 5000
 8. 每台 ATE 視窗未最大化，且未遮住畫面右側（見第 4 節）。
 9. `~/Documents/template/COMMON/COMMON_log_solution_dock_icon.png` 存在。
 10. 每站 Log Solution profile 通道數與 `devices.json` 的 `channels` 一致。
+10a. Log Solution 為顯示契約 1.3（狀態標記在 (250, 0)、心跳在 (278, 0)），且與本橋接版本同時部署。
 11. 逐站依 `docs/PROTOCOL.md` 第 4.1 節順序實測：`monitor_start` 成功、`start_test` 點擊正確、`check` 取得 `taken`（或 `paused`）。
 
 ## 7. 防火牆與連線
