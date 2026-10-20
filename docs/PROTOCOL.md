@@ -586,7 +586,7 @@ Log Solution 仍在準備中時：
 ### 仍待辦
 
 - **LabVIEW 端**：typedef 與 VI 改版屬 #13，需人工在 LabVIEW 完成。本文件與 `docs/LABVIEW_HANDOFF.md` 是依據。
-- **Log Solution 1.2 左定位方塊移動（#32）**：幾何仍為契約 1.1。新定位點座標未定，橋接未改幾何。
+- **Log Solution 顯示契約 1.3（#32）**：目前程式仍為契約 1.1。2026-10-20 決定橋接改為只支援 1.3（定位 (0,2)／(320,2)、狀態 (250,0)、心跳 (278,0)），不保留 1.1；橋接與 Log Solution 1.3 須同時部署。心跳判讀見 #77。
 - **Log Solution 應用程式本身**：圖樣、準備中、視窗前景、FCT 期限由 Log Solution 專案實作。橋接只讀畫面。
 - **FCT 推入前訊號的現場時序**：決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
 - **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。

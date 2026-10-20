@@ -44,3 +44,16 @@
 | # | 步驟 | 預期結果 | 驗證日期 | 結果 |
 | --- | --- | --- | --- | --- |
 | R1 | 取得 `taken` 後拔插 JetKVM 網路線，待重連後同輪再送 `check_finish` | 回 `already_taken`，結果與第一次相同 | | |
+
+## 顯示契約 1.3 與心跳（#32、#77，部署前關卡）
+
+橋接只支援顯示契約 1.3，須與 Log Solution 1.3 同時部署。
+
+| # | 步驟 | 預期 | 結果 | 備註 |
+| --- | --- | --- | --- | --- |
+| L1 | 以實際 JetKVM 擷取 Log Solution 1.3 畫面，量測狀態與心跳每小格像素（LS7） | 每小格 ≥ 12×12 px；不足時 App 放大兩組標記後重測 | | |
+| L2 | 現場 ATE Mac 的 HDMI 輸出解析度與 macOS 縮放設定 | 記錄實際值，與 L1 一致 | | |
+| L3 | 正常運作下長輪詢 10 分鐘 | 不回 `log_solution_heartbeat_stopped` | | |
+| L4 | 讓 Log Solution 主迴圈卡住（例如除錯中斷） | 約 2 秒（3 張有效觀察）內回 `log_solution_heartbeat_stopped`，不送 HID | | |
+| L5 | 以其他視窗蓋住心跳格／整個 Log Solution | 判不可見並點 Dock，不誤報 heartbeat_stopped | | |
+| L6 | 現場若仍有 1.1 App 而橋接已換 1.3 | 一律不可見，不誤判；確認部署 SOP 為兩者同時切換 | | |

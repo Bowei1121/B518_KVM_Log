@@ -6,6 +6,8 @@
 依據：Log Solution `main` `9cad82f`（VERSION 0.1.0）原始碼唯讀查證；`docs/refactoring/KVM_DISPLAY_CONTRACT.md`（1.1）
 狀態：建議，尚未實作
 
+
+> **2026-10-20 更新**：Log Solution 已將本建議與心跳（C8）實作為**顯示契約 1.3**（Log Solution `aff6b33`：定位 (0,2)／(320,2)、狀態 (250,0)、心跳 (278,0)）。橋接決定**只支援 1.3**，第 4 節「先更新橋接（新舊並存）再更新 Log Solution」的相容策略已不適用：橋接與 Log Solution 1.3 須同時切換。以 `LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 第 13～14 節為準。
 ---
 
 ## 1. 目標

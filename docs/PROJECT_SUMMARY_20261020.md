@@ -109,3 +109,10 @@
 - 第三輪架構評估的重構票（#71～#76）全部完成；main `e1c58aa`，全套約 674 passed、34 subtests。
 - `core_status` 回覆欄位 `version` 已改為 `core_version`（PROTOCOL.md 已更新）。
 - 剩餘：#81 HidSession 清錯吞錯（可交 Grok）；#82 測試寫入真實 `~/Documents/template`、刪 `device_lock._owners`；#32、#77 等 Log Solution App 座標與影像樣本；#69 待現場 K1 實測。
+
+### 顯示契約 1.3 與第五輪 grilling（Q42–Q48）
+
+- 使用者提供 Log Solution 最新 HMI 截圖。核對 Log Solution `aff6b33`：`CONTRACT_VERSION = "1.3"`，定位 (0,2)／(320,2)、排數 (130,2)、狀態 (250,0)、心跳 (278,0)，與截圖（Retina 2 倍）一致；LS6 實測心跳間隔 0.482～0.531 秒。
+- 決策：命名改為顯示契約 1.3；**橋接只支援 1.3**（不保留 1.1／1.2，須與 App 同時部署，原「先橋接後 App」不再適用）；比例由定位點距離換算、每小格 < 12 px 視為讀不到；state 0 全白被白窗只蓋心跳格的風險接受；黑白門檻維持 0–80／176–255；LS6 截圖複製為幾何回放素材；LS7 實際 KVM 像素量測改為部署前關卡（FIELD_VERIFICATION L1～L6）。
+- #32 改為「只支援 1.3 幾何（含心跳區定位）」、#77 取消「無方塊跳過」，兩票轉 `ready-for-agent`，順序 #32 → #77。
+- 本日另完成：#81（PR #89，Claude 直接審查合併）、#82（PR #91）。
