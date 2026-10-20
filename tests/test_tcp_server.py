@@ -14,7 +14,7 @@ from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
 from protocol_helpers import make_registry, wire, numbered
-from tcp_server import TcpJsonServer
+from tcp_server import CommandSpec, TcpJsonServer
 
 
 def send_json(sock: socket.socket, obj: dict) -> None:
@@ -222,14 +222,20 @@ def test_fragmented_chunks_and_batched_commands(running_server):
 
 def test_custom_registered_handler(running_server):
     """Verify custom synchronous and asynchronous handlers can be registered."""
-    def custom_sync_handler(req):
-        return {"processed": req.get("payload", "") * 2}
+    def custom_sync_handler(ctx, payload):
+        return {"processed": payload * 2}
 
-    async def custom_async_handler(req):
-        return f"async_result_{req.get('val')}"
+    async def custom_async_handler(ctx, val):
+        return f"async_result_{val}"
 
-    running_server.register_handler("custom_sync", custom_sync_handler, fields={"payload"})
-    running_server.register_handler("custom_async", custom_async_handler, fields={"val"})
+    running_server.register_handler(CommandSpec(
+        "custom_sync", custom_sync_handler, fields=frozenset({"payload"}),
+        parse=lambda req, entry: req.get("payload", ""),
+    ))
+    running_server.register_handler(CommandSpec(
+        "custom_async", custom_async_handler, fields=frozenset({"val"}),
+        parse=lambda req, entry: req.get("val"),
+    ))
 
     host, port = running_server.server_address
     with socket.create_connection((host, port), timeout=2.0) as sock:

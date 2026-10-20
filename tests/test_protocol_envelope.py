@@ -18,7 +18,7 @@ from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
 from protocol_helpers import make_registry  # noqa: E402
-from tcp_server import TcpJsonServer  # noqa: E402
+from tcp_server import CORE_VERSION, CommandSpec, TcpJsonServer  # noqa: E402
 
 ENVELOPE_FIELDS = {
     "protocol_version", "req_id", "device", "cmd", "status", "error", "message", "elapsed_sec", "data",
@@ -297,3 +297,108 @@ def test_valid_snapshot_formats_pass_validation(server, payload):
     req = {"protocol_version": "1.0", "req_id": "sn-ok", "device": "DFU-01", "cmd": "snapshot", **payload}
 
     assert server._validate_request(req) is None
+
+
+# One row per protocol command: (cmd, device_bound, takes_lock). Expected data is written out here, not read
+# from the server, so a dropped or changed default_data fails the test (main's DEFAULT_DATA values).
+_UNKNOWN_DATA = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []}
+COMMAND_ROWS = [
+    ("ping", False, True), ("status", False, True), ("core_status", False, True), ("shutdown", False, True),
+    ("snapshot", True, False), ("check_start", True, True), ("check_finish", True, True),
+    ("inspect", True, False), ("input", True, True), ("start_test", True, True), ("monitor_start", True, True),
+]
+EXPECTED_DEFAULT_DATA = {
+    "ping": {"pong": False, "core_version": ""},
+    "status": {"core_uptime_sec": 0, "devices": []},
+    "core_status": {},
+    "shutdown": {},
+    "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
+    "check_start": _UNKNOWN_DATA,
+    "check_finish": _UNKNOWN_DATA,
+    "inspect": _UNKNOWN_DATA,
+    "input": {"entered": []},
+    "start_test": {"action": ""},
+    "monitor_start": {"state": "", "capacity": 0},
+}
+
+
+def test_command_table_has_exactly_the_protocol_commands(server):
+    assert set(server._commands) == {cmd for cmd, _, _ in COMMAND_ROWS} == set(EXPECTED_DEFAULT_DATA)
+
+
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_command_spec_device_binding_and_lock(server, cmd, device_bound, takes_lock):
+    assert server._commands[cmd].device_bound is device_bound
+    assert server._commands[cmd].takes_lock is takes_lock
+
+
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_device_field_is_checked_against_the_spec(server, cmd, device_bound, takes_lock):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "dv", "device": "" if device_bound else "DFU-01",
+                          "cmd": cmd})
+
+    _assert_envelope(resp)
+    assert resp["error"] == ("missing_device" if device_bound else "invalid_argument")
+
+
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_error_reply_data_matches_main_default_data(server, cmd, device_bound, takes_lock):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "dd", "device": "DFU-01" if device_bound else "",
+                          "cmd": cmd, "typo": 1})
+
+    _assert_envelope(resp)
+    assert resp["error"] == "unknown_field"
+    assert resp["data"] == EXPECTED_DEFAULT_DATA[cmd]
+
+
+@pytest.mark.parametrize("cmd, device", [("ping", "DFU-01"), ("status", "DFU-01")])
+def test_error_on_no_device_command_keeps_default_data(server, cmd, device):
+    """The reviewer's case: a no-device command refused for a stray device still reports its fixed data."""
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "nd", "device": device, "cmd": cmd})
+
+    assert resp["error"] == "invalid_argument"
+    assert resp["data"] == EXPECTED_DEFAULT_DATA[cmd]
+
+
+@pytest.mark.parametrize("cmd", ["snapshot", "check_start", "check_finish", "inspect", "input", "monitor_start"])
+def test_missing_required_field_is_refused_before_lock_and_kvm(server, cmd):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "rf", "device": "DFU-01", "cmd": cmd})
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "invalid_argument"
+    assert not server.lock_manager.is_locked("DFU-01")
+    assert server.kvm_pool.active_count() == 0
+
+
+def test_core_status_reports_core_version(server):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "cv", "device": "", "cmd": "core_status"})
+
+    assert resp["data"]["core_version"] == CORE_VERSION
+    assert "version" not in resp["data"]
+
+
+def test_one_registered_spec_drives_validation_dispatch_and_envelope(server):
+    """A new command is one CommandSpec: its fields, parse, handler and default data all come from it."""
+    from hid_session import FlowError
+
+    def parse_text(req, entry):
+        if not isinstance(req.get("text"), str):
+            raise FlowError("invalid_argument", "text must be a string")
+        return req["text"]
+
+    server.register_handler(CommandSpec(
+        "echo_text", lambda ctx, args: {"echo": args}, fields=frozenset({"text"}),
+        parse=parse_text, default_data={"echo": "", "extra": 0},
+    ))
+
+    ok = _send(server, {"protocol_version": "1.0", "req_id": "e1", "device": "", "cmd": "echo_text", "text": "hi"})
+    assert ok["status"] == "ok"
+    assert ok["data"] == {"echo": "hi", "extra": 0}
+
+    bad = _send(server, {"protocol_version": "1.0", "req_id": "e2", "device": "", "cmd": "echo_text", "text": 5})
+    assert bad["error"] == "invalid_argument"
+    assert bad["data"] == {"echo": "", "extra": 0}
+
+    unknown = _send(server, {"protocol_version": "1.0", "req_id": "e3", "device": "", "cmd": "echo_text",
+                             "text": "hi", "typo": 1})
+    assert unknown["error"] == "unknown_field"

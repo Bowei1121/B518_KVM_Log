@@ -17,7 +17,7 @@ from protocol_helpers import recv_reply  # noqa: E402
 
 from device_lock import DeviceLockManager
 from protocol_helpers import make_pool, make_registry, wire, numbered
-from tcp_server import TcpJsonServer
+from tcp_server import CommandSpec, TcpJsonServer
 
 def send_json(sock: socket.socket, obj: dict) -> None:
     """Send a dictionary as a newline-delimited JSON string."""
@@ -107,7 +107,7 @@ def test_device_lock_manager_multiple_independent_devices():
 def test_tcp_device_field_in_request_and_response(running_server):
     """Verify commands target specific devices via 'device' and echo it on success."""
     host, port = running_server.server_address
-    running_server.register_handler("echo_dev", lambda req: {}, device_bound=True)
+    running_server.register_handler(CommandSpec("echo_dev", lambda ctx, args: {}, device_bound=True))
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
         req = {"req_id": "req-dev-1", "cmd": "echo_dev", "device": "DFU-01"}
@@ -125,12 +125,12 @@ def test_tcp_immediate_fail_fast_on_same_device_conflict(running_server):
 
     started_event = threading.Event()
 
-    def slow_device_handler(req):
+    def slow_device_handler(ctx, args):
         started_event.set()
         time.sleep(0.4)
-        return {"action": "done", "device": req.get("device")}
+        return {"action": "done", "device": ctx.entry.device_id}
 
-    running_server.register_handler("slow_work", slow_device_handler, device_bound=True)
+    running_server.register_handler(CommandSpec("slow_work", slow_device_handler, device_bound=True))
 
     client1_resp = {}
     client2_resp = {}
@@ -178,11 +178,11 @@ def test_tcp_subsequent_commands_processed_normally_after_active_command_complet
     """Verify that when active command on device A completes, subsequent commands on device A succeed."""
     host, port = running_server.server_address
 
-    def short_work(req):
+    def short_work(ctx, args):
         time.sleep(0.1)
         return "step_ok"
 
-    running_server.register_handler("short_work", short_work, device_bound=True)
+    running_server.register_handler(CommandSpec("short_work", short_work, device_bound=True))
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
         # First command
@@ -206,11 +206,11 @@ def test_tcp_concurrent_different_devices_execute_without_contention(running_ser
     """Verify concurrent requests to different devices execute simultaneously without blocking."""
     host, port = running_server.server_address
 
-    def parallel_work(req):
+    def parallel_work(ctx, args):
         time.sleep(0.35)
-        return f"result_for_{req.get('device')}"
+        return f"result_for_{ctx.entry.device_id}"
 
-    running_server.register_handler("parallel_work", parallel_work, device_bound=True)
+    running_server.register_handler(CommandSpec("parallel_work", parallel_work, device_bound=True))
 
     devices = ["DFU-11", "DFU-12", "DFU-13", "DFU-14"]
     results = {}
@@ -247,12 +247,12 @@ def test_tcp_device_agnostic_commands_not_blocked(running_server):
 
     started_event = threading.Event()
 
-    def long_task(req):
+    def long_task(ctx, args):
         started_event.set()
         time.sleep(0.4)
         return "task_done"
 
-    running_server.register_handler("long_task", long_task, device_bound=True)
+    running_server.register_handler(CommandSpec("long_task", long_task, device_bound=True))
 
     client1_done = threading.Event()
 
@@ -291,11 +291,11 @@ def test_tcp_exception_releases_device_lock(running_server):
     """Verify that exceptions during handler execution release the device lock properly."""
     host, port = running_server.server_address
 
-    def buggy_handler(req):
+    def buggy_handler(ctx, args):
         raise RuntimeError("Something failed in hardware communication")
 
-    running_server.register_handler("buggy_cmd", buggy_handler, device_bound=True)
-    running_server.register_handler("rec_cmd", lambda req: {"ok": True}, device_bound=True)
+    running_server.register_handler(CommandSpec("buggy_cmd", buggy_handler, device_bound=True))
+    running_server.register_handler(CommandSpec("rec_cmd", lambda ctx, args: {"ok": True}, device_bound=True))
 
     with socket.create_connection((host, port), timeout=2.0) as sock:
         send_json(sock, {"req_id": "err-1", "cmd": "buggy_cmd", "device": "DFU-04"})
@@ -319,12 +319,12 @@ def test_tcp_numeric_device_conflict_normalization(running_server):
 
     started_event = threading.Event()
 
-    def slow_worker(req):
+    def slow_worker(ctx, args):
         started_event.set()
         time.sleep(0.3)
         return "ok"
 
-    running_server.register_handler("slow_norm", slow_worker, device_bound=True)
+    running_server.register_handler(CommandSpec("slow_norm", slow_worker, device_bound=True))
 
     client2_resp = {}
 

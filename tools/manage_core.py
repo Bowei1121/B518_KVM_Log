@@ -125,7 +125,7 @@ def handle_status(args: argparse.Namespace) -> int:
         print(f"  Busy Devices:      {busy_devices}")
         print(f"  KVM Pool:          {kvm_pool.get('active_connections', 0)} active ({kvm_pool.get('cached_ips', [])})")
         print(f"  Freeze Guard:      violations={freeze_guard.get('violations', 0)}")
-        print(f"  Server Version:    {details.get('version', 'unknown')}")
+        print(f"  Server Version:    {details.get('core_version', 'unknown')}")
         print("=" * 64)
         return 0
     elif st == "UNRESPONSIVE":
