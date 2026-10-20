@@ -86,7 +86,7 @@ DOCK_ICON_BOX = (40, 6, 36, 36)
 class LogSolutionKVM(FakeKVM):
     """KVM stub whose latest_frame() is a synthetic ATE screen with a Log Solution window and Dock strip.
 
-    The Log Solution window (contract 1.1) sits at the top; the Dock strip below carries the
+    The Log Solution window (contract 1.3) sits at the top; the Dock strip below carries the
     Log Solution Dock icon as seeded noise (80-255), so template matching is exact and the icon
     cannot be mistaken for a locator square. Each latest_frame() call advances the presentation
     timestamp unless freeze() was called.
@@ -253,8 +253,16 @@ _LOG_COLORS = {
 }
 
 
-def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
-    """Render contract 1.1 (App layout). state None renders a blank screen."""
+def heartbeat_bits(state):
+    """Four cells, top-left to bottom-right, True for black, for heartbeat counter ``state`` (0-15)."""
+    return tuple(bool(state & (1 << (3 - index))) for index in range(4))
+
+
+def render_log_solution(state, statuses, scale=2, origin=(23, 31), heartbeat=0):
+    """Render contract 1.3 (App layout). state None renders a blank screen.
+
+    ``heartbeat`` is the 16-state counter (0-15) drawn at the heartbeat origin (278, 0).
+    """
     import numpy as np
 
     patterns = {
@@ -276,10 +284,13 @@ def render_log_solution(state, statuses, scale=2, origin=(23, 31)):
         x1, y1 = round(ox + (x + w) * scale), round(oy + (y + h) * scale)
         frame[y0:y1, x0:x1] = color
 
-    for x, inset in ((82, 3), (320, 11)):
+    for x, inset in ((0, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
     for index, black in enumerate(patterns[state]):
+        row, col = divmod(index, 2)
+        rect(250 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
+    for index, black in enumerate(heartbeat_bits(heartbeat)):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
     rows = 2 if len(statuses) > 10 else 1

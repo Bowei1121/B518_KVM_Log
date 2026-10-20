@@ -77,6 +77,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 - 站別不支援的指令回 `unsupported_command`（例如 FCT 的 `start_test`、DFU 以外的 `input`）。
 - `button` 與 `check` 已移除。送出回 `unknown_command`。
 - 三站的 `check_start`／`check_finish`／`inspect` 一律以 Log Solution 顯示契約判讀，站別只影響操作指令。三者共用同一個 `data`。
+- 只支援**顯示契約 1.3**（Log Solution `kvm_display_contract.CONTRACT_VERSION = "1.3"`）：左定位 (0, 2)、右定位 (320, 2)、狀態標記 (250, 0)、心跳 (278, 0)、色帶首排 y=34。定位點距離不是 320 的畫面（例如 1.1 的 238）一律判不可見，不讀 1.1／1.2。橋接與 Log Solution 1.3 必須同時部署。比例由定位點實際大小換算；定位點換算比例小於 0.70 倍判不可見（既有下限）。標記格沒有 12 px 檢查，1 倍輸出時小格為 10 px 仍照常判讀（使用者 2026-10-20 裁決），現場以 `docs/FIELD_VERIFICATION.md` L1 確認。
 
 ### 4.1 三站呼叫順序
 
@@ -586,7 +587,7 @@ Log Solution 仍在準備中時：
 ### 仍待辦
 
 - **LabVIEW 端**：typedef 與 VI 改版屬 #13，需人工在 LabVIEW 完成。本文件與 `docs/LABVIEW_HANDOFF.md` 是依據。
-- **Log Solution 顯示契約 1.3（#32）**：目前程式仍為契約 1.1。2026-10-20 決定橋接改為只支援 1.3（定位 (0,2)／(320,2)、狀態 (250,0)、心跳 (278,0)），不保留 1.1；橋接與 Log Solution 1.3 須同時部署。心跳判讀見 #77。
+- **Log Solution 顯示契約 1.3（#32）**：本 PR（#93）已實作，程式只認 1.3。2026-10-20 決定橋接改為只支援 1.3（定位 (0,2)／(320,2)、狀態 (250,0)、心跳 (278,0)），不保留 1.1；橋接與 Log Solution 1.3 須同時部署。心跳判讀見 #77。
 - **Log Solution 應用程式本身**：圖樣、準備中、視窗前景、FCT 期限由 Log Solution 專案實作。橋接只讀畫面。
 - **FCT 推入前訊號的現場時序**：決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
 - **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。

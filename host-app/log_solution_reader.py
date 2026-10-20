@@ -1,4 +1,4 @@
-"""Reads one Log Solution screen from one JetKVM frame, display contract 1.1.
+"""Reads one Log Solution screen from one JetKVM frame, display contract 1.3.
 
 Answers what a single reading, or two consecutive fresh readings, decide: reliability, Log state,
 capacity, the 20 result cells, started channels with their evidence, and whether the screen is
@@ -15,13 +15,14 @@ import cv2
 import numpy as np
 
 
-CONTRACT_VERSION = "1.1"
+CONTRACT_VERSION = "1.3"
 LOCATOR_SIZE = 22
-LEFT_LOCATOR = (82, 2, 3)
+LEFT_LOCATOR = (0, 2, 3)
 RIGHT_LOCATOR = (320, 2, 11)
 LOCATOR_INSET_SIZE = 8
 LOCATOR_DISTANCE = RIGHT_LOCATOR[0] - LEFT_LOCATOR[0]
-MARKER_ORIGIN = (278, 0)
+MARKER_ORIGIN = (250, 0)
+HEARTBEAT_ORIGIN = (278, 0)
 MARKER_CELL_SIZE = 10
 MARKER_GAP = 2
 MARKER_QUIET = 2
@@ -92,6 +93,7 @@ class FrameObservation:
     reason: str = ""
     scale: float = 0.0
     app_origin: Tuple[float, ...] = ()
+    heartbeat: Tuple[Optional[bool], ...] = ()
 
     @property
     def results_complete(self):
@@ -216,8 +218,29 @@ def _sample_status(frame, x, y, scale):
     return winner if count >= 3 else None
 
 
+def _marker_cells(frame, x0, y0, scale, origin):
+    """Four 2x2 cells at ``origin`` in top-left, top-right, bottom-left, bottom-right order.
+
+    Each is 1 for black, 0 for white, None when the sample is neither.
+    """
+    cells = []
+    for row in range(2):
+        for column in range(2):
+            px = x0 + (origin[0] + MARKER_QUIET + column * (MARKER_CELL_SIZE + MARKER_GAP)
+                      + MARKER_CELL_SIZE / 2.0) * scale
+            py = y0 + (origin[1] + MARKER_QUIET + row * (MARKER_CELL_SIZE + MARKER_GAP)
+                      + MARKER_CELL_SIZE / 2.0) * scale
+            cells.append(_marker_bit(_median_patch(frame, px, py, max(1, scale * 1.2))))
+    return tuple(cells)
+
+
 def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
-    """Decode one BGR JetKVM frame using contract 1.1 geometry and color samples."""
+    """Decode one BGR JetKVM frame using contract 1.3 geometry and color samples.
+
+    ``heartbeat`` carries the four heartbeat cells (True black, False white, None unreadable)
+    whenever the locators were found. It does not decide reliability; the heartbeat rule lives
+    with the caller.
+    """
     if now is None:
         now = time.monotonic()
     if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3:
@@ -247,21 +270,16 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
         return FrameObservation(False, reason="locator_orientation_or_contrast_invalid",
                                 scale=scale, app_origin=(x0, y0))
 
-    bits = []
-    for row in range(2):
-        for column in range(2):
-            px = x0 + (MARKER_ORIGIN[0] + MARKER_QUIET + column * (MARKER_CELL_SIZE + MARKER_GAP)
-                      + MARKER_CELL_SIZE / 2.0) * scale
-            py = y0 + (MARKER_ORIGIN[1] + MARKER_QUIET + row * (MARKER_CELL_SIZE + MARKER_GAP)
-                      + MARKER_CELL_SIZE / 2.0) * scale
-            bits.append(_marker_bit(_median_patch(frame, px, py, max(1, scale * 1.2))))
+    heartbeat = tuple(None if bit is None else bool(bit)
+                      for bit in _marker_cells(frame, x0, y0, scale, HEARTBEAT_ORIGIN))
+    bits = _marker_cells(frame, x0, y0, scale, MARKER_ORIGIN)
     if any(bit is None for bit in bits):
         return FrameObservation(False, reason="marker_low_contrast_or_occluded",
-                                scale=scale, app_origin=(x0, y0))
+                                scale=scale, app_origin=(x0, y0), heartbeat=heartbeat)
     state = next((key for key, pattern in PATTERNS.items() if pattern == tuple(bits)), None)
     if state is None:
         return FrameObservation(False, reason="unknown_marker_pattern", scale=scale,
-                                app_origin=(x0, y0))
+                                app_origin=(x0, y0), heartbeat=heartbeat)
 
     layout_bits = tuple(_marker_bit(_median_patch(
         frame, x0 + (LAYOUT_ORIGIN[0] + MARKER_QUIET
@@ -272,12 +290,12 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
     rows = {(1, 0): 1, (0, 1): 2}.get(layout_bits)
     if rows is None:
         return FrameObservation(False, state, reason="layout_marker_missing_or_invalid",
-                                scale=scale, app_origin=(x0, y0))
+                                scale=scale, app_origin=(x0, y0), heartbeat=heartbeat)
     required_height = y0 + (RESULT_FIRST_Y + (rows - 1) * RESULT_ROW_STEP
                             + RESULT_CELL_HEIGHT) * scale
     if required_height > frame.shape[0]:
         return FrameObservation(False, state, reason="app_band_cropped", scale=scale,
-                                app_origin=(x0, y0))
+                                app_origin=(x0, y0), heartbeat=heartbeat)
 
     statuses = []
     outside_seen = False
@@ -288,23 +306,23 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
         status = _sample_status(frame, sx, sy, scale)
         if status is None or status == "UNKNOWN":
             return FrameObservation(False, state, reason="result_cell_unknown_{}".format(slot),
-                                    scale=scale, app_origin=(x0, y0))
+                                    scale=scale, app_origin=(x0, y0), heartbeat=heartbeat)
         if status == "OUTSIDE":
             outside_seen = True
             continue
         if outside_seen:
             return FrameObservation(False, state, reason="non_contiguous_capacity", scale=scale,
-                                    app_origin=(x0, y0))
+                                    app_origin=(x0, y0), heartbeat=heartbeat)
         statuses.append(status)
     if not statuses:
         return FrameObservation(False, state, reason="capacity_not_visible", scale=scale,
-                                app_origin=(x0, y0))
+                                app_origin=(x0, y0), heartbeat=heartbeat)
     capacity = len(statuses)
     if rows == 2 and capacity <= RESULT_COLUMNS:
         return FrameObservation(False, state, reason="layout_capacity_mismatch",
-                                scale=scale, app_origin=(x0, y0))
+                                scale=scale, app_origin=(x0, y0), heartbeat=heartbeat)
     return FrameObservation(True, state, capacity, tuple(statuses), scale=scale,
-                            app_origin=(x0, y0))
+                            app_origin=(x0, y0), heartbeat=heartbeat)
 
 
 def read_snapshot(snapshot, now=None):

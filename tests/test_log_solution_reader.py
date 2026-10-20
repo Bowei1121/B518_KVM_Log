@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -14,7 +15,11 @@ from log_solution_reader import (  # noqa: E402
     ActivityTracker, FrameObservation, MarkerState, inspect_app_frame, read_snapshot,
     reportable_active, screen_kind,
 )
+
+from protocol_helpers import heartbeat_bits  # noqa: E402
 from tcp_server import _inspect_round  # noqa: E402
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "log_solution_1_3"
 
 COLORS = {
     "PASS": (0, 239, 0), "FAIL": (0, 0, 255), "TESTING": (0, 255, 255),
@@ -32,8 +37,8 @@ PATTERNS = {
 }
 
 
-def render_frame(state, statuses, scale=2, origin=(23, 31)):
-    """Contract 1.1 layout, the same geometry the reader samples."""
+def render_frame(state, statuses, scale=2, origin=(23, 31), heartbeat=0):
+    """Contract 1.3 layout, the same geometry the reader samples."""
     width, height = round(376 * scale), round(110 * scale)
     ox, oy = origin
     frame = np.full((height + oy, width + ox, 3), (245, 246, 247), dtype=np.uint8)
@@ -43,10 +48,13 @@ def render_frame(state, statuses, scale=2, origin=(23, 31)):
         x1, y1 = round(ox + (x + w) * scale), round(oy + (y + h) * scale)
         frame[y0:y1, x0:x1] = color
 
-    for x, inset in ((82, 3), (320, 11)):
+    for x, inset in ((0, 3), (320, 11)):
         rect(x, 2, 22, 22, (0, 0, 0))
         rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
     for index, black in enumerate(PATTERNS[state]):
+        row, col = divmod(index, 2)
+        rect(250 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
+    for index, black in enumerate(heartbeat_bits(heartbeat)):
         row, col = divmod(index, 2)
         rect(278 + 2 + col * 12, 2 + row * 12, 10, 10, (0, 0, 0) if black else (255, 255, 255))
     rows = 2 if len(statuses) > 10 else 1
@@ -246,3 +254,85 @@ def test_inspect_reply_keeps_the_1_0_key_order(state, kind):
     assert reply["kind"] == kind
     assert reply["active"] == []
     assert reply["results"] == []
+
+
+def _paint_locator(frame, x, scale=2, origin=(23, 31), inset=3):
+    """One locator square at contract x, drawn over whatever was there."""
+    ox, oy = origin
+    def rect(rx, ry, rw, rh, color):
+        frame[round(oy + ry * scale):round(oy + (ry + rh) * scale),
+              round(ox + rx * scale):round(ox + (rx + rw) * scale)] = color
+    rect(x, 2, 22, 22, (0, 0, 0))
+    rect(x + inset, 2 + inset, 8, 8, (255, 255, 255))
+
+
+@pytest.mark.parametrize("scale", [1.0, 2.0])
+def test_contract_1_3_geometry_reads_at_one_and_two_times(scale):
+    obs = inspect_app_frame(render_frame(MarkerState.MONITORING, ["TESTING", "PASS"], scale=scale), 10, 10)
+
+    assert obs.reliable, obs.reason
+    assert obs.scale == pytest.approx(scale, abs=0.05)
+    assert obs.state == MarkerState.MONITORING
+    assert obs.statuses == ("TESTING", "PASS")
+
+
+def test_contract_1_1_locators_238_apart_are_invisible():
+    frame = render_frame(MarkerState.MONITORING, ["WAITING"] * 4)
+    frame[:, :23 + 22 * 2] = (245, 246, 247)
+    _paint_locator(frame, 82)
+
+    obs = inspect_app_frame(frame, 10, 10)
+
+    assert not obs.reliable
+    assert obs.reason == "locators_missing_or_ambiguous"
+
+
+@pytest.mark.parametrize("scale", [0.4, 0.5])
+def test_shrunk_below_readable_cell_size_is_unreadable(scale):
+    obs = inspect_app_frame(render_frame(MarkerState.COMPLETE, ["PASS"] * 4, scale=scale), 10, 10)
+
+    assert not obs.reliable
+    assert obs.reason == "locators_missing_or_ambiguous"
+
+
+@pytest.mark.parametrize("counter", range(16))
+def test_heartbeat_cells_report_all_sixteen_counter_states(counter):
+    obs = inspect_app_frame(render_frame(MarkerState.STANDBY, ["WAITING"] * 4, heartbeat=counter), 10, 10)
+
+    assert obs.reliable
+    assert obs.heartbeat == heartbeat_bits(counter)
+
+
+def test_heartbeat_cell_in_mid_grey_is_unreadable_and_does_not_block_the_state():
+    frame = render_frame(MarkerState.STANDBY, ["WAITING"] * 4, heartbeat=0)
+    frame[31 + 2 * 2:31 + 12 * 2, 23 + 278 * 2 + 4:23 + 288 * 2 - 4] = (128, 128, 128)
+
+    obs = inspect_app_frame(frame, 10, 10)
+
+    assert obs.reliable
+    assert obs.heartbeat == (None, False, False, False)
+
+
+def test_heartbeat_is_reported_even_when_the_state_is_unreadable():
+    frame = render_frame(MarkerState.MONITORING, ["WAITING"] * 4, heartbeat=5)
+    frame[31 + 2 * 2:31 + 12 * 2, 23 + 250 * 2:23 + 262 * 2] = (128, 128, 128)
+
+    obs = inspect_app_frame(frame, 10, 10)
+
+    assert not obs.reliable
+    assert obs.heartbeat == heartbeat_bits(5)
+
+
+@pytest.mark.parametrize("name, scale", [("native", 2.0), ("half", 1.0)])
+def test_ls6_heartbeat_screenshot_reads_standby_and_all_white_heartbeat(name, scale):
+    image = cv2.imread(str(FIXTURES / "ls6-heartbeat-state-00-en.png"))
+    if scale == 1.0:
+        image = cv2.resize(image, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)
+
+    obs = inspect_app_frame(image, 10, 10)
+
+    assert obs.reliable, (name, obs.reason)
+    assert obs.scale == pytest.approx(scale, abs=0.05)
+    assert obs.state == MarkerState.STANDBY
+    assert obs.heartbeat == (False, False, False, False)
+    assert obs.capacity == 6
