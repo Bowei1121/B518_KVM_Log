@@ -93,6 +93,9 @@ class ReplayKVM:
     async def close(self) -> None:
         self.connected = False
 
+    def is_healthy(self) -> bool:
+        return self.connected
+
     async def click(self, x, y):
         return None
 

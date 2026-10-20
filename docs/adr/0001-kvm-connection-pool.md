@@ -23,3 +23,11 @@ Accepted
 2. 指令結束歸還時：若心跳已恢復，保留連線；若心跳仍未恢復，才淘汰。
 3. 未使用中的連線，心跳失敗或斷線仍立即淘汰，原規定不變。
 4. 連線已斷線（`connected` 為 False）時，新請求仍照舊重新建立連線。
+
+## 補註（2026-10-19，#58）
+死亡判定與心跳改為以下規定，取代上面「心跳失敗」相關的描述：
+1. 連線是否健康只看兩種訊號：影像軌道 `recv()` 結束，或 peer connection 變成 `failed`／`closed`（`JetKVMClient.is_healthy()`）。影格太舊不算死亡，仍由 Freeze Guard 回 `frame_frozen`；aiortc 不會發出 `disconnected` 狀態，其他狀態一律視為存活。
+2. 心跳改為詢問 `is_healthy()`，不再拉取影格。原本的影格拉取只讀快取，不會產生網路流量，對保活沒有作用。
+3. 死亡訊號不會恢復，所以「心跳失敗後又恢復」的情況不再發生，上面第 2 條「心跳已恢復則保留連線」不再適用：使用中的連線不健康時，不派給新請求，租約歸還時淘汰。
+4. 指令執行中連線死亡，`check_start`／`check_finish`／`inspect` 的長輪詢立即回 `kvm_connect_failed`，不等 Freeze Guard 門檻，不新增錯誤碼。Freeze Guard 等待期間死亡也一樣回 `kvm_connect_failed`。
+5. 上面 2026-10-16 補註第 4 條的「已斷線（`connected` 為 False）」，改以 `is_healthy()` 為準。使用中的不健康連線依第 3 點拒絕新請求並延後淘汰，不再帶著租約重連到新 client。

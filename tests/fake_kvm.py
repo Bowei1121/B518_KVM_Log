@@ -40,7 +40,37 @@ def beside(screen: Any, app_picture: Any) -> Any:
     return canvas
 
 
-class FakeKVM:
+class FakeKVMSession:
+    """The client contract the pool relies on: connect, close, is_healthy.
+
+    Health follows ``JetKVMClient.is_healthy``: it turns False when the video track ends
+    (``end_track()``) or the peer connection goes to ``failed``/``closed`` (``set_peer_state()``).
+    Connecting again starts a fresh session, as a new client instance would.
+    """
+
+    connected: bool = False
+    track_ended: bool = False
+    peer_state: str = "connected"
+
+    async def connect(self) -> None:
+        self.connected = True
+        self.track_ended = False
+        self.peer_state = "connected"
+
+    async def close(self) -> None:
+        self.connected = False
+
+    def end_track(self) -> None:
+        self.track_ended = True
+
+    def set_peer_state(self, state: str) -> None:
+        self.peer_state = state
+
+    def is_healthy(self) -> bool:
+        return self.connected and not self.track_ended and self.peer_state not in ("failed", "closed")
+
+
+class FakeKVM(FakeKVMSession):
     """Attribute-backed fake with the client's own field names (``frame``, ``frame_sequence``, ...).
 
     Tests drive it by assigning those attributes; ``latest_frame()`` copies them into a snapshot

@@ -72,19 +72,6 @@ class ProbeServer(TcpJsonServer):
         self.register_handler("probe", lambda req: {"pong": True}, device_bound=True)
 
 
-class FakeKVM:
-    """KVM client stub for tests that exercise dispatch without caring about frames."""
-
-    def __init__(self) -> None:
-        self.connected = False
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
-
-
 def make_pool() -> KVMConnectionPool:
     """Pool whose connections never touch the network."""
     return KVMConnectionPool(client_factory=lambda host, password="": FakeKVM())
@@ -180,12 +167,6 @@ class LogSolutionKVM(FakeKVM):
         x, y, w, h = DOCK_ICON_BOX
         window_height = render_log_solution(None, []).shape[0]
         return x, y + window_height, w, h
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
 
     async def click(self, x, y):
         with self._lock:
