@@ -499,7 +499,7 @@ class TcpJsonServer:
         """
         from device_round import MANUAL_VERIFICATION_REQUIRED, MONITOR_NOT_READY
 
-        verdict = self._device_round(device_id).check_refusal(obs.get("reason"))
+        verdict = self._device_round(device_id).check_verdict(obs.get("reason"))
         if verdict == MONITOR_NOT_READY:
             return _check_error("monitor_not_ready",
                                 "no round-start request; result was not taken", obs)

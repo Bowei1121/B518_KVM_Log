@@ -23,7 +23,8 @@ class RoundFrameGate:
         self.clock = clock
         self.require_presentation_time = bool(require_presentation_time)
         self.freeze_threshold = float(freeze_threshold)
-        # The server shares one DeviceRound per device; standalone gates own theirs.
+        # The server shares one DeviceRound per device. When round_state is given, its
+        # stable_complete_frames and max_frame_gap win and this gate ignores those two arguments.
         self.round = round_state if round_state is not None else DeviceRound(
             self.device_id, stable_complete_frames, max_frame_gap)
         self.is_frozen = False
@@ -44,7 +45,8 @@ class RoundFrameGate:
 
     @property
     def _activity_prev(self):
-        """Compatibility only: tests/test_round_frame_consumer.py reads it. Not a public API."""
+        """Compatibility only: tests/test_round_frame_consumer.py reads it. Drop it once that test stops
+        reading it; changing that test is out of scope for #55."""
         return self.round.activity.previous
 
     def _reset_freeze_baseline(self):

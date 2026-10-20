@@ -68,11 +68,11 @@ class DeviceRound:
         """True while a start was requested: a Monitoring reading may arm the round."""
         return self.start_requested
 
-    def check_refusal(self, reason):
+    def check_verdict(self, reason):
         """Verdict for a reliable check reading that is not paused, already_taken or unknown.
 
-        None when judgment should continue. A deliverable screen without monitoring spends the
-        request and releases SN input; it never waits.
+        None when judgment should continue. Side effect: MANUAL_VERIFICATION_REQUIRED settles the
+        request and releases SN input, so call this once per reading.
         """
         if not self.start_requested:
             return MONITOR_NOT_READY

@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from device_round import (  # noqa: E402
@@ -51,7 +53,7 @@ def test_no_start_request_refuses_with_monitor_not_ready():
     decision = Feed(rnd)(complete())
 
     assert decision.reason == DELIVERABLE_WITHOUT_MONITORING
-    assert rnd.check_refusal(decision.reason) == MONITOR_NOT_READY
+    assert rnd.check_verdict(decision.reason) == MONITOR_NOT_READY
     assert rnd.released_for_input() is False
 
 
@@ -62,7 +64,7 @@ def test_request_without_seen_monitoring_is_manual_verification_and_releases_inp
 
     assert decision.kind == "waiting"
     assert decision.reason == DELIVERABLE_WITHOUT_MONITORING
-    assert rnd.check_refusal(decision.reason) == MANUAL_VERIFICATION_REQUIRED
+    assert rnd.check_verdict(decision.reason) == MANUAL_VERIFICATION_REQUIRED
     assert rnd.released_for_input() is True
     assert rnd.accepts_round() is False
 
@@ -138,3 +140,53 @@ def test_sn_input_is_released_by_settle_and_closed_by_the_next_begin_start():
 
     rnd.begin_start()
     assert rnd.released_for_input() is False
+
+
+@pytest.mark.parametrize("new_round", [preparing, monitoring], ids=["preparing", "monitoring"])
+def test_preparing_or_monitoring_after_settle_closes_sn_input_again(new_round):
+    """A new round seen after settle() closes SN input until its own result is taken."""
+    rnd = DeviceRound("DFU-01")
+    rnd.note_start()
+    feed = Feed(rnd)
+    feed(monitoring())
+    feed(complete())
+    assert feed(complete()).kind == "taken"
+    rnd.settle()
+    assert rnd.released_for_input() is True
+
+    feed(new_round(), accept_round=False)
+
+    assert rnd.released_for_input() is False
+
+
+def test_stream_change_restarts_freeze_baseline_and_drops_delivery_record(monkeypatch):
+    """Gate level: a new stream_id clears the frozen flag and the delivery record, not just the round."""
+    import round_frame_consumer
+    from round_frame_consumer import RoundFrameGate
+
+    # The reader is out of scope here: the "frame" handed to the gate is already the observation.
+    monkeypatch.setattr(round_frame_consumer, "inspect_app_frame",
+                        lambda frame, received_at, now, max_age: frame)
+    gate = RoundFrameGate("DFU-01", require_presentation_time=True, freeze_threshold=1.0)
+    gate.round.note_start()
+
+    def look(observation, sequence, received_at, pts, stream_id="s1"):
+        return gate.observe(observation, sequence, received_at, now=received_at,
+                            stream_id=stream_id, pts=pts)
+
+    look(monitoring(), 1, 0.0, pts=1)
+    look(complete(), 2, 0.1, pts=2)
+    assert look(complete(), 3, 0.2, pts=3).kind == "taken"
+    assert gate.round.delivered_signature is not None
+    # Same presentation time on the same stream freezes the picture after freeze_threshold.
+    look(complete(), 4, 0.3, pts=3)
+    assert look(complete(), 5, 1.5, pts=3).reason == "frame_frozen"
+    assert gate.is_frozen is True
+
+    fresh = look(complete(), 1, 1.6, pts=1, stream_id="s2")
+
+    assert gate.is_frozen is False
+    assert gate.round.delivered_signature is None
+    assert gate.round.delivered_results == ()
+    assert fresh.kind == "waiting"
+    assert fresh.reason == DELIVERABLE_WITHOUT_MONITORING
