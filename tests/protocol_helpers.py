@@ -126,6 +126,8 @@ class LogSolutionKVM(FakeKVM):
         self.state_after_shortcut = None
         self.repeat_sequence = False
         self.omit_presentation_time = False
+        # Changing it simulates a KVM reconnect (a new stream identity).
+        self.stream_id = "synthetic-stream"
         self._cover = None
         self.connected = False
 
@@ -219,7 +221,7 @@ class LogSolutionKVM(FakeKVM):
             frame = np.vstack([window, strip])
             pts = None if self.omit_presentation_time else self._pts
             return make_snapshot(frame, sequence=self._seq, received_monotonic=_time.monotonic(),
-                                 stream_id="synthetic-stream", pts=pts)
+                                 stream_id=self.stream_id, pts=pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}
