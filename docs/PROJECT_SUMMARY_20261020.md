@@ -77,3 +77,11 @@
 | #77 | 心跳（`needs-info`，等 Log Solution 座標） | #73 | — |
 
 順序：第 1 波 #71 ∥ #72 → 第 2 波 #73 → 第 3 波 #74 ∥ #75（monitor_flow 小重疊，保守則 #74 先）→ 第 4 波 #76。#71、#72 已留言：不准自行 merge、用主 repo venv、push 兩個 remote、限定檔案範圍。審查一律 Opus session，merge 由主 session。
+
+### 第 1 波結果（同日）
+
+- Grok 實作並經 Grok 複審：PR #79（#72 HidSession）、PR #80（#71 清理）。Claude（Opus 子代理）再複審：兩者皆「可合併」，兩 PR 試合併全套 **582 passed、34 subtests**；已貼 PR comment 並合併，main `48de3c8`，Gitea 同步。
+- 接受的行為差異（#79）：DFU 多格 HID 錯誤遇第一個即停（message 取第一個錯誤）；點擊 HID 失敗後不再打 SN。
+- 後續票：#81 HidSession 點擊前清錯吞錯、鍵盤方法自行檢查（blocked by #74）；#82 測試寫入真實 `~/Documents/template` 的並行 flaky、刪 `device_lock._owners`。
+- `7bc235f` 誤帶入 repo 根的 `g71.md`、`g72.md`（Grok 留言草稿）已刪除。
+- Log Solution 交來心跳交接稿（Log Solution repo `docs/refactoring/LOG_TIMER_HEARTBEAT_CLAUDE_HANDOFF_2026-10-20.md`、ADR0012）：異常條件改為「連續三張有效同圖」、狀態格左移、精確座標待 App 實作；#77 第四輪 grilling（Q34–Q41）進行中。
