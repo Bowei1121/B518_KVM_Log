@@ -258,8 +258,8 @@ def _armed_complete_behind_cover(serve, cover):
 
 @pytest.mark.parametrize("colour", ["grey", "black", "noise"])
 def test_left_side_covering_only_result_cells_is_recovered_by_a_dock_click(serve, colour):
-    # Cut at 40 units through the result band only: cells 1-2 hidden, locators (x=0, x=320) and marker row still on screen.
-    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, colour, y_range=(32, 110)))
+    # Cut at 40 units, full height: cells 1-2 hidden and the left locator (x=0) hidden with them. The Dock click brings it back.
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, colour))
     kvm.restore_on_dock = True
 
     resp = _check(srv, "DFU-01", timeout_sec=10)
@@ -281,7 +281,8 @@ def test_covering_only_the_result_band_is_recovered_by_a_dock_click(serve):
     assert kvm.events == _dock_recovery(kvm)
 
 
-def test_partly_covered_window_that_never_comes_back_returns_not_visible_with_last_reason(serve):
+def test_result_band_left_cover_that_never_comes_back_returns_not_visible_with_last_reason(serve):
+    # Only the result band left of cell 3 is covered; locators and marker row stay on screen.
     kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, "grey", y_range=(32, 110)))
 
     resp = _check(srv, "DFU-01", timeout_sec=30)
@@ -290,6 +291,19 @@ def test_partly_covered_window_that_never_comes_back_returns_not_visible_with_la
     assert resp["error"] == "log_solution_not_visible"
     assert resp["data"]["kind"] == "unknown"
     assert resp["data"]["reason"].startswith("result_cell_unknown_")
+    assert kvm.events == _dock_recovery(kvm) * MAX_DOCK_RECOVERIES
+
+
+def test_full_height_left_cover_that_never_comes_back_hides_the_left_locator(serve):
+    # Contract 1.3 puts the left locator at x=0, so a full-height ATE window over the left edge hides it too.
+    kvm, srv = _armed_complete_behind_cover(serve, lambda k: k.cover_left(40, "grey"))
+
+    resp = _check(srv, "DFU-01", timeout_sec=30)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_not_visible"
+    assert resp["data"]["kind"] == "unknown"
+    assert resp["data"]["reason"] == "locators_missing_or_ambiguous"
     assert kvm.events == _dock_recovery(kvm) * MAX_DOCK_RECOVERIES
 
 

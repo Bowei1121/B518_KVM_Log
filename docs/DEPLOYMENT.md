@@ -50,6 +50,7 @@
 橋接以 ATE 畫面與 Log Solution 畫面的位置判讀與操作，以下設定須在每台 ATE 電腦完成。
 
 - **ATE 視窗**：DFU、FCT、BT 的 ATE 測試程式視窗不可最大化。Log Solution 視窗貼齊畫面右側邊緣，因此**右側不可被遮住**；左側允許被 ATE 視窗遮住。
+- **左側遮住的行為（1.3）**：左定位點位於 x=0。ATE 視窗若全高遮住左側，會連左定位點一起遮住，判不可見，reason 為 `locators_missing_or_ambiguous`，走同一 Dock 補救；只遮住色帶左側時 reason 為 `result_cell_unknown_N`。
 - **被遮住時的恢復**：Log Solution 整個或部分被遮住（例如左側被 ATE 視窗遮住）、已關閉或縮到 Dock，連續 30 秒看不到時，`check` 會點 Dock 圖示把它拉回最上層，5 秒後重新判讀；同一 `check` 最多 3 次，仍看不到回 `log_solution_not_visible`。Dock 上找不到 Log Solution 圖示時回 `log_solution_not_found`，屬嚴重異常，需停線檢查（請確認 Log Solution 圖示固定在 Dock）。
 - **Log Solution 保持開啟**：若已關閉，`monitor_start` 的 Dock 點擊會讓 macOS 重新開啟，開啟後為 Standby，流程可繼續。
 - **通道數一致**：每站 Log Solution profile 的通道數（Slot 數）必須等於 `devices.json` 的 `channels`。不一致時 `check` 回 `capacity_mismatch`，不交付結果。

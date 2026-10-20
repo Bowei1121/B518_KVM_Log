@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -15,10 +16,10 @@ from log_solution_reader import (  # noqa: E402
     reportable_active, screen_kind,
 )
 
-import cv2  # noqa: E402
+from protocol_helpers import heartbeat_bits  # noqa: E402
+from tcp_server import _inspect_round  # noqa: E402
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "log_solution_1_3"
-from tcp_server import _inspect_round  # noqa: E402
 
 COLORS = {
     "PASS": (0, 239, 0), "FAIL": (0, 0, 255), "TESTING": (0, 255, 255),
@@ -65,10 +66,6 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), heartbeat=0):
         status = statuses[slot - 1] if slot <= len(statuses) else "OUTSIDE"
         rect(col * 34, 34 + row * 27, 34, 26, (0, 0, 0) if status == "OUTSIDE" else COLORS[status])
     return frame
-
-
-def heartbeat_bits(counter):
-    return tuple(bool(counter & (1 << (3 - index))) for index in range(4))
 
 
 def reading(state, statuses):
