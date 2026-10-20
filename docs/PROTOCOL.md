@@ -342,7 +342,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `log_solution_review` | error | `monitor_start` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
 | `capacity_mismatch` | error | 可交付畫面的格數與設定通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
-| `kvm_connect_failed` | error | 無法連線該設備的 JetKVM | 設備／網路異常，暫停 |
+| `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進（ADR-0005） | 設備異常，暫停，不得判產品 FAIL |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
@@ -361,7 +361,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 ## 7. 連線中斷
 
 - LabVIEW 在長輪詢中斷線時，Core 取消該請求並釋放設備鎖，不回覆。本輪開始請求留在 Core 存活期間，不因這次逾時或斷線清除。
-- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在請求仍在、且簽章未變時，重送 `check_finish` 得到 `already_taken`。
+- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在簽章未變時，重送 `check_finish` 得到 `already_taken` 並附原結果；此時本輪開始請求已因交付結清，不需仍在。KVM 重連（stream_id 改變）不影響這個重問：交付紀錄保留，但重連後須重新見到 Monitoring 才能取用新結果，重連前已 armed 而尚未交付的輪次，取得結果時仍回 `manual_verification_required`。範圍限同一 Core 行程內。
 
 ## 8. LabVIEW typedef 清單（建議）
 

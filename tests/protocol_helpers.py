@@ -17,8 +17,6 @@ from kvm_pool import KVMConnectionPool  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from fake_kvm import FakeKVM, make_snapshot  # noqa: E402
 
-PROTOCOL = PROTOCOL_VERSION
-
 # Leftover bytes per open test connection. Weak keys: a closed socket drops its buffer, and a
 # new socket never inherits another one's bytes.
 _REPLY_BUFFERS: "weakref.WeakKeyDictionary[Any, bytearray]" = weakref.WeakKeyDictionary()
@@ -55,7 +53,7 @@ def make_registry(routes=None) -> DeviceRegistry:
 def wire(obj: Dict[str, Any]) -> Dict[str, Any]:
     """Fill protocol_version and req_id when a test does not set them."""
     out = dict(obj)
-    out.setdefault("protocol_version", PROTOCOL)
+    out.setdefault("protocol_version", PROTOCOL_VERSION)
     out.setdefault("req_id", f"t-{uuid.uuid4().hex[:8]}")
     out.setdefault("device", "")
     return out
@@ -72,19 +70,6 @@ class ProbeServer(TcpJsonServer):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.register_handler("probe", lambda req: {"pong": True}, device_bound=True)
-
-
-class FakeKVM:
-    """KVM client stub for tests that exercise dispatch without caring about frames."""
-
-    def __init__(self) -> None:
-        self.connected = False
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
 
 
 def make_pool() -> KVMConnectionPool:
@@ -141,6 +126,8 @@ class LogSolutionKVM(FakeKVM):
         self.state_after_shortcut = None
         self.repeat_sequence = False
         self.omit_presentation_time = False
+        # Changing it simulates a KVM reconnect (a new stream identity).
+        self.stream_id = "synthetic-stream"
         self._cover = None
         self.connected = False
 
@@ -182,12 +169,6 @@ class LogSolutionKVM(FakeKVM):
         x, y, w, h = DOCK_ICON_BOX
         window_height = render_log_solution(None, []).shape[0]
         return x, y + window_height, w, h
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
 
     async def click(self, x, y):
         with self._lock:
@@ -240,7 +221,7 @@ class LogSolutionKVM(FakeKVM):
             frame = np.vstack([window, strip])
             pts = None if self.omit_presentation_time else self._pts
             return make_snapshot(frame, sequence=self._seq, received_monotonic=_time.monotonic(),
-                                 stream_id="synthetic-stream", pts=pts)
+                                 stream_id=self.stream_id, pts=pts)
 
 
 _COVER_COLOURS = {"grey": (128, 128, 128), "white": (255, 255, 255), "black": (0, 0, 0)}

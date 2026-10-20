@@ -1,15 +1,20 @@
-"""KVM Connection Pool with Heartbeat & Idle Eviction.
+"""KVM Connection Pool with Health Checks & Idle Eviction.
 
 Maintains persistent WebRTC connections keyed by KVM IP/host.
-Reuses established sessions across consecutive commands, periodically
-captures background frames (heartbeat) to keep NAT/WebRTC channels alive and detect
-disconnects, and automatically evicts connections that remain idle for >10 minutes.
+Reuses established sessions across consecutive commands. The heartbeat asks each pooled client
+whether it is still healthy and evicts the ones that are not; automatically evicts connections
+that remain idle for >10 minutes.
+
+The pool relies on this client contract and nothing else:
+    await connect()          open the session
+    await close()            tear it down
+    is_healthy() -> bool     False once the session is dead (video track ended, peer connection failed/closed)
+    latest_frame()           the newest picture as a FrameSnapshot, or None before the first frame
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -18,12 +23,12 @@ logger = logging.getLogger("KVMConnectionPool")
 
 
 class KVMUnavailableError(ConnectionError):
-    """A leased connection failed its heartbeat; it is not handed to new requests until the heartbeat recovers."""
+    """A leased connection is no longer healthy; it is not handed to new requests until its lease ends."""
 
 
 def normalize_kvm_ip(ip: Any) -> str:
     """Normalize a KVM IP/host identifier.
-    
+
     Strips protocol schemes (http://, https://, ws://, wss://), surrounding whitespace,
     and trailing slashes.
     """
@@ -69,9 +74,6 @@ class PooledKVMConnection:
         self.heartbeat_count = 0
         # Number of commands currently holding this connection via acquire_connection().
         self.in_use = 0
-        # Set when a heartbeat/disconnect failure hits a busy connection and cleared by the next
-        # successful heartbeat. While set, the connection is not shared; on final release it is evicted.
-        self.evict_pending = False
         self._lock: Optional[asyncio.Lock] = None
 
     @property
@@ -116,20 +118,6 @@ class KVMConnectionPool:
             self._ip_locks[ip] = asyncio.Lock()
         return self._ip_locks[ip]
 
-    def _instantiate_client(self, host: str, password: str = "") -> Any:
-        try:
-            return self._client_factory(host, password=password)
-        except TypeError:
-            return self._client_factory(host)
-
-    async def _safe_call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        if inspect.iscoroutinefunction(fn):
-            return await fn(*args, **kwargs)
-        res = fn(*args, **kwargs)
-        if inspect.isawaitable(res):
-            return await res
-        return res
-
     async def get_connection(self, ip: str, password: str = "") -> Any:
         """Get an active WebRTC connection for the given KVM IP.
 
@@ -147,7 +135,10 @@ class KVMConnectionPool:
         return await self._get_connection(ip, password=password, lease=True)
 
     async def release_connection(self, ip: str) -> None:
-        """Return a lease taken by acquire_connection(); restarts the idle clock."""
+        """Return a lease taken by acquire_connection(); restarts the idle clock.
+
+        A connection that turned unhealthy while leased is evicted here, unless another lease still holds it.
+        """
         try:
             canonical_ip = normalize_kvm_ip(ip)
         except ValueError:
@@ -157,8 +148,8 @@ class KVMConnectionPool:
             return
         entry.in_use -= 1
         entry.last_used_at = time.time()
-        if entry.in_use == 0 and entry.evict_pending:
-            await self._evict_or_defer(entry, "released after failed heartbeat")
+        if entry.in_use == 0 and not entry.client.is_healthy():
+            await self._evict_or_defer(entry, "released while unhealthy")
 
     async def _get_connection(self, ip: str, password: str, lease: bool) -> Any:
         canonical_ip = normalize_kvm_ip(ip)
@@ -167,84 +158,61 @@ class KVMConnectionPool:
         async with ip_lock:
             now = time.time()
             entry = self._pool.get(canonical_ip)
-            carried_in_use = 0
+
+            if entry is not None and not entry.client.is_healthy():
+                if entry.in_use > 0:
+                    # Leased by a running command: do not share it or replace it; eviction waits for the release.
+                    await self._evict_or_defer(entry, "connection lost while in use")
+                    raise KVMUnavailableError(
+                        f"KVM '{canonical_ip}' connection was lost while a command is using it"
+                    )
+                logger.warning("Existing KVM connection for '%s' is unhealthy; discarding", canonical_ip)
+                await self._evict_entry(canonical_ip)
+                entry = None
 
             if entry is not None:
-                client = entry.client
-                if getattr(client, "connected", True):
-                    if entry.evict_pending:
-                        # Still leased by a running command whose heartbeat failed: do not share it.
-                        raise KVMUnavailableError(
-                            f"KVM '{canonical_ip}' heartbeat failed while a command is using it"
-                        )
-                    entry.last_used_at = now
-                    if lease:
-                        entry.in_use += 1
-                    logger.debug("Reusing existing KVM connection for '%s'", canonical_ip)
-                    return client
-                else:
-                    logger.warning("Existing KVM connection for '%s' is closed; discarding", canonical_ip)
-                    # Holders of the dead client release against the replacement, so carry their count over.
-                    carried_in_use = entry.in_use
-                    await self._evict_entry(canonical_ip)
+                entry.last_used_at = now
+                if lease:
+                    entry.in_use += 1
+                logger.debug("Reusing existing KVM connection for '%s'", canonical_ip)
+                return entry.client
 
             logger.info("Connecting to KVM '%s'...", canonical_ip)
-            client = self._instantiate_client(canonical_ip, password=password)
-
-            if hasattr(client, "connect"):
-                await self._safe_call(getattr(client, "connect"))
+            client = self._client_factory(canonical_ip, password=password)
+            await client.connect()
 
             entry = PooledKVMConnection(canonical_ip, client)
-            entry.in_use = carried_in_use + (1 if lease else 0)
+            entry.in_use = 1 if lease else 0
             self._pool[canonical_ip] = entry
             logger.info("KVM connection established and pooled for '%s'", canonical_ip)
             return client
 
     async def perform_heartbeat(self) -> int:
-        """Pull heartbeat frames from all active connections in the pool.
-        
-        Returns the number of successful heartbeats.
+        """Ask every pooled connection whether it is still healthy; evict or defer the ones that are not.
+
+        Returns the number of healthy connections.
         """
         entries = list(self._pool.values())
-        if not entries:
-            return 0
-
         success_count = 0
         now = time.time()
 
         for entry in entries:
-            client = entry.client
-            ip = entry.ip
-
-            if not getattr(client, "connected", True):
-                await self._evict_or_defer(entry, "disconnected during heartbeat")
+            if not entry.client.is_healthy():
+                await self._evict_or_defer(entry, "unhealthy during heartbeat")
                 continue
 
-            try:
-                if hasattr(client, "latest_frame"):
-                    await self._safe_call(getattr(client, "latest_frame"))
-                elif hasattr(client, "grab_frame"):
-                    await self._safe_call(getattr(client, "grab_frame"))
-                elif hasattr(client, "heartbeat"):
-                    await self._safe_call(getattr(client, "heartbeat"))
-
-                entry.last_heartbeat_at = now
-                entry.heartbeat_count += 1
-                # Recovered: a leased connection stays pooled when its command returns.
-                entry.evict_pending = False
-                success_count += 1
-                logger.debug("Heartbeat pulled for KVM '%s' (total=%d)", ip, entry.heartbeat_count)
-            except Exception as exc:
-                await self._evict_or_defer(entry, f"heartbeat failed ({exc})")
+            entry.last_heartbeat_at = now
+            entry.heartbeat_count += 1
+            success_count += 1
+            logger.debug("Heartbeat ok for KVM '%s' (total=%d)", entry.ip, entry.heartbeat_count)
 
         return success_count
 
     async def _evict_or_defer(self, entry: PooledKVMConnection, reason: str) -> None:
-        """Evict now if idle; otherwise defer until the last lease is released."""
+        """Evict now if no command holds it; otherwise defer until the last lease is released."""
         if self._pool.get(entry.ip) is not entry:
             return
         if entry.in_use > 0:
-            entry.evict_pending = True
             logger.warning("KVM '%s' %s while in use; eviction deferred until release", entry.ip, reason)
             return
         logger.warning("KVM '%s' %s; evicting connection", entry.ip, reason)
@@ -281,10 +249,8 @@ class KVMConnectionPool:
         return evicted
 
     async def _close_entry(self, entry: PooledKVMConnection) -> None:
-        client = entry.client
         try:
-            if hasattr(client, "close"):
-                await self._safe_call(getattr(client, "close"))
+            await entry.client.close()
         except Exception as exc:
             logger.warning("Error closing KVM client '%s': %s", entry.ip, exc)
 
@@ -353,7 +319,7 @@ class KVMConnectionPool:
         return sorted(self._pool.keys())
 
     def is_connected(self, ip: str) -> bool:
-        """Check if an active, connected session exists for the given IP."""
+        """Check if a pooled connection exists for the given IP and reports healthy."""
         try:
             canonical_ip = normalize_kvm_ip(ip)
         except ValueError:
@@ -361,7 +327,7 @@ class KVMConnectionPool:
         entry = self._pool.get(canonical_ip)
         if entry is None:
             return False
-        return bool(getattr(entry.client, "connected", True))
+        return entry.client.is_healthy()
 
     def get_connection_info(self, ip: str) -> Optional[Dict[str, Any]]:
         """Return activity metadata for a specific pooled connection."""
@@ -375,7 +341,7 @@ class KVMConnectionPool:
         now = time.time()
         return {
             "ip": entry.ip,
-            "connected": bool(getattr(entry.client, "connected", True)),
+            "healthy": entry.client.is_healthy(),
             "created_at": entry.created_at,
             "last_used_at": entry.last_used_at,
             "idle_seconds": round(now - entry.last_used_at, 2),

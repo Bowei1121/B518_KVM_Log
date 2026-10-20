@@ -78,12 +78,6 @@ class MockKVMClient(FakeKVM):
         self.frame_received_monotonic = time.monotonic()
         return self.frame_presentation_time
 
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def close(self) -> None:
-        self.connected = False
-
 
 def send_json(sock: socket.socket, data: Dict[str, Any]) -> None:
     sock.sendall(dumps_request(wire(data)))
