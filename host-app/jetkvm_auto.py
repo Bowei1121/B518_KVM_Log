@@ -2,8 +2,7 @@
 """
 JetKVM 全自動流程 (CLI) — 與 GUI 共用同一份邏輯
 ================================================
-連線 (jetkvm_core.JetKVMClient) + 比對/輸入 (auto_flow.run_flow)。
-比對與輸入邏輯都在 auto_flow.py, 與 ui_app.py 的「Switch」按鈕共用同一份。
+連線 (jetkvm_core.JetKVMClient) + Dock 前景化 (hid_session.run_focus)。
 
 安全: 預設 DRY_RUN=True, 只偵測並輸出標註圖 jetkvm_detected.png, 不點擊。
       確認框框正確後, 把 DRY_RUN 改 False 才會實際執行。
@@ -17,7 +16,7 @@ import sys
 import cv2
 
 from jetkvm_core import JetKVMClient
-from auto_flow import run_focus
+from hid_session import run_focus
 from template_catalog import TemplateCatalog
 
 # ====== 設定 ======

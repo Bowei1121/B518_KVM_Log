@@ -54,11 +54,13 @@ except ImportError:
 MONITOR_START_MAX_TIMEOUT_SEC = 300
 
 try:
-    from bt_flow import BtStartError, run_start_all
-    from dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok
+    from hid_session import FlowError
+    from bt_flow import run_start_all
+    from dfu_flow import parse_items, run_dfu_input, run_dfu_ok
 except ImportError:
-    from .bt_flow import BtStartError, run_start_all  # type: ignore[import-not-found,no-redef]
-    from .dfu_flow import DfuError, parse_items, run_dfu_input, run_dfu_ok  # type: ignore[import-not-found,no-redef]
+    from .hid_session import FlowError  # type: ignore[import-not-found,no-redef]
+    from .bt_flow import run_start_all  # type: ignore[import-not-found,no-redef]
+    from .dfu_flow import parse_items, run_dfu_input, run_dfu_ok  # type: ignore[import-not-found,no-redef]
 
 logger = logging.getLogger("TcpJsonServer")
 
@@ -579,13 +581,13 @@ class TcpJsonServer:
         try:
             result = await start(kvm, template_root=self._template_root(),
                                  log=logger.info, diagnostics_key=entry.device_id)
-        except (BtStartError, DfuError) as exc:
+        except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"action": ""}}
         return {"status": "ok", "data": result}
 
     async def _handle_monitor_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """monitor_start 1.0: open Log Solution from the Dock and start monitoring (all stations)."""
-        from monitor_flow import MonitorStartError, run_monitor_start
+        from monitor_flow import run_monitor_start
 
         entry = req["_device_entry"]
         rnd = self._device_round(entry.device_id)
@@ -597,7 +599,7 @@ class TcpJsonServer:
                 confirm_sec=self.monitor_confirm_sec, start_timeout_sec=float(req["timeout_sec"]),
                 log=logger.info, diagnostics_key=entry.device_id,
                 on_preparing=rnd.note_start, on_shortcut=rnd.note_start)
-        except MonitorStartError as exc:
+        except FlowError as exc:
             # monitor_not_started keeps the round-start request. Only a later taken or
             # manual_verification_required reply clears it.
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"state": "", "capacity": 0}}
@@ -616,7 +618,7 @@ class TcpJsonServer:
         try:
             result = await enter(kvm, entry.channels, req.get("items"), template_root=self._template_root(),
                                  log=logger.info, diagnostics_key=entry.device_id)
-        except DfuError as exc:
+        except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
@@ -638,7 +640,7 @@ class TcpJsonServer:
         already_taken or an error, and otherwise times out with the last observed state.
         """
         from log_solution_reader import FINISHED_STATES
-        from monitor_flow import MonitorStartError, bring_log_solution_forward
+        from monitor_flow import bring_log_solution_forward
 
         kvm = req.get("_kvm_client")
         entry = req.get("_device_entry")
@@ -737,7 +739,7 @@ class TcpJsonServer:
                         try:
                             clicked = await bring_log_solution_forward(kvm, template_root=template_root,
                                                                        diagnostics_key=entry.device_id)
-                        except MonitorStartError as exc:
+                        except FlowError as exc:
                             return _check_error(exc.code, str(exc), last)
                         if not clicked:
                             return _check_error("log_solution_not_found",
@@ -802,7 +804,7 @@ class TcpJsonServer:
         if cmd == "input":
             try:
                 parse_items(req.get("items"), entry.channels)
-            except DfuError as exc:
+            except FlowError as exc:
                 return exc.code, str(exc)
         if cmd == "snapshot":
             fmt = req.get("format")

@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
-from bt_flow import BtStartError, run_start_all  # noqa: E402
+from bt_flow import run_start_all  # noqa: E402
+from hid_session import FlowError  # noqa: E402
 from fake_kvm import FakeKVM, beside, make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
@@ -156,7 +157,7 @@ def test_missing_start_all_is_hid_failed_and_never_clicks_it(rig):
 
 def test_flow_refuses_without_templates_before_any_click(tmp_path):
     kvm = FakeKvm(_bt_screen())
-    with pytest.raises(BtStartError) as excinfo:
+    with pytest.raises(FlowError) as excinfo:
         asyncio.run(run_start_all(kvm, template_root=tmp_path / "empty", log=lambda *_: None))
     assert excinfo.value.code == "hid_failed"
     assert kvm.clicks == []

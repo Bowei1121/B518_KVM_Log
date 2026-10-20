@@ -4,12 +4,8 @@ Focus the BT Dock icon, find the BT window, find Start All inside it, click once
 Any missing element or HID failure is refused as hid_failed; nothing else is clicked.
 The caller checks that Log Solution is monitoring before this runs.
 """
-import asyncio
 
-import cv2
-
-from auto_flow import _load_template, locate
-from hid_helpers import center, last_hid_error
+from hid_session import FlowError, HidSession
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
 
@@ -17,62 +13,36 @@ MATCH_THRESHOLD = 0.80
 DOCK_SETTLE_DELAY = 0.5
 
 
-class BtStartError(Exception):
-    """A refused or failed Start All. ``code`` is a protocol error code."""
-
-    def __init__(self, code, message):
-        super().__init__(message)
-        self.code = code
-
-
 async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="BT"):
-    """Click BT Start All once. Returns ``{"action": "start_all"}`` or raises ``BtStartError``."""
+    """Click BT Start All once. Returns ``{"action": "start_all"}`` or raises ``FlowError``."""
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
+    session = HidSession(kvm, template_root, diagnostics, threshold=threshold, log=log)
     ok = False
     try:
-        dock = _load_template(catalog, "BT", "dock_icon", log, diagnostics, threshold)
-        window = _load_template(catalog, "BT", "window", log, diagnostics, threshold)
-        start_all = _load_template(catalog, "BT", "start_all", log, diagnostics, threshold)
+        dock = session.load("BT", "dock_icon")
+        window = session.load("BT", "window")
+        start_all = session.load("BT", "start_all")
         if dock is None or window is None or start_all is None:
-            raise BtStartError("hid_failed", "缺少 BT 模板 (dock_icon / window / start_all)")
-        snapshot = kvm.latest_frame()
-        if snapshot is None:
-            raise BtStartError("hid_failed", "沒有 JetKVM 影格")
-        if hasattr(kvm, "rpc_errors"):
-            kvm.rpc_errors.clear()
+            raise FlowError("hid_failed", "缺少 BT 模板 (dock_icon / window / start_all)")
+        frame = session.frame()
+        await session.focus_dock(
+            "dock_icon", dock, frame,
+            message="找不到 Dock icon（相似度 {value:.2f}）",
+            settle=DOCK_SETTLE_DELAY,
+        )
 
-        frame = snapshot.image
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        dv, dl, dt, dw, dh = locate(gray, dock, downscale=False)
-        diagnostics.record("dock_icon", dv, threshold, frame, (dl, dt, dw, dh) if dl is not None else None)
-        if dl is None or dv < threshold:
-            raise BtStartError("hid_failed", f"找不到 Dock icon（相似度 {dv:.2f}）")
-        await kvm.click(*center(dl, dt, dw, dh))
-        await asyncio.sleep(DOCK_SETTLE_DELAY)
-        if last_hid_error(kvm):
-            raise BtStartError("hid_failed", f"Dock HID 錯誤: {last_hid_error(kvm)}")
-
-        window_snapshot = kvm.latest_frame()
-        if window_snapshot is None:
-            raise BtStartError("hid_failed", "沒有 JetKVM 影格")
-        frame = window_snapshot.image
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        wv, wl, wt, ww, wh = locate(gray, window, downscale=True)
-        diagnostics.record("window", wv, threshold, frame,
-                           (wl, wt, ww, wh) if wl is not None else None, color=(0, 255, 0))
-        if wl is None or wv < threshold:
-            raise BtStartError("hid_failed", f"找不到 BT 視窗（相似度 {wv:.2f}）")
-        roi = gray[wt:gray.shape[0], wl:wl + ww]
-        sv, sl, st, sw, sh = locate(roi, start_all, downscale=False)
-        diagnostics.record("start_all", sv, threshold, frame,
-                           (wl + sl, wt + st, sw, sh) if sl is not None else None)
-        if sl is None or sv < threshold:
-            raise BtStartError("hid_failed", f"找不到 Start All（相似度 {sv:.2f}）")
-        await kvm.click(*center(wl + sl, wt + st, sw, sh))
-        await asyncio.sleep(0)
-        if last_hid_error(kvm):
-            raise BtStartError("hid_failed", f"Start All HID 錯誤: {last_hid_error(kvm)}")
+        frame = session.frame()
+        found = session.find(
+            "window", window, frame, downscale=True, color=(0, 255, 0),
+            message="找不到 BT 視窗（相似度 {value:.2f}）",
+        )
+        roi = (found.left, found.top, found.width, frame.shape[0] - found.top)
+        start = session.find(
+            "start_all", start_all, frame, within=roi, downscale=False,
+            message="找不到 Start All（相似度 {value:.2f}）",
+        )
+        await session.click(start, failure="Start All HID 錯誤", settle=0)
         ok = True
         return {"action": "start_all"}
     finally:
