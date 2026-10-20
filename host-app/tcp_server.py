@@ -74,7 +74,7 @@ MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
 # visible" nor reset the visibility timer. Every other unknown reading counts as not visible
 # (wholly or partly covered, closed, minimised), including reasons added later.
 STREAM_PROBLEM_REASONS = frozenset({
-    "no_frame", "invalid_frame", "stale_frame", "out_of_order_source_frame", "freshness_pending",
+    "invalid_frame", "stale_frame", "out_of_order_source_frame", "freshness_pending",
     "duplicate_or_out_of_order_frame", "inspection_busy", "inspection_timeout",
 })
 

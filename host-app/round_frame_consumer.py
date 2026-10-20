@@ -32,6 +32,8 @@ class RoundFrameGate:
             require_pts=require_presentation_time)
         # True: a reading that has not shown PTS moving is not judged (freshness_pending). Used by the server.
         self.require_proof = bool(require_proof)
+        # The stream generation this gate has acted on. Another reader (inspect) may switch the stream first.
+        self._seen_generation = 0
 
     @property
     def is_frozen(self):
@@ -51,8 +53,7 @@ class RoundFrameGate:
         """
         now = self.clock() if now is None else now
         verdict = self.stream.observe(stream_id, sequence, pts, now)
-        if verdict.stream_changed:
-            self._stream_changed()
+        self._sync_generation(verdict)
         if self.require_proof and verdict.kind != FROZEN and verdict.fresh and not verdict.advanced:
             self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason=FRESHNESS_PENDING)
@@ -61,7 +62,14 @@ class RoundFrameGate:
     def observe_missing(self, now=None):
         """No picture from the KVM yet: frozen, the same as a frame without PTS."""
         now = self.clock() if now is None else now
-        return self._decide(self.stream.observe_no_frame(now), None, None, None, now, True)
+        verdict = self.stream.observe_no_frame(now)
+        self._sync_generation(verdict)
+        return self._decide(verdict, None, None, None, now, True)
+
+    def _sync_generation(self, verdict: Verdict):
+        if verdict.generation != self._seen_generation:
+            self._seen_generation = verdict.generation
+            self._stream_changed()
 
     def _stream_changed(self):
         # A reconnect may show a retained Complete screen from a previous

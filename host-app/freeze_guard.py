@@ -40,6 +40,7 @@ class FrameFreezeGuard:
         frozen_devices = [key for key, stream in streams if stream.frozen_now(now)]
         return {
             "freeze_threshold": self.freeze_threshold,
+            "require_pts": True,  # the server always requires PTS (ADR-0005 2026-10-20 第 2 點)
             "tracked_devices_count": len(streams),
             "frozen_devices_count": len(frozen_devices),
             "frozen_devices": frozen_devices,

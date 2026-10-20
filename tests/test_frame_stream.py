@@ -155,13 +155,59 @@ class TestActiveWindow:
         clock.advance(0.2)
         reads = []
 
-        async def read():
+        def read():
             reads.append(1)
             return None
 
         verdict = self._run(stream.wait_live(read, sleep=lambda s: asyncio.sleep(0)))
         assert verdict.kind == LIVE
         assert reads == []
+
+    def test_advance_older_than_threshold_is_reread(self):
+        stream, clock = _stream(threshold=1.0)
+        stream.observe("s", 1, 10.0)
+        clock.advance(0.1)
+        stream.observe("s", 2, 10.1)  # advance at 0.1
+        clock.advance(1.2)  # now 1.3: the advance is older than the threshold
+        reads = []
+
+        def read():
+            reads.append(1)
+            return make_snapshot(None, sequence=3, stream_id="s", pts=10.1)
+
+        verdict = self._run(stream.wait_live(read, sleep=lambda s: asyncio.sleep(0)))
+        assert reads == [1]
+        assert verdict.kind == FROZEN
+
+    def test_static_reading_after_an_advance_is_reread(self):
+        stream, clock = _stream(threshold=1.0)
+        stream.observe("s", 1, 10.0)
+        clock.advance(0.1)
+        stream.observe("s", 2, 10.1)  # advance at 0.1
+        clock.advance(0.1)
+        stream.observe("s", 3, 10.1)  # the last reading shows no advance
+        reads = []
+
+        def read():
+            reads.append(1)
+            return make_snapshot(None, sequence=4, stream_id="s", pts=10.2)
+
+        verdict = self._run(stream.wait_live(read, sleep=lambda s: asyncio.sleep(0)))
+        assert reads == [1]
+        assert verdict.advanced is True
+
+    def test_window_ends_frozen_when_stream_keeps_changing_without_pts_advance(self):
+        stream, clock = _stream(threshold=0.5)
+        ids = iter(range(1000))
+
+        def read():
+            return make_snapshot(None, sequence=1, stream_id=f"s{next(ids)}", pts=10.0)
+
+        async def fake_sleep(seconds):
+            clock.advance(seconds)
+
+        verdict = self._run(stream.wait_live(read, poll_interval=0.1, sleep=fake_sleep))
+        assert verdict.kind == FROZEN and verdict.reason == "window_expired"
 
     def test_window_waits_for_an_advance(self):
         stream, clock = _stream(threshold=1.0)

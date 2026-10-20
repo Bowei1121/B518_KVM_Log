@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
@@ -41,6 +41,7 @@ class Verdict:
     fresh: bool = True  # sequence newer than the last one seen on this stream (or no sequence given)
     stream_changed: bool = False  # this reading switched stream; the baseline restarted
     advanced: bool = False  # this reading moved PTS forward: the only proof that the picture is live
+    generation: int = 0  # counts stream switches; a reader that saw another value must restart its round
     pts: Optional[float] = None
     static_seconds: float = 0.0
     message: str = ""
@@ -68,6 +69,7 @@ class FrameStream:
         self._pts: Optional[float] = None
         self._advanced_at: Optional[float] = None  # clock time PTS last advanced on this stream
         self._advanced = False  # the last reading moved PTS forward (a first frame does not count)
+        self._generation = 0
         self._verdict: Optional[Verdict] = None
 
     @property
@@ -100,6 +102,7 @@ class FrameStream:
             if changed:
                 # PTS only compares within one stream: a new stream restarts the baseline.
                 self._stream_id = stream_id
+                self._generation += 1
                 self._sequence = None
                 self._pts = None
                 self._advanced_at = None
@@ -156,24 +159,31 @@ class FrameStream:
         """Active window for a one-shot command: ends on a PTS advance (LIVE) or FROZEN.
 
         When the last reading advanced PTS within the threshold, that is enough: no new read.
-        Otherwise read until PTS advances (LIVE) or the threshold passes (FROZEN).
+        Otherwise read until PTS advances (LIVE), the threshold passes (FROZEN), or two thresholds
+        pass with no advance at all (FROZEN; a stream that keeps changing stream id never freezes by PTS).
         """
         with self._lock:
-            now = self.clock()
+            start = self.clock()
             recent_advance = (
                 self._advanced
                 and self._advanced_at is not None
-                and now - self._advanced_at < self.freeze_threshold
+                and start - self._advanced_at < self.freeze_threshold
                 and self._verdict is not None
             )
             if recent_advance:
                 return self._verdict
+        deadline = start + 2 * self.freeze_threshold
         while True:
             verdict = self.observe_snapshot(read())
             if verdict.advanced or verdict.kind == FROZEN or verdict.reason == "pts_not_required":
                 return verdict
+            if self.clock() >= deadline:
+                with self._lock:
+                    return self._record(Verdict(
+                        FROZEN, "window_expired", self.clock(),
+                        message=f"No Presentation Timestamp advance within {2 * self.freeze_threshold:g}s"))
             await sleep(poll_interval)
 
     def _record(self, verdict: Verdict) -> Verdict:
-        self._verdict = verdict
-        return verdict
+        self._verdict = replace(verdict, generation=self._generation)
+        return self._verdict

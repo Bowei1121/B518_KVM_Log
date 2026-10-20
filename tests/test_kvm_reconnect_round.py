@@ -69,6 +69,19 @@ def test_reask_of_taken_round_after_reconnect_is_already_taken_with_original_res
     assert again["data"]["results"] == delivered["data"]["results"]
 
 
+def test_inspect_seeing_new_stream_first_does_not_let_stale_complete_be_taken(rig):
+    """The Monitor UI's inspect reads the reconnected stream before check does; check must still disarm (#56)."""
+    srv, kvm = rig
+    arm_round(srv, kvm, DEVICE)
+    kvm.show("complete", PASS4)
+    kvm.stream_id = "after-reconnect"
+    _send(srv, "inspect", 0, "inspect-after")
+
+    res = _send(srv, "check_finish", 2, "check-after")
+
+    assert res["data"]["kind"] != "taken"
+
+
 def test_reask_after_reconnect_with_changed_screen_is_not_already_taken(rig):
     srv, kvm = rig
     arm_round(srv, kvm, DEVICE)
