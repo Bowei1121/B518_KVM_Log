@@ -42,10 +42,10 @@ class Feed:
         self.sequence = 0
         self.received_at = 0.0
 
-    def __call__(self, observation, accept_round=True):
+    def __call__(self, observation):
         self.sequence += 1
         self.received_at += 0.1
-        return self.rnd.judge(observation, self.sequence, self.received_at, accept_round)
+        return self.rnd.judge(observation, self.sequence, self.received_at)
 
 
 def test_no_start_request_refuses_with_monitor_not_ready():
@@ -66,7 +66,7 @@ def test_request_without_seen_monitoring_is_manual_verification_and_releases_inp
     assert decision.reason == DELIVERABLE_WITHOUT_MONITORING
     assert rnd.check_verdict(decision.reason) == MANUAL_VERIFICATION_REQUIRED
     assert rnd.released_for_input() is True
-    assert rnd.accepts_round() is False
+    assert rnd.start_requested is False
 
 
 def test_monitoring_then_stable_complete_frames_take_the_round_once():
@@ -154,7 +154,7 @@ def test_preparing_or_monitoring_after_settle_closes_sn_input_again(new_round):
     rnd.settle()
     assert rnd.released_for_input() is True
 
-    feed(new_round(), accept_round=False)
+    feed(new_round())
 
     assert rnd.released_for_input() is False
 

@@ -32,10 +32,10 @@ SLOW_SECONDS = 1.0
 def rig(monkeypatch):
     original = round_frame_consumer.observe_latest_round_frame
 
-    def slow_for_one_device(kvm, gate, accept_round=True):
+    def slow_for_one_device(kvm, gate, now=None):
         if gate.device_id == SLOW_DEVICE:
             time.sleep(SLOW_SECONDS)
-        return original(kvm, gate, accept_round=accept_round)
+        return original(kvm, gate, now=now)
 
     monkeypatch.setattr(round_frame_consumer, "observe_latest_round_frame", slow_for_one_device)
 

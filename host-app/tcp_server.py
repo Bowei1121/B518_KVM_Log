@@ -17,7 +17,7 @@ import signal
 import socket
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Coroutine, Dict, Iterable, Optional, Set, Tuple
 
 try:
@@ -48,6 +48,15 @@ except ImportError:
 MONITOR_START_MAX_TIMEOUT_SEC = 300
 
 try:
+    from device_slot import DeviceSlot
+    from round_check import CheckMode, ClickDock, Reading, Reply, RoundCheck
+except ImportError:
+    from .device_slot import DeviceSlot  # type: ignore[import-not-found,no-redef]
+    from .round_check import (  # type: ignore[import-not-found,no-redef]
+        CheckMode, ClickDock, Reading, Reply, RoundCheck,
+    )
+
+try:
     from hid_session import FlowError
     from bt_flow import run_start_all
     from dfu_flow import parse_items, run_dfu_input, run_dfu_ok
@@ -70,22 +79,6 @@ INSPECTION_TIMEOUT_SEC = 0.2  # per-frame limit for one Log Solution reading
 VISIBILITY_LOST_SEC = 30.0  # time "Log Solution not visible" (no reliable reading) before a Dock click
 DOCK_RECHECK_SEC = 5.0  # wait after the Dock click before reading again
 MAX_DOCK_RECOVERIES = 3  # Dock clicks per check request
-# Picture/stream problems: a Dock click cannot fix them, so they neither count as "Log Solution not
-# visible" nor reset the visibility timer. Every other unknown reading counts as not visible
-# (wholly or partly covered, closed, minimised), including reasons added later.
-STREAM_PROBLEM_REASONS = frozenset({
-    "invalid_frame", "stale_frame", "out_of_order_source_frame", "freshness_pending",
-    "duplicate_or_out_of_order_frame", "inspection_busy", "inspection_timeout",
-})
-
-
-def _visibility(obs: Dict[str, Any]) -> str:
-    """'ignore' for a stream problem, 'unseen' for any other unknown reading, 'seen' for a reliable one."""
-    if obs.get("reason") in STREAM_PROBLEM_REASONS:
-        return "ignore"
-    return "unseen" if obs.get("kind") == "unknown" else "seen"
-
-
 NO_DEVICE_COMMANDS = frozenset({"ping", "status", "core_status", "shutdown"})
 # Extra fields allowed per command.
 COMMAND_FIELDS: Dict[str, frozenset] = {
@@ -127,28 +120,6 @@ def _unknown(reason: str) -> Dict[str, Any]:
     return {"kind": "unknown", "state": "", "reason": reason, "capacity": 0, "active": [], "results": []}
 
 
-def _check_error(code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
-    """check/inspect error reply: data keeps the last observation, with kind unknown and no results."""
-    return {"status": "error", "error": code, "message": message,
-            "data": {**last, "kind": "unknown", "results": []}}
-
-
-def _round_observation(decision: Any) -> Dict[str, Any]:
-    """Map a round-gate decision onto the check 1.0 data shape."""
-    if decision.kind == "frozen" or decision.reason == "frame_frozen":
-        return {"error": "frame_frozen", "message": decision.detail or "Log Solution frame stream is frozen"}
-    if decision.kind == "round_lost":
-        return {"error": "round_lost", "message": "Log Solution returned to standby before this round was taken"}
-    return {
-        "kind": decision.kind,
-        "state": decision.state.value if decision.state is not None else "",
-        "reason": decision.reason,
-        "capacity": int(decision.capacity),
-        "active": [],
-        "results": [{"slot": slot, "status": status} for slot, status in decision.results],
-    }
-
-
 def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str, Any], Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
@@ -183,6 +154,17 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str
     if kind is ScreenKind.PAUSED:
         return {**base, "kind": "paused", "reason": CONFIRMATION_REQUIRED, "results": [], "active": []}, state
     return {**base, "kind": "waiting", "reason": state.value, "results": []}, state
+
+
+def _inspect_reading(kvm: Any, tracker: Any, stream: Any) -> Reading:
+    """_inspect_round's reply as the Reading RoundCheck judges."""
+    from log_solution_reader import FINISHED_STATES
+
+    reply, state = _inspect_round(kvm, tracker, stream)
+    if "error" in reply:
+        return Reading.failed(reply["error"], reply.get("message", ""))
+    return Reading(kind=reply["kind"], state=reply["state"], reason=reply["reason"], capacity=reply["capacity"],
+                   active=reply["active"], results=reply["results"], finished=state in FINISHED_STATES)
 
 
 def _kvm_lost(req: Dict[str, Any]) -> Dict[str, Any]:
@@ -232,9 +214,7 @@ class TcpJsonServer:
 
         self._active_writers: Set[asyncio.StreamWriter] = set()
         self._handlers: Dict[str, Callable[..., Any]] = {}
-        self._round_gates: Dict[str, Any] = {}
-        self._rounds: Dict[str, "DeviceRound"] = {}
-        self._inspect_activity: Dict[str, Any] = {}
+        self._slots: Dict[str, DeviceSlot] = {}
         self.inspection_timeout_sec = float(inspection_timeout_sec)
         self.monitor_confirm_sec = float(monitor_confirm_sec)
         self.visibility_lost_sec = float(visibility_lost_sec)
@@ -242,7 +222,6 @@ class TcpJsonServer:
         self.max_dock_recoveries = int(max_dock_recoveries)
         # Frame readings run on worker threads so the event loop keeps serving requests.
         self._inspector = ThreadPoolExecutor(max_workers=16, thread_name_prefix="inspect")
-        self._inspections: Dict[str, Future] = {}
         self._command_fields: Dict[str, frozenset] = dict(COMMAND_FIELDS)
         self._no_device_cmds: Set[str] = set(NO_DEVICE_COMMANDS)
 
@@ -431,107 +410,57 @@ class TcpJsonServer:
             "image_base64": img_b64,
         }
 
-    async def _observe_check(self, kvm: Any, entry: Any, req: Dict[str, Any], read_only: bool = False,
-                             report_activity: bool = False) -> Tuple[Dict[str, Any], Any]:
-        """One reading of the Log Solution screen for a device, as ``(1.0 check payload, MarkerState)``.
+    def _slot(self, device_id: Any) -> DeviceSlot:
+        """The device's slot (round, gate, inspect tracker, in-flight readings), created on first use."""
+        key = str(device_id)
+        slot = self._slots.get(key)
+        if slot is None:
+            # setdefault: _log_solution_refusal calls this from a worker thread, so one slot must win.
+            slot = self._slots.setdefault(key, DeviceSlot(key, self.freeze_guard.stream(key)))
+        return slot
 
-        The reading runs on a worker thread with a per-frame time limit. A reading that
-        exceeds the limit is reported as unknown and the poll continues; a device whose
-        previous reading is still running is reported as unknown without starting another.
+    def _device_round(self, device_id: Any) -> Any:
+        """The device's DeviceRound: the test helpers and protocol tests read the round through the server."""
+        return self._slot(device_id).round
+
+    async def _read_reading(self, slot: DeviceSlot, kvm: Any, mode: CheckMode) -> Reading:
+        """One reading of the Log Solution screen on a worker thread, within the per-frame time limit.
+
+        A reading that exceeds the limit is unknown and the poll continues. A lane whose previous reading
+        is still running is unknown without starting another. check_start and check_finish share one lane.
         """
-        flight_key = f"inspect:{entry.device_id}" if read_only else entry.device_id
-        previous = self._inspections.get(flight_key)
+        lane = "inspect" if mode is CheckMode.INSPECT else "check"
+        previous = slot.flights.get(lane)
         if previous is not None and not previous.done():
-            return _unknown("inspection_busy"), None
+            return Reading.unknown("inspection_busy")
 
-        # Every station reads the Log Solution display contract; the station only affects operations.
-        from round_frame_consumer import observe_latest_round_frame
-        gate = None
-        if read_only:
-            # Gate-less reading: never arms, takes or otherwise touches the round.
-            tracker = self._inspect_tracker(entry.device_id)
-            stream = self.freeze_guard.stream(entry.device_id)
-
-            def job():
-                return _inspect_round(kvm, tracker, stream)
-        else:
-            gate = self._round_gate(entry.device_id)
-            accept_round = self._device_round(entry.device_id).accepts_round()
-
-            def job():
-                return observe_latest_round_frame(kvm, gate, accept_round=accept_round)
-
-        future = self._inspector.submit(job)
-        self._inspections[flight_key] = future
+        future = self._inspector.submit(self._reading_job(slot, kvm, mode))
+        slot.flights[lane] = future
         try:
-            raw = await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
+            return await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
         except asyncio.TimeoutError:
-            logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", entry.device_id,
+            logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", slot.device_id,
                          self.inspection_timeout_sec)
-            return _unknown("inspection_timeout"), None
+            return Reading.unknown("inspection_timeout")
         except Exception as exc:
-            logger.exception("Inspection error for %s", entry.device_id)
-            return {"error": "internal_error", "message": f"inspection error: {exc}"}, None
+            logger.exception("Inspection error for %s", slot.device_id)
+            return Reading.failed("internal_error", f"inspection error: {exc}")
 
-        if read_only:
-            return raw
-        from log_solution_reader import reportable_active
+    @staticmethod
+    def _reading_job(slot: DeviceSlot, kvm: Any, mode: CheckMode) -> Callable[[], Reading]:
+        """The worker-thread job for one reading.
 
-        mapped = _round_observation(raw)
-        # taken / already_taken / paused keep active []. Activity is only for in-progress rounds.
-        if report_activity and gate is not None and "error" not in mapped and mapped.get("kind") == "waiting":
-            mapped["active"] = [{"slot": slot, "evidence": evidence}
-                                for slot, evidence in reportable_active(raw.state, gate.last_active)]
-        return mapped, raw.state
-
-    def _device_round(self, device_id: str) -> "DeviceRound":
-        """Per-device round progress. Lives as long as the server; a timeout does not clear it."""
-        from device_round import DeviceRound
-
-        rnd = self._rounds.get(device_id)
-        if rnd is None:
-            rnd = DeviceRound(device_id)
-            self._rounds[device_id] = rnd
-        return rnd
-
-    def _inspect_tracker(self, device_id: str) -> Any:
-        """Started-channel tracker of the Monitor UI inspect. Its own instance: check_start/check_finish never share it."""
-        from log_solution_reader import ActivityTracker
-
-        tracker = self._inspect_activity.get(device_id)
-        if tracker is None:
-            tracker = ActivityTracker(max_gap=1.0)
-            self._inspect_activity[device_id] = tracker
-        return tracker
-
-    def _round_start_refusal(self, device_id: str, obs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """check_start / check_finish steps (4) and (5). None when judgment should continue.
-
-        (1) paused, (2) already_taken and (3) unknown are handled by the caller before this.
+        Each reader asks FrameStream first, then judges. RoundCheck only sees the resulting Reading.
         """
-        from device_round import MANUAL_VERIFICATION_REQUIRED, MONITOR_NOT_READY
+        if mode is CheckMode.INSPECT:
+            return lambda: _inspect_reading(kvm, slot.inspect_tracker, slot.stream)
+        report_active = mode is CheckMode.CHECK_START
 
-        verdict = self._device_round(device_id).check_verdict(obs.get("reason"))
-        if verdict == MONITOR_NOT_READY:
-            return _check_error("monitor_not_ready",
-                                "no round-start request; result was not taken", obs)
-        if verdict == MANUAL_VERIFICATION_REQUIRED:
-            return _check_error(
-                "manual_verification_required",
-                "start was requested but this round's monitoring was not seen", obs)
-        return None
-
-    def _round_gate(self, device_id: str) -> Any:
-        """The device's frame gate, created on first use; it shares the device's round progress."""
-        from round_frame_consumer import RoundFrameGate
-
-        gate = self._round_gates.get(device_id)
-        if gate is None:
-            gate = RoundFrameGate(device_id, require_presentation_time=True,
-                                  round_state=self._device_round(device_id),
-                                  frame_stream=self.freeze_guard.stream(device_id), require_proof=True)
-            self._round_gates[device_id] = gate
-        return gate
+        def job() -> Reading:
+            from round_frame_consumer import observe_latest_round_frame
+            decision = observe_latest_round_frame(kvm, slot.gate)
+            return Reading.from_decision(decision, slot.gate.last_active if report_active else None)
+        return job
 
     async def _picture_refusal(self, kvm: Any, req: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Why a HID-sending command must not run, as (code, message), before any HID (ADR-0005 2026-10-20 第 3 點).
@@ -574,7 +503,7 @@ class TcpJsonServer:
         # complete and manual_stop_complete are both READY. Input waits until this round
         # was delivered or manual_verification_required was already returned.
         if observation.finished:
-            if self._device_round(entry.device_id).released_for_input():
+            if self._slot(entry.device_id).round.released_for_input():
                 return None
             return "log_solution_busy", "round result not yet taken"
         return "log_solution_busy", f"Log Solution state is {observation.state.value}"
@@ -620,15 +549,15 @@ class TcpJsonServer:
         if refusal is not None:
             code, message = refusal
             return {"status": "error", "error": code, "message": message, "data": {"state": "", "capacity": 0}}
-        rnd = self._device_round(entry.device_id)
-        rnd.begin_start()
+        slot = self._slot(entry.device_id)
+        slot.round.begin_start()
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
-                req["_kvm_client"], self._round_gate(entry.device_id), template_root=template_root,
+                req["_kvm_client"], slot.gate, template_root=template_root,
                 confirm_sec=self.monitor_confirm_sec, start_timeout_sec=float(req["timeout_sec"]),
                 log=logger.info, diagnostics_key=entry.device_id,
-                on_preparing=rnd.note_start, on_shortcut=rnd.note_start)
+                on_preparing=slot.round.note_start, on_shortcut=slot.round.note_start)
         except FlowError as exc:
             # monitor_not_started keeps the round-start request. Only a later taken or
             # manual_verification_required reply clears it.
@@ -656,22 +585,22 @@ class TcpJsonServer:
 
     async def _handle_check_start(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """check_start: two fresh frames of activity, or a finished round delivered once."""
-        return await self._long_poll(req, read_only=False, report_activity=True)
+        return await self._long_poll(req, CheckMode.CHECK_START)
 
     async def _handle_check_finish(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        return await self._long_poll(req, read_only=False)
+        return await self._long_poll(req, CheckMode.CHECK_FINISH)
 
     async def _handle_inspect(self, req: Dict[str, Any]) -> Dict[str, Any]:
         """Monitor UI's read-only check: no device lock, and it never consumes the round result."""
-        return await self._long_poll(req, read_only=True, report_activity=True)
+        return await self._long_poll(req, CheckMode.INSPECT)
 
-    async def _long_poll(self, req: Dict[str, Any], read_only: bool, report_activity: bool = False) -> Dict[str, Any]:
+    async def _long_poll(self, req: Dict[str, Any], mode: CheckMode) -> Dict[str, Any]:
         """Protocol 1.0 check: read the Log Solution result; long-poll up to timeout_sec.
 
         timeout_sec = 0 reads once. timeout_sec > 0 returns early on taken, paused,
         already_taken or an error, and otherwise times out with the last observed state.
+        The judgement order and Dock recovery live in RoundCheck; this loop does the I/O.
         """
-        from log_solution_reader import FINISHED_STATES
         from monitor_flow import bring_log_solution_forward
 
         kvm = req.get("_kvm_client")
@@ -679,16 +608,17 @@ class TcpJsonServer:
         timeout_sec = float(req["timeout_sec"])
         reader = req.get("_reader")
         writer = req.get("_writer")
-        start_time = time.monotonic()
-        last: Dict[str, Any] = {"kind": "unknown", "state": "", "reason": "", "capacity": 0,
-                                "active": [], "results": []}
-        # Visibility recovery (check only): when Log Solution stopped being visible, and Dock clicks so far.
-        # Only a reliable reading resets the timer; the click count never resets within a request.
-        unseen_since: Optional[float] = None
-        dock_recoveries = 0
+        slot = self._slot(entry.device_id)
+        check = RoundCheck(
+            mode, entry.channels, timeout_sec, time.monotonic(),
+            round_state=None if mode is CheckMode.INSPECT else slot.round,
+            proof_wait_sec=self.freeze_guard.freeze_threshold + CHECK_POLL_INTERVAL_SEC,
+            poll_sec=CHECK_POLL_INTERVAL_SEC,
+            visibility_lost_sec=self.visibility_lost_sec,
+            max_dock_recoveries=self.max_dock_recoveries,
+        )
 
         while True:
-            elapsed = time.monotonic() - start_time
             is_client_gone = (reader is not None and reader.at_eof()) or (
                 writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
             )
@@ -701,87 +631,28 @@ class TcpJsonServer:
             if not kvm.is_healthy():
                 return _kvm_lost(req)
 
-            # Every reading observes the device's FrameStream: its PTS must keep advancing (ADR-0005).
-            obs, state = await self._observe_check(kvm, entry, req, read_only=read_only,
-                                                   report_activity=report_activity)
-            if "error" in obs:
+            reading = await self._read_reading(slot, kvm, mode)
+            if reading.error is not None:
+                code, message = reading.error
                 # The KVM can die while its last picture is frozen: a lost connection, not a frozen picture.
-                if obs["error"] == "frame_frozen" and not kvm.is_healthy():
+                if code == "frame_frozen" and not kvm.is_healthy():
                     return _kvm_lost(req)
-                return _check_error(obs["error"], obs.get("message", ""), last)
-            last = obs
+                return check.fail(code, message)
 
-            # No judgement until the picture has shown PTS moving (a first frame proves nothing). The
-            # reading said so; a frozen one still ends as frame_frozen above, at the threshold.
-            proof_wait = self.freeze_guard.freeze_threshold + CHECK_POLL_INTERVAL_SEC
-            if obs.get("reason") == "freshness_pending" and elapsed < proof_wait:
-                if timeout_sec > 0 and elapsed >= timeout_sec:
-                    return {"status": "timeout", "error": "timeout",
-                            "message": f"no reliable result within {timeout_sec:g} s", "data": last}
-                remaining = proof_wait - elapsed
-                if timeout_sec > 0:
-                    remaining = min(remaining, timeout_sec - elapsed)
-                await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, remaining)))
+            outcome = check.step(reading, time.monotonic())
+            if isinstance(outcome, Reply):
+                return outcome.payload
+            if isinstance(outcome, ClickDock):
+                try:
+                    clicked = await bring_log_solution_forward(kvm, template_root=self._template_root(),
+                                                               diagnostics_key=entry.device_id)
+                except FlowError as exc:
+                    return check.fail(exc.code, str(exc))
+                if not clicked:
+                    return check.fail("log_solution_not_found", "Log Solution Dock icon is not on screen")
+                await asyncio.sleep(self.dock_recheck_sec)
                 continue
-
-            if obs["kind"] == "taken" and obs["capacity"] != entry.channels:
-                return {
-                    "status": "error",
-                    "error": "capacity_mismatch",
-                    "message": f"screen shows {obs['capacity']} slots, device is configured for {entry.channels}",
-                    "data": {**obs, "kind": "unknown", "reason": "capacity_mismatch", "results": []},
-                }
-            # Review, then an exact re-view, both win before the round-start request check.
-            if obs["kind"] in ("paused", "already_taken"):
-                return {"status": "ok", "data": obs}
-            if not read_only and obs["kind"] != "unknown":
-                refused = self._round_start_refusal(entry.device_id, obs)
-                if refused is not None:
-                    return refused
-            if obs["kind"] == "taken":
-                if not read_only:
-                    self._device_round(entry.device_id).settle()
-                return {"status": "ok", "data": obs}
-            # Finished screens carry no active channels (reportable_active), so they never become started.
-            if report_activity and obs["kind"] == "waiting" and obs.get("active"):
-                return {"status": "ok", "data": {**obs, "kind": "started", "reason": "activity_confirmed"}}
-            if read_only and state in FINISHED_STATES:
-                return {"status": "ok", "data": obs}
-            if timeout_sec == 0:
-                return {"status": "ok", "data": obs}
-            if elapsed >= timeout_sec:
-                return {
-                    "status": "timeout",
-                    "error": "timeout",
-                    "message": f"no reliable result within {timeout_sec:g} s",
-                    "data": last,
-                }
-            if not read_only:
-                visibility = _visibility(obs)
-                if visibility == "unseen":
-                    now = time.monotonic()
-                    if unseen_since is None:
-                        unseen_since = now
-                    if dock_recoveries >= self.max_dock_recoveries:
-                        return _check_error("log_solution_not_visible",
-                                            f"Log Solution not visible after {dock_recoveries} Dock clicks", last)
-                    if now - unseen_since >= self.visibility_lost_sec:
-                        dock_recoveries += 1
-                        unseen_since = None
-                        template_root = self._template_root()
-                        try:
-                            clicked = await bring_log_solution_forward(kvm, template_root=template_root,
-                                                                       diagnostics_key=entry.device_id)
-                        except FlowError as exc:
-                            return _check_error(exc.code, str(exc), last)
-                        if not clicked:
-                            return _check_error("log_solution_not_found",
-                                                "Log Solution Dock icon is not on screen", last)
-                        await asyncio.sleep(self.dock_recheck_sec)
-                        continue
-                elif visibility == "seen":
-                    unseen_since = None
-            await asyncio.sleep(min(CHECK_POLL_INTERVAL_SEC, max(0.01, timeout_sec - elapsed)))
+            await asyncio.sleep(outcome.sleep_sec)
 
     async def _handle_shutdown(self, req: Dict[str, Any]) -> Dict[str, Any]:
         # Schedule the server loop to stop after replying cleanly to the client

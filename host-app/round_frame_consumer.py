@@ -44,27 +44,24 @@ class RoundFrameGate:
         """Channels the last reading confirmed as started (check's ``active``)."""
         return self.round.activity.last_active
 
-    def observe(self, frame, sequence, received_at, now=None, stream_id=None,
-                pts=None, accept_round=True):
-        """Consume a fresh raw frame and return waiting/paused/taken/already_taken/unknown/frozen.
+    def observe(self, frame, sequence, received_at, now=None, stream_id=None, pts=None):
+        """Stream verdict, then the round decision, for one frame passed in directly (tools and tests)."""
+        now = self.clock() if now is None else now
+        return self.decide(self.stream.observe(stream_id, sequence, pts, now), frame, sequence, received_at)
+
+    def decide(self, verdict, frame, sequence, received_at):
+        """Round decision for a frame whose stream verdict is already known.
+
+        Returns waiting/paused/taken/already_taken/unknown/frozen.
 
         With require_proof, a new frame that has not shown PTS moving (a first frame, or a static one)
         is not judged: unknown with reason freshness_pending, round continuity lost.
         """
-        now = self.clock() if now is None else now
-        verdict = self.stream.observe(stream_id, sequence, pts, now)
         self._sync_generation(verdict)
         if self.require_proof and verdict.kind != FROZEN and verdict.fresh and not verdict.advanced:
             self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason=FRESHNESS_PENDING)
-        return self._decide(verdict, frame, sequence, received_at, now, accept_round)
-
-    def observe_missing(self, now=None):
-        """No picture from the KVM yet: frozen, the same as a frame without PTS."""
-        now = self.clock() if now is None else now
-        verdict = self.stream.observe_no_frame(now)
-        self._sync_generation(verdict)
-        return self._decide(verdict, None, None, None, now, True)
+        return self._decide(verdict, frame, sequence, received_at)
 
     def _sync_generation(self, verdict: Verdict):
         if verdict.generation != self._seen_generation:
@@ -78,7 +75,7 @@ class RoundFrameGate:
         # still gets already_taken (#56).
         self.round.disarm()
 
-    def _decide(self, verdict: Verdict, frame, sequence, received_at, now, accept_round):
+    def _decide(self, verdict: Verdict, frame, sequence, received_at):
         if verdict.kind == FROZEN:
             self.round.lose_continuity()
             return TakeDecision("frozen", self.device_id, reason="frame_frozen", detail=verdict.message)
@@ -88,14 +85,17 @@ class RoundFrameGate:
         if verdict.kind == PENDING:
             self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason="out_of_order_source_frame")
-        observation = inspect_app_frame(frame, received_at, now, self.max_age)
-        return self.round.judge(observation, sequence, received_at, accept_round)
+        observation = inspect_app_frame(frame, received_at, verdict.at, self.max_age)
+        return self.round.judge(observation, sequence, received_at)
 
 
-def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):
-    """Pass the newest decoded BGR frame through the public consumer seam."""
+def observe_latest_round_frame(kvm, gate, now=None):
+    """Read the newest decoded BGR frame: FrameStream judges its freshness first, then the device's round.
+
+    Blocking (kvm.latest_frame copies the picture and the judgement decodes it): call it from a worker thread.
+    """
     snapshot = kvm.latest_frame()
+    verdict = gate.stream.observe_snapshot(snapshot, now)
     if snapshot is None:
-        return gate.observe_missing(now)
-    return gate.observe(snapshot.image, snapshot.sequence, snapshot.received_monotonic, now=now,
-                        stream_id=snapshot.stream_id, pts=snapshot.pts, accept_round=accept_round)
+        return gate.decide(verdict, None, None, None)
+    return gate.decide(verdict, snapshot.image, snapshot.sequence, snapshot.received_monotonic)
