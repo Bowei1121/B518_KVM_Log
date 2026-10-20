@@ -156,17 +156,6 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str
     return {**base, "kind": "waiting", "reason": state.value, "results": []}, state
 
 
-def _inspect_reading(kvm: Any, tracker: Any, stream: Any) -> Reading:
-    """_inspect_round's reply as the Reading RoundCheck judges."""
-    from log_solution_reader import FINISHED_STATES
-
-    reply, state = _inspect_round(kvm, tracker, stream)
-    if "error" in reply:
-        return Reading.failed(reply["error"], reply.get("message", ""))
-    return Reading(kind=reply["kind"], state=reply["state"], reason=reply["reason"], capacity=reply["capacity"],
-                   active=reply["active"], results=reply["results"], finished=state in FINISHED_STATES)
-
-
 def _kvm_lost(req: Dict[str, Any]) -> Dict[str, Any]:
     """check reply when the KVM died during the command (protocol error kvm_connect_failed, ADR-0001 補註 #58)."""
     return {
@@ -453,7 +442,7 @@ class TcpJsonServer:
         Each reader asks FrameStream first, then judges. RoundCheck only sees the resulting Reading.
         """
         if mode is CheckMode.INSPECT:
-            return lambda: _inspect_reading(kvm, slot.inspect_tracker, slot.stream)
+            return lambda: Reading.from_inspect(*_inspect_round(kvm, slot.inspect_tracker, slot.stream))
         report_active = mode is CheckMode.CHECK_START
 
         def job() -> Reading:

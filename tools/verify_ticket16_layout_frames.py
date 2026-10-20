@@ -22,6 +22,7 @@ def verify(directory):
     rounds = []
     for expected in metadata["rounds"]:
         gate = RoundFrameGate("controlled-layout", max_frame_gap=2)
+        gate.round.note_start()  # monitor_start leaves this request; without it Monitoring never arms
         actions, frames = [], []
         for sequence, name in enumerate(("monitoring.png", "complete.png", "complete-scrolled.png"), 1):
             path = directory / "capacity-{}".format(expected["capacity"]) / name

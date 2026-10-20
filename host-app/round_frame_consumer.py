@@ -95,6 +95,7 @@ def observe_latest_round_frame(kvm, gate, now=None):
     Blocking (kvm.latest_frame copies the picture and the judgement decodes it): call it from a worker thread.
     """
     snapshot = kvm.latest_frame()
+    now = gate.clock() if now is None else now
     verdict = gate.stream.observe_snapshot(snapshot, now)
     if snapshot is None:
         return gate.decide(verdict, None, None, None)

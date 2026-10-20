@@ -272,3 +272,22 @@ def test_failed_reading_keeps_the_last_reading_as_error_data(mode):
     assert payload == {"status": "error", "error": "frame_frozen", "message": "frozen",
                        "data": {"kind": "unknown", "state": "monitoring", "reason": "confirming_complete_frame",
                                 "capacity": 4, "active": [], "results": []}}
+
+
+def test_a_seen_reading_restarts_the_lost_timer_but_not_the_dock_count():
+    """Within one request the click count only grows: seen readings between clicks do not reset it."""
+    check = make(round_state=requested_round(), timeout=10000)
+    now = 0.0
+    for expected in range(1, MAX_DOCK + 1):
+        assert check.step(unseen(), now=now) == Continue(POLL)  # starts the lost timer
+        now += LOST
+        assert check.step(unseen(), now=now) == ClickDock()
+        assert check.dock_recoveries == expected
+        now += 1
+        check.step(waiting(), now=now)  # seen: the timer restarts, the count stays
+        now += 1
+
+    payload = reply_of(check.step(unseen(), now=now))
+
+    assert payload["error"] == "log_solution_not_visible"
+    assert check.dock_recoveries == MAX_DOCK

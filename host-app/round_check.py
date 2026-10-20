@@ -4,7 +4,8 @@ Each poll gives one Reading: the frame already judged by FrameStream and DeviceR
 the caller does next: send a reply, click the Dock, or wait and poll again. Pure and synchronous: no KVM,
 no sleep, no asyncio. The caller passes the clock in.
 
-The order below is docs/PROTOCOL.md 5.4 (判讀順序, 2026-10-19). The first rule that applies wins:
+Steps 3 to 7 are docs/PROTOCOL.md 5.4 (判讀順序, 2026-10-19). Steps 1, 2, 8 to 10 are the freshness,
+capacity, timeout and visibility rules from the same document (可見性與遺失). The first rule that applies wins:
 1. Freshness not yet proven (PTS has not moved) inside the proof window: wait.
 2. taken with a capacity other than the device's channels: capacity_mismatch, no delivery.
 3. paused and already_taken: reply, before the round-start request is checked.
@@ -89,6 +90,14 @@ class Reading:
             results=[{"slot": slot, "status": status} for slot, status in decision.results],
             finished=state in FINISHED_STATES,
         )
+
+    @classmethod
+    def from_inspect(cls, reply: Dict[str, Any], state: Any) -> "Reading":
+        """An inspect reply from tcp_server._inspect_round, with the Log Solution state it read."""
+        if "error" in reply:
+            return cls.failed(reply["error"], reply.get("message", ""))
+        return cls(kind=reply["kind"], state=reply["state"], reason=reply["reason"], capacity=reply["capacity"],
+                   active=reply["active"], results=reply["results"], finished=state in FINISHED_STATES)
 
     def as_data(self) -> Dict[str, Any]:
         return {"kind": self.kind, "state": self.state, "reason": self.reason, "capacity": self.capacity,
