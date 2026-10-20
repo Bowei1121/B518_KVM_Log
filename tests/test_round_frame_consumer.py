@@ -254,8 +254,9 @@ class RoundFrameConsumerTests(unittest.TestCase):
                          "waiting")
         self.assertEqual(gate.observe(complete, 2, 2, now=2, stream_id="stream-a").kind,
                          "taken")
+        # #56: the same round re-asked after a reconnect is already_taken, not taken again.
         self.assertEqual(gate.observe(complete, 1, 3, now=3, stream_id="stream-b").kind,
-                         "waiting")
+                         "already_taken")
         self.assertFalse(gate.taken)
 
     def test_complete_frame_spacing_and_same_image_status_changes_are_checked(self):

@@ -64,8 +64,10 @@ class RoundFrameGate:
             self.last_stream_id = stream_id
             self._reset_freeze_baseline()
             # A reconnect may show a retained Complete screen from a previous
-            # process/session. Require a fresh Monitoring frame on this stream.
-            self.round.clear_delivery()
+            # process/session. Require a fresh Monitoring frame on this stream before
+            # arming again. The delivery record stays, so a re-ask of the same round
+            # still gets already_taken (#56).
+            self.round.disarm()
         if self.last_sequence is not None and sequence <= self.last_sequence:
             self.round.activity.clear_active()
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")

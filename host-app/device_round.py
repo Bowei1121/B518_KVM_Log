@@ -92,15 +92,22 @@ class DeviceRound:
 
     # ---- what the reader's observations do -----------------------------------------------
 
-    def clear_delivery(self):
-        """Forget the armed round, its delivery and the started-channel evidence."""
+    def disarm(self):
+        """A new KVM stream: the round must be armed again by a fresh Monitoring frame on it.
+
+        The delivery record stays, so a re-ask of the same round still gets already_taken (#56).
+        """
         self.armed = False
         self.taken = False
         self.armed_capacity = None
-        self.delivered_signature = None
-        self.delivered_results = ()
         self.drop_candidate()
         self.activity.reset()
+
+    def clear_delivery(self):
+        """Forget the armed round, its delivery and the started-channel evidence."""
+        self.disarm()
+        self.delivered_signature = None
+        self.delivered_results = ()
 
     def drop_candidate(self):
         """A reading that is not a stable complete frame breaks the run of identical frames."""

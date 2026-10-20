@@ -159,34 +159,73 @@ def test_preparing_or_monitoring_after_settle_closes_sn_input_again(new_round):
     assert rnd.released_for_input() is False
 
 
-def test_stream_change_restarts_freeze_baseline_and_drops_delivery_record(monkeypatch):
-    """Gate level: a new stream_id clears the frozen flag and the delivery record, not just the round."""
+def _gate_with_observations(monkeypatch):
+    """A gate whose frame "is" the observation already; stream checks and the round are real."""
     import round_frame_consumer
     from round_frame_consumer import RoundFrameGate
 
-    # The reader is out of scope here: the "frame" handed to the gate is already the observation.
     monkeypatch.setattr(round_frame_consumer, "inspect_app_frame",
                         lambda frame, received_at, now, max_age: frame)
-    gate = RoundFrameGate("DFU-01", require_presentation_time=True, freeze_threshold=1.0)
+    return RoundFrameGate("DFU-01", require_presentation_time=True, freeze_threshold=1.0)
+
+
+def _look(gate, observation, sequence, received_at, pts, stream_id="s1"):
+    return gate.observe(observation, sequence, received_at, now=received_at,
+                        stream_id=stream_id, pts=pts)
+
+
+def _taken_on_stream_s1(gate):
     gate.round.note_start()
+    _look(gate, monitoring(), 1, 0.0, pts=1)
+    _look(gate, complete(), 2, 0.1, pts=2)
+    assert _look(gate, complete(), 3, 0.2, pts=3).kind == "taken"
 
-    def look(observation, sequence, received_at, pts, stream_id="s1"):
-        return gate.observe(observation, sequence, received_at, now=received_at,
-                            stream_id=stream_id, pts=pts)
 
-    look(monitoring(), 1, 0.0, pts=1)
-    look(complete(), 2, 0.1, pts=2)
-    assert look(complete(), 3, 0.2, pts=3).kind == "taken"
-    assert gate.round.delivered_signature is not None
-    # Same presentation time on the same stream freezes the picture after freeze_threshold.
-    look(complete(), 4, 0.3, pts=3)
-    assert look(complete(), 5, 1.5, pts=3).reason == "frame_frozen"
+def test_reconnect_same_round_reask_is_already_taken_with_original_results(monkeypatch):
+    gate = _gate_with_observations(monkeypatch)
+    _taken_on_stream_s1(gate)
+
+    again = _look(gate, complete(), 1, 1.0, pts=1, stream_id="s2")
+
+    assert again.kind == "already_taken"
+    assert again.results == ((1, "PASS"), (2, "PASS"), (3, "PASS"), (4, "PASS"))
+    assert gate.taken is False
+
+
+def test_reconnect_with_changed_screen_is_not_already_taken(monkeypatch):
+    gate = _gate_with_observations(monkeypatch)
+    _taken_on_stream_s1(gate)
+
+    changed = _look(gate, complete(("PASS", "FAIL", "PASS", "PASS")), 1, 1.0, pts=1, stream_id="s2")
+
+    assert changed.kind != "already_taken"
+    assert changed.kind == "waiting"
+    assert changed.reason == DELIVERABLE_WITHOUT_MONITORING
+
+
+def test_reconnect_while_armed_still_requires_manual_verification(monkeypatch):
+    """Case A (#56): armed, not yet taken, then the stream drops and a result shows on the new stream."""
+    gate = _gate_with_observations(monkeypatch)
+    gate.round.note_start()
+    _look(gate, monitoring(), 1, 0.0, pts=1)
+    assert gate.round.armed is True
+
+    result = _look(gate, complete(), 1, 1.0, pts=1, stream_id="s2")
+
+    assert result.kind == "waiting"
+    assert result.reason == DELIVERABLE_WITHOUT_MONITORING
+    assert gate.round.check_verdict(result.reason) == MANUAL_VERIFICATION_REQUIRED
+
+
+def test_new_stream_starts_its_own_freeze_baseline(monkeypatch):
+    """A new stream's first frame sets the presentation-time baseline; the old stream's PTS does not carry over."""
+    gate = _gate_with_observations(monkeypatch)
+    _taken_on_stream_s1(gate)
+    _look(gate, complete(), 4, 0.3, pts=3)
+    assert _look(gate, complete(), 5, 1.5, pts=3).reason == "frame_frozen"
     assert gate.is_frozen is True
 
-    fresh = look(complete(), 1, 1.6, pts=1, stream_id="s2")
+    first = _look(gate, complete(), 1, 1.6, pts=1, stream_id="s2")
 
+    assert first.reason not in ("frame_frozen", "out_of_order_source_frame")
     assert gate.is_frozen is False
-    assert gate.round.delivered_signature is None
-    assert gate.round.delivered_results == ()
-    assert fresh.kind == "waiting"
-    assert fresh.reason == DELIVERABLE_WITHOUT_MONITORING

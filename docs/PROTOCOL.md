@@ -361,7 +361,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 ## 7. 連線中斷
 
 - LabVIEW 在長輪詢中斷線時，Core 取消該請求並釋放設備鎖，不回覆。本輪開始請求留在 Core 存活期間，不因這次逾時或斷線清除。
-- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在請求仍在、且簽章未變時，重送 `check_finish` 得到 `already_taken`。
+- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在簽章未變時，重送 `check_finish` 得到 `already_taken` 並附原結果；此時本輪開始請求已因交付結清，不需仍在。KVM 重連（stream_id 改變）不影響這個重問：交付紀錄保留，但重連後須重新見到 Monitoring 才能取用新結果，重連前已 armed 而尚未交付的輪次，取得結果時仍回 `manual_verification_required`。範圍限同一 Core 行程內。
 
 ## 8. LabVIEW typedef 清單（建議）
 
