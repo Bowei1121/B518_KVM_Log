@@ -299,26 +299,41 @@ def test_valid_snapshot_formats_pass_validation(server, payload):
     assert server._validate_request(req) is None
 
 
-# One row per protocol command: (cmd, device_bound). The table test fails when the server's command table
-# gains or loses a command without this list being updated.
+# One row per protocol command: (cmd, device_bound, takes_lock). Expected data is written out here, not read
+# from the server, so a dropped or changed default_data fails the test (main's DEFAULT_DATA values).
+_UNKNOWN_DATA = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []}
 COMMAND_ROWS = [
-    ("ping", False), ("status", False), ("core_status", False), ("shutdown", False),
-    ("snapshot", True), ("check_start", True), ("check_finish", True), ("inspect", True),
-    ("input", True), ("start_test", True), ("monitor_start", True),
+    ("ping", False, True), ("status", False, True), ("core_status", False, True), ("shutdown", False, True),
+    ("snapshot", True, False), ("check_start", True, True), ("check_finish", True, True),
+    ("inspect", True, False), ("input", True, True), ("start_test", True, True), ("monitor_start", True, True),
 ]
+EXPECTED_DEFAULT_DATA = {
+    "ping": {"pong": False, "core_version": ""},
+    "status": {"core_uptime_sec": 0, "devices": []},
+    "core_status": {},
+    "shutdown": {},
+    "snapshot": {"width": 0, "height": 0, "format": "", "image_base64": ""},
+    "check_start": _UNKNOWN_DATA,
+    "check_finish": _UNKNOWN_DATA,
+    "inspect": _UNKNOWN_DATA,
+    "input": {"entered": []},
+    "start_test": {"action": ""},
+    "monitor_start": {"state": "", "capacity": 0},
+}
 
 
 def test_command_table_has_exactly_the_protocol_commands(server):
-    assert set(server._commands) == {cmd for cmd, _ in COMMAND_ROWS}
+    assert set(server._commands) == {cmd for cmd, _, _ in COMMAND_ROWS} == set(EXPECTED_DEFAULT_DATA)
 
 
-@pytest.mark.parametrize("cmd, device_bound", COMMAND_ROWS)
-def test_command_spec_device_binding(server, cmd, device_bound):
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_command_spec_device_binding_and_lock(server, cmd, device_bound, takes_lock):
     assert server._commands[cmd].device_bound is device_bound
+    assert server._commands[cmd].takes_lock is takes_lock
 
 
-@pytest.mark.parametrize("cmd, device_bound", COMMAND_ROWS)
-def test_device_field_is_checked_against_the_spec(server, cmd, device_bound):
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_device_field_is_checked_against_the_spec(server, cmd, device_bound, takes_lock):
     resp = _send(server, {"protocol_version": "1.0", "req_id": "dv", "device": "" if device_bound else "DFU-01",
                           "cmd": cmd})
 
@@ -326,14 +341,23 @@ def test_device_field_is_checked_against_the_spec(server, cmd, device_bound):
     assert resp["error"] == ("missing_device" if device_bound else "invalid_argument")
 
 
-@pytest.mark.parametrize("cmd, device_bound", COMMAND_ROWS)
-def test_error_reply_data_is_the_spec_default(server, cmd, device_bound):
+@pytest.mark.parametrize("cmd, device_bound, takes_lock", COMMAND_ROWS)
+def test_error_reply_data_matches_main_default_data(server, cmd, device_bound, takes_lock):
     resp = _send(server, {"protocol_version": "1.0", "req_id": "dd", "device": "DFU-01" if device_bound else "",
                           "cmd": cmd, "typo": 1})
 
     _assert_envelope(resp)
     assert resp["error"] == "unknown_field"
-    assert resp["data"] == server._commands[cmd].default_data
+    assert resp["data"] == EXPECTED_DEFAULT_DATA[cmd]
+
+
+@pytest.mark.parametrize("cmd, device", [("ping", "DFU-01"), ("status", "DFU-01")])
+def test_error_on_no_device_command_keeps_default_data(server, cmd, device):
+    """The reviewer's case: a no-device command refused for a stray device still reports its fixed data."""
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "nd", "device": device, "cmd": cmd})
+
+    assert resp["error"] == "invalid_argument"
+    assert resp["data"] == EXPECTED_DEFAULT_DATA[cmd]
 
 
 @pytest.mark.parametrize("cmd", ["snapshot", "check_start", "check_finish", "inspect", "input", "monitor_start"])

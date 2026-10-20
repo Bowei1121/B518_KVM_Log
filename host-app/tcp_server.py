@@ -147,6 +147,9 @@ class CommandSpec:
     parse: Callable[[Dict[str, Any], Any], Any] = _no_args
     default_data: Mapping[str, Any] = field(default_factory=dict)
     unsupported_message: str = ""
+    # True when the handler reads ctx.slot. Creating a slot also creates the device's FrameStream,
+    # so commands that never used it (snapshot) must not create it.
+    needs_slot: bool = False
 
 
 @dataclass(frozen=True)
@@ -281,19 +284,20 @@ class TcpJsonServer:
     def _default_specs(self) -> list[CommandSpec]:
         """The protocol 1.0 command table: one CommandSpec per command, the only place its rules live."""
         return [
-            CommandSpec("ping", self._handle_ping),
-            CommandSpec("status", self._handle_status),
+            CommandSpec("ping", self._handle_ping, default_data={"pong": False, "core_version": ""}),
+            CommandSpec("status", self._handle_status, default_data={"core_uptime_sec": 0, "devices": []}),
             CommandSpec("core_status", self._handle_core_status),
             CommandSpec("shutdown", self._handle_shutdown),
             CommandSpec("snapshot", self._handle_snapshot, fields=frozenset({"format", "quality"}),
                         device_bound=True, takes_lock=False, parse=_snapshot_args,
                         default_data={"width": 0, "height": 0, "format": "", "image_base64": ""}),
             CommandSpec("check_start", self._handle_check_start, fields=frozenset({"timeout_sec"}),
-                        device_bound=True, parse=_check_timeout, default_data=_unknown("")),
+                        device_bound=True, parse=_check_timeout, default_data=_unknown(""), needs_slot=True),
             CommandSpec("check_finish", self._handle_check_finish, fields=frozenset({"timeout_sec"}),
-                        device_bound=True, parse=_check_timeout, default_data=_unknown("")),
+                        device_bound=True, parse=_check_timeout, default_data=_unknown(""), needs_slot=True),
             CommandSpec("inspect", self._handle_inspect, fields=frozenset({"timeout_sec"}),
-                        device_bound=True, takes_lock=False, parse=_check_timeout, default_data=_unknown("")),
+                        device_bound=True, takes_lock=False, parse=_check_timeout, default_data=_unknown(""),
+                        needs_slot=True),
             CommandSpec("input", self._handle_input, fields=frozenset({"items"}), device_bound=True,
                         stations={"DFU": run_dfu_input}, parse=_input_items, default_data={"entered": []},
                         unsupported_message="'input' is only supported for DFU devices"),
@@ -302,7 +306,8 @@ class TcpJsonServer:
                         unsupported_message=(
                             "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in")),
             CommandSpec("monitor_start", self._handle_monitor_start, fields=frozenset({"timeout_sec"}),
-                        device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0}),
+                        device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0},
+                        needs_slot=True),
         ]
 
     async def _handle_ping(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
@@ -780,7 +785,7 @@ class TcpJsonServer:
         ctx = CommandContext(
             entry=entry,
             kvm=kvm_client,
-            slot=self._slot(device_id) if device_id is not None else None,
+            slot=self._slot(device_id) if device_id is not None and spec.needs_slot else None,
             operation=spec.stations[entry.station] if spec.stations is not None else None,
             reader=reader,
             writer=writer,
