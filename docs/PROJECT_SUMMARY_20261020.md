@@ -15,17 +15,27 @@
 - 迴圈：實作 → 審查 → PR comment → 修正 → PR comment（逐點說明）→ 再審查 → … 直到審查結論「可合併」才 merge。
 - merge 由主 session 執行，並同步 Gitea `origin` 的 main（`origin` 是 http，app 的同步工具不支援，改手動 push）。
 
-## 票況（截至 2026-10-20 換日）
+## 票況（2026-10-20 收尾）
 
-| 票 | PR | 狀態 |
-| --- | --- | --- |
-| #57 具名影格快照 | #62 | 已合併（`0511cfd`）；審查要求的 freeze_guard 不吞例外、`read_app_frame` 回 `(snapshot, observation)` 已併入 |
-| #59 core_protocol（Grok） | #61 | 已合併（`1b82ee9`）。注意：審查 session 自行修正 `_pending`（`5f9ef81`）並合併，修正未經另一 session 再審；`a2e0740` 已完成 #63 大部分工作 |
-| #54 Log Solution 讀取 | #65 | 審查 → 修 key 順序（`8d3e8e4`）→ 再審查「可合併」→ 已合併（`b9e8066`） |
-| #58 KVM 斷線偵測 | #66 | 審查「修正後合併」，3 項必須修正，已交開發 session 修正 |
-| #63 tests 收發收尾 | #67 | 待審查（已交審查 session） |
-| #55 DeviceRound | #68 | 待審查（已交審查 session）；與 #66 都改 `_long_poll`，後合併者解衝突 |
-| #56 重連後同輪重問 | — | blocked by #55 |
+全部完成，main 在 `4e24a0e`，GitHub 與 Gitea 同步；整合後 main 全套 **589 passed, 34 subtests**。
+
+| 票 | PR | 審查輪次 | 合併 |
+| --- | --- | --- | --- |
+| #57 具名影格快照 | #62 | 審查 → 修正（freeze_guard 不吞例外、`read_app_frame` 回 `(snapshot, observation)`） | `0511cfd` |
+| #59 core_protocol（Grok） | #61 | 審查 → 審查 session 自行修 `_pending` 並合併（未經再審） | `1b82ee9` |
+| #54 Log Solution 讀取 | #65 | 審查（key 順序）→ 修正 → 再審「可合併」 | `b9e8066` |
+| #63 tests 收發收尾 | #67 | 審查「可合併」 | `5d2db24` |
+| #58 KVM 斷線偵測 | #66 | 審查（3 項）→ 修正 → 再審「可合併」 | `a970e76` |
+| #55 DeviceRound | #68 | 審查（缺 SN 放行測試）→ 修正 → 再審「可合併」（含與 #66 試合併） | `4edb0b9` |
+| #56 重連後同輪重問 | #70 | 審查「可合併」（7 個 mutation 皆被抓到） | `4e24a0e` |
+
+新開：**#69**（`needs-info`）KVM 拔線偵測時間（ICE consent 逾時約 24～36 秒，推論）是否縮短，待現場 K1 實測。
+
+## 後續
+
+- 到現場依 `docs/FIELD_VERIFICATION.md` 執行 D1～D7、K1～K7、R1，並回填 #69。
+- 第二輪評估未開票的候選：C5 CoreChannel worker 佇列、C6 指令描述表、C7 HID 對位點擊原語；C3 後續的兩套凍結判斷合併（見 #57 票「後續事項」）。
+- 協定 1.1（輪次 UUID、ACK、持久化、14 天保留）仍未開始。
 
 ## 觀察
 
