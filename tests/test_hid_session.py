@@ -53,9 +53,22 @@ def test_find_returns_the_box_and_click_hits_its_center(tmp_path):
     box = session.find("dock_icon", template, frame, downscale=False)
     asyncio.run(session.click(box, failure="Dock HID 錯誤"))
 
-    assert box.left is not None
-    assert kvm.clicks == [(int(box.left + box.width / 2), int(box.top + box.height / 2))]
+    assert tuple(box) == (20, 10, 30, 30)
+    assert kvm.clicks == [(35, 25)]
     assert kvm.rpc_errors == []
+
+
+def test_find_within_reports_frame_coordinates(tmp_path):
+    root = tmp_path / "template"
+    catalog = TemplateCatalog(root)
+    frame = np.random.RandomState(2).randint(0, 255, (80, 120, 3), dtype=np.uint8)
+    catalog.save_crop(frame, (40, 20, 70, 50), "BT", "dock_icon")
+    session = _session(ClickKvm(frame), root)
+    template = session.load("BT", "dock_icon")
+
+    box = session.find("dock_icon", template, frame, within=(30, 10, 60, 50), downscale=False)
+
+    assert tuple(box) == (40, 20, 30, 30)
 
 
 def test_find_raises_flow_error_when_the_template_is_absent(tmp_path):
@@ -70,6 +83,8 @@ def test_find_raises_flow_error_when_the_template_is_absent(tmp_path):
 
     assert excinfo.value.code == "hid_failed"
     assert excinfo.value.entered == []
+    assert str(excinfo.value).startswith("找不到 dock_icon（相似度")
+    assert excinfo.value.score is not None
 
 
 def test_click_raises_flow_error_when_hid_reports_an_error(tmp_path):
@@ -85,4 +100,4 @@ def test_click_raises_flow_error_when_hid_reports_an_error(tmp_path):
 
     assert excinfo.value.code == "hid_failed"
     assert str(excinfo.value) == "Dock HID 錯誤: hidg endpoint disconnected"
-    assert kvm.clicks
+    assert kvm.clicks == [(35, 25)]

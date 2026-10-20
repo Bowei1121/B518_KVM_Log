@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import dfu_flow  # noqa: E402
 from hid_session import FlowError  # noqa: E402
-from dfu_helpers import SyntheticDfuKVM, checkbox_templates, save_templates  # noqa: E402
+from dfu_helpers import BOX, INPUT, SyntheticDfuKVM, checkbox_templates, save_templates  # noqa: E402
 
 FOUR = [(40, 50), (120, 50), (40, 90), (120, 90)]
 
@@ -134,6 +134,54 @@ def test_hid_error_while_typing_reports_the_slots_already_entered(root):
 
     assert excinfo.value.code == "hid_failed"
     assert excinfo.value.entered == [1]
+
+
+class _CheckboxHid(SyntheticDfuKVM):
+    """Each checkbox click reports a different HID error. The dock click does not."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self._errors = iter(("err1", "err2"))
+
+    async def click(self, x, y):
+        await super().click(x, y)
+        for px, py in self.positions:
+            if px <= x < px + BOX and py <= y < py + BOX:
+                self.rpc_errors.append(next(self._errors))
+                return
+
+
+def test_checkbox_hid_stops_at_the_first_error(root):
+    save_templates(root, FOUR)
+    kvm = _CheckboxHid(FOUR)
+
+    with pytest.raises(FlowError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}, {"slot": 2, "sn": "SN2"}], root)
+
+    assert str(excinfo.value) == "checkbox HID 錯誤: err1"
+    assert excinfo.value.entered == []
+    assert sum(event[0] == "click" for event in kvm.events) == 2
+    assert not any(event[0] == "type" for event in kvm.events)
+
+
+class _InputClickHid(SyntheticDfuKVM):
+    async def click(self, x, y):
+        await super().click(x, y)
+        ix, iy, iw, ih = INPUT
+        if ix <= x < ix + iw and iy <= y < iy + ih:
+            self.rpc_errors.append("input lost")
+
+
+def test_input_click_hid_error_types_nothing(root):
+    save_templates(root, FOUR, [True, False, False, False])
+    kvm = _InputClickHid(FOUR, [True, False, False, False])
+
+    with pytest.raises(FlowError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
+
+    assert str(excinfo.value) == "SN 輸入 HID 錯誤: input lost"
+    assert excinfo.value.entered == []
+    assert not any(event[0] == "type" for event in kvm.events)
 
 
 def test_missing_template_is_hid_failed_before_any_click(root):
