@@ -94,3 +94,18 @@
 - #32 擴大為「1.2 新幾何新舊並存」（左定位 x=0、狀態標記左移、心跳區），#77 blocked by #32 與 #73；兩票維持 `needs-info`，等 App 提供最終座標與影像樣本。
 - 已更新 CONTEXT.md、1.2 建議 C8、HANDOFF 副本第 13 節。
 - #73 實作 session 已由使用者啟動（Haiku）。
+
+### 第 2～4 波結果（同日）
+
+全部經 Haiku 實作、Opus 審查（PR comment）→ 修正 → 再審「可合併」後由主 session 合併，GitHub 與 Gitea 同步。
+
+| 票 | PR | 審查 | 合併後 main |
+| --- | --- | --- | --- |
+| #73 FrameStream | #85 | 換串流被 inspect 先吃掉、round 不 disarm（改由 generation 通知 gate）；wait_live 邊界測試 → 再審可合併 | `bb7ecb7` |
+| #74 HID 前凍結檢查 | #86 | monitor_start 等待中 KVM 斷線誤回 `frame_frozen`；兩個 mutation 存活 → 再審可合併 | `2bb6d8e` |
+| #75 RoundCheck＋DeviceSlot | #87 | ticket16 工具缺 `note_start`；PR 自述偏離 (a) 分析有誤 → 修正後 rebase 到 #86 → 再審可合併（mutation 12/12） | `cae3f20` |
+| #76 CommandSpec | #88 | ping／status 漏 default_data（錯誤回覆 data 變 `{}`）；表參數化測試自比自 → 改比 main 固定值 → 再審可合併 | `e1c58aa` |
+
+- 第三輪架構評估的重構票（#71～#76）全部完成；main `e1c58aa`，全套約 674 passed、34 subtests。
+- `core_status` 回覆欄位 `version` 已改為 `core_version`（PROTOCOL.md 已更新）。
+- 剩餘：#81 HidSession 清錯吞錯（可交 Grok）；#82 測試寫入真實 `~/Documents/template`、刪 `device_lock._owners`；#32、#77 等 Log Solution App 座標與影像樣本；#69 待現場 K1 實測。
