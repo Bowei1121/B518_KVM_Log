@@ -85,3 +85,12 @@
 - 後續票：#81 HidSession 點擊前清錯吞錯、鍵盤方法自行檢查（blocked by #74）；#82 測試寫入真實 `~/Documents/template` 的並行 flaky、刪 `device_lock._owners`。
 - `7bc235f` 誤帶入 repo 根的 `g71.md`、`g72.md`（Grok 留言草稿）已刪除。
 - Log Solution 交來心跳交接稿（Log Solution repo `docs/refactoring/LOG_TIMER_HEARTBEAT_CLAUDE_HANDOFF_2026-10-20.md`、ADR0012）：異常條件改為「連續三張有效同圖」、狀態格左移、精確座標待 App 實作；#77 第四輪 grilling（Q34–Q41）進行中。
+
+### #77 第四輪 grilling（Q34–Q41，使用者全部同意）
+
+- 異常條件採 Log Solution 版本：連續 3 張有效同圖。計入序列須新影格、四格可讀、相隔 ≥ 0.8 秒；相隔 > 3 秒或任一無效觀察清空序列。4 小格以灰階門檻分類比對 4 bit 圖案，不解讀數值。
+- 一次性指令：最近 3 秒內見過變化即放行，否則主動取樣最多約 2.5 秒。
+- 錯誤碼改名 `log_solution_heartbeat_stopped`（不宣稱 App 當機），不鎖定、無人工復位指令。計時區本版不讀。
+- #32 擴大為「1.2 新幾何新舊並存」（左定位 x=0、狀態標記左移、心跳區），#77 blocked by #32 與 #73；兩票維持 `needs-info`，等 App 提供最終座標與影像樣本。
+- 已更新 CONTEXT.md、1.2 建議 C8、HANDOFF 副本第 13 節。
+- #73 實作 session 已由使用者啟動（Haiku）。
