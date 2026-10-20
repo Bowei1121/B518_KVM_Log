@@ -37,6 +37,7 @@
 | F1 | 測試機 HDMI 停在監控中畫面（或 JetKVM 停止更新，PTS 不前進），送 `start_test` | 回 `frame_frozen`，DFU 未點 OK、BT 未點 Start All，`data.action` 為 `""` | | |
 | F2 | 同 F1 狀態送 `input` 與 `monitor_start` | 回 `frame_frozen`，未送任何 HID；`monitor_start` 不建立本輪開始請求 | | |
 | F3 | 送 `monitor_start`（`timeout_sec` 設 60），等待 Preparing 時中斷畫面串流 | 數秒內回 `frame_frozen`，不等到 60 秒 | | |
+| F4 | JetKVM 畫面靜止 10 分鐘（測試機不動作）後送 `start_test`／`input` | 正常執行，不回 `frame_frozen`。若 JetKVM 靜止時降低送出影格數（間隔超過 1 秒），此項會失敗，結果欄記錄實際送出間隔 | | |
 
 ## KVM 重連後同輪重問（#56）
 

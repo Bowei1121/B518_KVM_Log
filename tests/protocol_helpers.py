@@ -308,7 +308,7 @@ def arm_round(srv, kvm, device, statuses=None):
     # monitor_start first takes a FrameStream window (ADR-0005), which reads the picture before its own
     # Preparing reading. Wait on the round's start request instead: it is set exactly when Preparing is seen.
     rnd = srv._device_round(device)
-    rnd.start_requested = False
+    assert not rnd.start_requested, f"arm_round needs {device} without a pending round-start request"
     out = {}
 
     def run():

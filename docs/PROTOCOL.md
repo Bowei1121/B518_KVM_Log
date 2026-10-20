@@ -290,7 +290,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 4. 準備中 → 不點 Dock、不送快捷鍵，直接等監控中。這一張準備中就建立（或保留）該設備的本輪開始請求。
 5. 其餘（待命、一般完成、人工停止完成，或當時看不清楚）：點共用 Dock 圖示 `COMMON/COMMON_log_solution_dock_icon.png`。模板缺失或 HID 錯誤 → `hid_failed`；圖示不在畫面上 → `log_solution_not_found`。
 6. 點擊後 3 秒內須讀到可靠畫面，否則 `log_solution_not_found`。讀到監控中 → `log_solution_busy`；待確認 → `log_solution_review`；準備中則不送快捷鍵、改為等待。待命、一般完成、人工停止完成才送 Cmd+Shift+M，並建立本輪開始請求。
-7. 在 `timeout_sec` 內：準備中繼續等（並保留請求）；待確認立即 `log_solution_review`；看到監控中即成功。這一次呼叫中看到監控中，視為「已見本次監控就緒」。等待中畫面凍結 → 立即 `frame_frozen`，不等到 `timeout_sec`（保留已建立的請求）。逾時回 `monitor_not_started`。
+7. 在 `timeout_sec` 內：準備中繼續等（並保留請求）；待確認立即 `log_solution_review`；看到監控中即成功。這一次呼叫中看到監控中，視為「已見本次監控就緒」。等待中畫面凍結 → 立即 `frame_frozen`，不等到 `timeout_sec`（保留已建立的請求）；等待中 KVM 斷線 → 立即 `kvm_connect_failed`，凍結時也先查斷線。逾時回 `monitor_not_started`。
 
 `monitor_not_started` 不清除本輪開始請求。只有 `taken` 或 `manual_verification_required` 才清除。因此準備逾時之後，若畫面變成可交付結果，`check_finish` 回 `manual_verification_required`，不交付。
 

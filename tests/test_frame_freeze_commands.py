@@ -40,8 +40,11 @@ class StaticPtsDfuKVM(SyntheticDfuKVM):
                              stream_id=snap.stream_id, pts=FROZEN_PTS)
 
 
-class DyingDfuKVM(SyntheticDfuKVM):
-    """A DFU screen whose video track ends during the first picture read (the KVM dies inside the window)."""
+class DyingDfuKVM(StaticPtsDfuKVM):
+    """A DFU screen whose video track ends during the first picture read, and whose PTS then stays still.
+
+    A real dead track stops delivering frames, so the window ends FROZEN; the reply must still be kvm_connect_failed.
+    """
 
     def latest_frame(self):
         snap = super().latest_frame()
@@ -50,11 +53,12 @@ class DyingDfuKVM(SyntheticDfuKVM):
 
 
 class DyingLogSolutionKVM(LogSolutionKVM):
-    """A Log Solution screen whose video track ends during the first picture read."""
+    """A Log Solution screen whose video track ends during the first picture read, with PTS frozen."""
 
     def latest_frame(self):
         snap = super().latest_frame()
         self.end_track()
+        self.freeze()
         return snap
 
 
@@ -107,10 +111,15 @@ def _monitor_start(srv, timeout_sec=5):
     return _send(srv, build_request("monitor_start", "ms-frz", "DFU-01", {"timeout_sec": timeout_sec}))
 
 
-@pytest.mark.parametrize("command", ["input", "start_test"])
-def test_frozen_picture_refuses_dfu_hid_commands_before_any_hid(serve, command):
+@pytest.mark.parametrize(("command", "log_state"), [
+    ("input", "standby"),
+    ("input", "monitoring"),  # the existing Log Solution refusal would say log_solution_busy
+    ("start_test", "monitoring"),
+    ("start_test", "standby"),  # the existing Log Solution refusal would say monitor_not_ready
+])
+def test_frozen_picture_refuses_dfu_hid_commands_before_any_hid(serve, command, log_state):
     kvm = StaticPtsDfuKVM(FOUR)
-    kvm.log_state = "monitoring" if command == "start_test" else "standby"
+    kvm.log_state = log_state
     srv = serve(kvm)
 
     resp = _input(srv) if command == "input" else _start_test(srv)
@@ -166,9 +175,8 @@ def test_kvm_dying_inside_the_window_is_kvm_connect_failed_and_sends_no_hid(serv
     assert _hid(kvm) == []
 
 
-def test_monitor_start_stops_at_once_when_the_picture_freezes_while_waiting(serve):
-    kvm = LogSolutionKVM(state="preparing")
-    srv = serve(kvm)
+def _monitor_start_waiting_on_preparing(srv, kvm, after_preparing):
+    """Run monitor_start (budget 30 s) on a Preparing screen; ``after_preparing`` acts once Preparing is seen."""
     out = {}
 
     def run():
@@ -176,17 +184,54 @@ def test_monitor_start_stops_at_once_when_the_picture_freezes_while_waiting(serv
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    # Preparing is seen exactly when the round-start request is set: freeze after that, while monitor_start waits.
+    # Preparing is seen exactly when the round-start request is set: act after that, while monitor_start waits.
     rnd = srv._device_round("DFU-01")
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline and not rnd.start_requested:
         time.sleep(0.01)
-    freeze_at = time.monotonic()
-    kvm.freeze()
+    started = time.monotonic()
+    after_preparing()
     thread.join(timeout=10)
+    return out.get("resp"), time.monotonic() - started
 
-    resp = out.get("resp")
+
+def test_monitor_start_stops_at_once_when_the_picture_freezes_while_waiting(serve):
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+
+    resp, elapsed = _monitor_start_waiting_on_preparing(srv, kvm, kvm.freeze)
+
     assert resp is not None
     assert resp["error"] == "frame_frozen", resp
-    assert time.monotonic() - freeze_at < 5, "must not wait for the 30 s budget"
+    assert elapsed < 5, "must not wait for the 30 s budget"
+    assert _hid(kvm) == []
+
+
+def test_kvm_dying_while_monitor_start_waits_is_kvm_connect_failed_not_frame_frozen(serve):
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+
+    def kill():
+        kvm.freeze()
+        kvm.end_track()
+
+    resp, elapsed = _monitor_start_waiting_on_preparing(srv, kvm, kill)
+
+    assert resp is not None
+    assert resp["error"] == "kvm_connect_failed", resp
+    assert elapsed < 5, "a dead KVM must be reported at once, not after the freeze threshold or the 30 s budget"
+    assert _hid(kvm) == []
+
+
+def test_frozen_monitor_start_keeps_the_input_release_of_a_settled_round(serve):
+    kvm = LogSolutionKVM(state="standby")
+    kvm.freeze()
+    srv = serve(kvm)
+    rnd = srv._device_round("DFU-01")
+    rnd.input_released = True
+
+    resp = _monitor_start(srv)
+
+    assert resp["error"] == "frame_frozen"
+    assert rnd.input_released is True
     assert _hid(kvm) == []
