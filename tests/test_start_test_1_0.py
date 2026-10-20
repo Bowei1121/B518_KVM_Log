@@ -246,7 +246,7 @@ def test_start_test_takes_no_command_fields(serve, extra, error):
 def test_start_test_is_device_locked(serve):
     kvm = _dfu()
     srv = serve(kvm)
-    assert srv.lock_manager.try_acquire("DFU-01", req_id="held")
+    assert srv.lock_manager.try_acquire("DFU-01")
 
     resp = _start_test(srv, "DFU-01")
 

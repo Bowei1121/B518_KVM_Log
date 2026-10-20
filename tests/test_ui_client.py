@@ -166,7 +166,7 @@ class TestLightweightMonitorUIClient:
         assert stations["DFU"]["status"] in ("IDLE", "DISCONNECTED")
 
         # 2. Simulate LabVIEW locking device "1" (DFU)
-        assert server.lock_manager.try_acquire("DFU-01", req_id="labview-sim-1") is True
+        assert server.lock_manager.try_acquire("DFU-01") is True
 
         st_res2 = client.get_stations(timeout=2.0)
         stations2 = {s["station"]: s for s in reversed(st_res2.get("stations", []))}
@@ -260,7 +260,7 @@ class TestLightweightMonitorUIClient:
         assert res["results"] == []
 
         # Manual checks are read-only: a LabVIEW lock on the device does not block them.
-        assert server.lock_manager.try_acquire("DFU-01", req_id="other-tester") is True
+        assert server.lock_manager.try_acquire("DFU-01") is True
         res_locked = client.manual_check(device="DFU-01", timeout_sec=0)
         assert res_locked.get("status") == "ok"
         assert res_locked.get("error") != "device_busy"

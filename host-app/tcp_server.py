@@ -744,7 +744,7 @@ class TcpJsonServer:
         device_id: Optional[str] = entry.device_id if entry is not None else None
 
         if device_id is not None and spec.takes_lock:
-            if not self.lock_manager.try_acquire(device_id, req_id=req_id):
+            if not self.lock_manager.try_acquire(device_id):
                 logger.warning(
                     "Device %s busy; rejecting command '%s' (req_id=%s)",
                     device_id,
