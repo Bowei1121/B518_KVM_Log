@@ -8,8 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("DeviceLockManager")
 
@@ -20,7 +19,6 @@ class DeviceLockManager:
     def __init__(self) -> None:
         self._manager_lock = threading.Lock()
         self._locks: Dict[str, threading.Lock] = {}
-        self._owners: Dict[str, Dict[str, Any]] = {}
 
     def _normalize_key(self, device: Any) -> str:
         """Normalize a device identifier into a non-empty string."""
@@ -31,7 +29,7 @@ class DeviceLockManager:
             raise ValueError("Device identifier cannot be empty")
         return key
 
-    def try_acquire(self, device: Any, req_id: Optional[str] = None) -> bool:
+    def try_acquire(self, device: Any) -> bool:
         """Attempt to acquire the lock for a specific device without blocking.
 
         Returns True if acquired, False if already locked (busy).
@@ -44,12 +42,7 @@ class DeviceLockManager:
 
         acquired = lock.acquire(blocking=False)
         if acquired:
-            with self._manager_lock:
-                self._owners[key] = {
-                    "req_id": req_id,
-                    "acquired_at": time.time(),
-                }
-            logger.debug("Acquired lock for device '%s' (req_id=%s)", key, req_id)
+            logger.debug("Acquired lock for device '%s'", key)
         else:
             logger.debug("Failed to acquire lock for device '%s' (busy)", key)
         return acquired
@@ -63,7 +56,6 @@ class DeviceLockManager:
 
         with self._manager_lock:
             lock = self._locks.get(key)
-            self._owners.pop(key, None)
 
         if lock is not None:
             try:

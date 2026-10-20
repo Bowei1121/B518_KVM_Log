@@ -45,7 +45,7 @@ def probe_server():
 
 
 def test_devices_on_different_stations_run_without_busy(probe_server):
-    assert probe_server.lock_manager.try_acquire("DFU-01", req_id="held") is True
+    assert probe_server.lock_manager.try_acquire("DFU-01") is True
 
     for device in ("FCT-01", "BT-01"):
         resp = _send(probe_server, _probe(device, f"x-{device}"))
@@ -53,7 +53,7 @@ def test_devices_on_different_stations_run_without_busy(probe_server):
 
 
 def test_same_station_devices_do_not_share_busy_state(probe_server):
-    assert probe_server.lock_manager.try_acquire("BT-01", req_id="held") is True
+    assert probe_server.lock_manager.try_acquire("BT-01") is True
 
     resp = _send(probe_server, _probe("BT-02", "bt2"))
 
@@ -62,7 +62,7 @@ def test_same_station_devices_do_not_share_busy_state(probe_server):
 
 
 def test_second_command_on_same_device_is_device_busy(probe_server):
-    assert probe_server.lock_manager.try_acquire("DFU-01", req_id="held") is True
+    assert probe_server.lock_manager.try_acquire("DFU-01") is True
 
     resp = _send(probe_server, _probe("DFU-01", "again"))
 
@@ -71,7 +71,7 @@ def test_second_command_on_same_device_is_device_busy(probe_server):
 
 
 def test_status_reports_busy_per_device_only(probe_server):
-    assert probe_server.lock_manager.try_acquire("BT-01", req_id="held") is True
+    assert probe_server.lock_manager.try_acquire("BT-01") is True
 
     resp = _send(probe_server, {"protocol_version": "1.0", "req_id": "st", "device": "", "cmd": "status"})
     busy = {d["device"]: d["busy"] for d in resp["data"]["devices"]}

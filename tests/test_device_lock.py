@@ -52,28 +52,28 @@ def test_device_lock_manager_acquire_and_release():
     assert not mgr.is_locked("DFU-01")
     assert mgr.get_active_devices() == []
 
-    assert mgr.try_acquire("DFU-01", req_id="req-1") is True
+    assert mgr.try_acquire("DFU-01") is True
     assert mgr.is_locked("DFU-01") is True
     assert "DFU-01" in mgr.get_active_devices()
 
     # Secondary acquire must fail fast
-    assert mgr.try_acquire("DFU-01", req_id="req-2") is False
+    assert mgr.try_acquire("DFU-01") is False
 
     mgr.release("DFU-01")
     assert not mgr.is_locked("DFU-01")
     assert mgr.get_active_devices() == []
 
     # Re-acquire must succeed
-    assert mgr.try_acquire("DFU-01", req_id="req-3") is True
+    assert mgr.try_acquire("DFU-01") is True
     mgr.release("DFU-01")
 
 
 def test_device_lock_manager_normalization():
     mgr = DeviceLockManager()
     # Integer vs string normalization
-    assert mgr.try_acquire(1, req_id="num-1") is True
+    assert mgr.try_acquire(1) is True
     assert mgr.is_locked("1") is True
-    assert mgr.try_acquire("1", req_id="str-1") is False
+    assert mgr.try_acquire("1") is False
     mgr.release("1")
     assert not mgr.is_locked(1)
 
