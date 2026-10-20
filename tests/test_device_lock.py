@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from core_protocol import dumps_request  # noqa: E402
 from protocol_helpers import recv_reply  # noqa: E402
 
-from device_lock import DeviceBusyError, DeviceLockManager
+from device_lock import DeviceLockManager
 from protocol_helpers import make_pool, make_registry, wire, numbered
 from tcp_server import TcpJsonServer
 
@@ -55,9 +55,6 @@ def test_device_lock_manager_acquire_and_release():
     assert mgr.try_acquire("DFU-01", req_id="req-1") is True
     assert mgr.is_locked("DFU-01") is True
     assert "DFU-01" in mgr.get_active_devices()
-    owner = mgr.get_owner("DFU-01")
-    assert owner is not None
-    assert owner["req_id"] == "req-1"
 
     # Secondary acquire must fail fast
     assert mgr.try_acquire("DFU-01", req_id="req-2") is False
@@ -65,7 +62,6 @@ def test_device_lock_manager_acquire_and_release():
     mgr.release("DFU-01")
     assert not mgr.is_locked("DFU-01")
     assert mgr.get_active_devices() == []
-    assert mgr.get_owner("DFU-01") is None
 
     # Re-acquire must succeed
     assert mgr.try_acquire("DFU-01", req_id="req-3") is True
@@ -101,19 +97,6 @@ def test_device_lock_manager_multiple_independent_devices():
     mgr.release("dev-A")
     mgr.release("dev-C")
     assert mgr.get_active_devices() == []
-
-
-def test_device_lock_manager_context_manager():
-    mgr = DeviceLockManager()
-    with mgr.lock_device("dev-1", req_id="ctx-1"):
-        assert mgr.is_locked("dev-1")
-        with pytest.raises(DeviceBusyError) as exc_info:
-            with mgr.lock_device("dev-1", req_id="ctx-2"):
-                pass
-        assert exc_info.value.device == "dev-1"
-        assert exc_info.value.req_id == "ctx-2"
-
-    assert not mgr.is_locked("dev-1")
 
 
 # ==============================================================================

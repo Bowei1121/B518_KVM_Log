@@ -123,7 +123,9 @@ def test_core_refuses_to_start_when_device_list_missing(tmp_path):
     missing = tmp_path / "devices.json"
 
     proc = subprocess.run(
-        [sys.executable, str(_HOST_APP_DIR / "tcp_server.py"), "--host", "127.0.0.1", "--port", "0", "--devices-file", str(missing)],
+        [sys.executable, str(_HOST_APP_DIR / "core_daemon.py"), "run", "--host", "127.0.0.1", "--port", "0",
+         "--devices-file", str(missing),
+         "--pid-file", str(tmp_path / "core.pid"), "--log-file", str(tmp_path / "core.log")],
         capture_output=True,
         text=True,
         timeout=30,
@@ -138,7 +140,9 @@ def test_core_refuses_to_start_and_lists_errors_when_device_list_invalid(tmp_pat
     bad.write_text(json.dumps({"DFU-1": {"station": "DFU", "kvm_ip": "192.168.132.70", "channels": 4}}), encoding="utf-8")
 
     proc = subprocess.run(
-        [sys.executable, str(_HOST_APP_DIR / "tcp_server.py"), "--host", "127.0.0.1", "--port", "0", "--devices-file", str(bad)],
+        [sys.executable, str(_HOST_APP_DIR / "core_daemon.py"), "run", "--host", "127.0.0.1", "--port", "0",
+         "--devices-file", str(bad),
+         "--pid-file", str(tmp_path / "core.pid"), "--log-file", str(tmp_path / "core.log")],
         capture_output=True,
         text=True,
         timeout=30,

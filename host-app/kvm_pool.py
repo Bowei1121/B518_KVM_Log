@@ -259,14 +259,6 @@ class KVMConnectionPool:
         if entry is not None:
             await self._close_entry(entry)
 
-    async def close_connection(self, ip: str) -> None:
-        """Explicitly evict and close a connection by IP."""
-        try:
-            canonical_ip = normalize_kvm_ip(ip)
-        except ValueError:
-            return
-        await self._evict_entry(canonical_ip)
-
     async def _maintenance_worker(self) -> None:
         """Background worker that periodically triggers heartbeats and idle pruning."""
         logger.info("KVM pool background worker started.")
@@ -348,14 +340,4 @@ class KVMConnectionPool:
             "last_heartbeat_at": entry.last_heartbeat_at,
             "heartbeat_count": entry.heartbeat_count,
             "in_use": entry.in_use,
-        }
-
-    def get_pool_status(self) -> Dict[str, Any]:
-        """Return high-level status of the connection pool."""
-        return {
-            "active_connections": self.active_count(),
-            "active_ips": self.get_active_ips(),
-            "idle_timeout": self.idle_timeout,
-            "heartbeat_interval": self.heartbeat_interval,
-            "is_running": self._is_running,
         }

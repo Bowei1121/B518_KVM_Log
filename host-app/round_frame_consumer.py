@@ -2,7 +2,7 @@
 
 Reading the screen is log_solution_reader's job. The device's round progress lives in
 device_round.DeviceRound; this module owns what is about the frame stream (sequence, stream
-identity, presentation-time freeze) and shapes the legacy reply (tcp_round_reply).
+identity, presentation-time freeze).
 """
 
 import time
@@ -34,20 +34,9 @@ class RoundFrameGate:
         self.first_static_presentation_time = None
 
     @property
-    def taken(self):
-        """Compatibility: the round's taken flag, read by tests/test_round_frame_consumer.py."""
-        return self.round.taken
-
-    @property
     def last_active(self):
         """Channels the last reading confirmed as started (check's ``active``)."""
         return self.round.activity.last_active
-
-    @property
-    def _activity_prev(self):
-        """Compatibility only: tests/test_round_frame_consumer.py reads it. Drop it once that test stops
-        reading it; changing that test is out of scope for #55."""
-        return self.round.activity.previous
 
     def _reset_freeze_baseline(self):
         """Stream change: the sequence and presentation-time baseline starts over."""
@@ -105,23 +94,3 @@ def observe_latest_round_frame(kvm, gate, now=None, accept_round=True):
         return TakeDecision("unknown", gate.device_id, reason="no_frame")
     return gate.observe(snapshot.image, snapshot.sequence, snapshot.received_monotonic, now=now,
                         stream_id=snapshot.stream_id, pts=snapshot.pts, accept_round=accept_round)
-
-
-def tcp_round_reply(decision):
-    """Legacy line format, kept only for the offline Ticket 16 evidence tools.
-
-    The TCP server speaks JSON 1.0 (docs/PROTOCOL.md); nothing on the wire uses this.
-    """
-    if decision.kind == "frozen" or decision.reason == "frame_frozen":
-        return "error:frame_frozen\r\n"
-    if decision.kind == "taken":
-        body = ",".join("{}::{}".format(slot, status)
-                        for slot, status in decision.results)
-        return "action_done,{}\r\n".format(body)
-    if decision.kind == "paused":
-        return "action_paused,review\r\n"
-    if decision.kind == "already_taken":
-        return "action_waiting,already_taken\r\n"
-    if decision.kind == "unknown":
-        return "action_waiting,unknown,{}\r\n".format(decision.reason)
-    return "action_waiting,{}\r\n".format(decision.reason or "monitoring")

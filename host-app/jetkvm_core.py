@@ -9,8 +9,6 @@ JetKVM 可重用連線模組
     .size   -> (W, H)
     .call(method, params)  -> 送 JSON-RPC (鍵鼠)
     .click(px, py) / .type_text(text)  (coroutine)
-- AsyncLoop: 在背景執行緒跑一個 asyncio event loop, 供 Tkinter 等同步程式呼叫
-    .submit(coro) -> concurrent.futures.Future
 
 協定細節見 [[jetkvm-direct-client]]: WebSocket signaling + 韌體 0.4.6 走 rpc JSON-RPC。
 """
@@ -50,35 +48,6 @@ _USAGE["-"] = (False, 0x2D)
 _USAGE["_"] = (True, 0x2D)
 _USAGE["."] = (False, 0x37)
 _USAGE[":"] = (True, 0x33)
-
-
-class AsyncLoop:
-    """背景執行緒裡的 asyncio event loop。"""
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-
-    def submit(self, coro):
-        """把 coroutine 丟到背景 loop 執行, 回傳 concurrent.futures.Future。"""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
-
-    def stop(self):
-        self.loop.call_soon_threadsafe(self.loop.stop)
-
-
-async def grab_one_frame(host, password=""):
-    """一次性連線取得一張遠端影格 (BGR numpy) 後關閉。等同 jetkvm_client 的擷取功能。"""
-    c = JetKVMClient(host, password)
-    try:
-        await c.connect()
-        return c.frame
-    finally:
-        await c.close()
 
 
 class JetKVMClient:
