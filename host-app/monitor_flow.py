@@ -151,6 +151,8 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         deadline = time.monotonic() + start_timeout_sec
         while True:
             decision = await asyncio.to_thread(observe_latest_round_frame, kvm, gate)
+            if decision.kind == "frozen":
+                raise FlowError("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
             if decision.state == MarkerState.MONITORING:
                 ok = True
                 return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}

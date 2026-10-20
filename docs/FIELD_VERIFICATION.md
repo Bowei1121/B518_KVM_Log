@@ -30,6 +30,14 @@
 | K6 | 測試機畫面長時間靜止（例如 10 分鐘無變化）時送 `check_finish` | 不被誤判為斷線，不觸發重連 | | |
 | K7 | 長輪詢中讓 JetKVM 正常重開機（會送 DTLS close，不是拔線） | 死亡訊號立即出現，進行中的指令立即回 `kvm_connect_failed`，不等 `frame_frozen`；開機後下一個指令自動重連 | | |
 
+## 畫面凍結時的 HID 指令（#74）
+
+| # | 步驟 | 預期結果 | 驗證日期 | 結果 |
+| --- | --- | --- | --- | --- |
+| F1 | 測試機 HDMI 停在監控中畫面（或 JetKVM 停止更新，PTS 不前進），送 `start_test` | 回 `frame_frozen`，DFU 未點 OK、BT 未點 Start All，`data.action` 為 `""` | | |
+| F2 | 同 F1 狀態送 `input` 與 `monitor_start` | 回 `frame_frozen`，未送任何 HID；`monitor_start` 不建立本輪開始請求 | | |
+| F3 | 送 `monitor_start`（`timeout_sec` 設 60），等待 Preparing 時中斷畫面串流 | 數秒內回 `frame_frozen`，不等到 60 秒 | | |
+
 ## KVM 重連後同輪重問（#56）
 
 | # | 步驟 | 預期結果 | 驗證日期 | 結果 |
