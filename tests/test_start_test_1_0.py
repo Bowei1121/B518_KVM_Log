@@ -148,6 +148,37 @@ def test_start_test_without_a_frame_is_monitor_not_ready_and_sends_no_hid(serve,
     assert kvm.events == []
 
 
+class FirstClickHid(SyntheticDfuKVM):
+    """The first click reports a HID error. Later clicks do not."""
+
+    def __init__(self, positions):
+        super().__init__(positions)
+        self._hid_sent = False
+
+    async def click(self, x, y):
+        await super().click(x, y)
+        if not self._hid_sent:
+            self._hid_sent = True
+            self.rpc_errors.append("hidg endpoint disconnected")
+
+
+def test_hid_failure_does_not_fail_the_next_start_test_on_the_same_kvm(serve):
+    kvm = FirstClickHid(FOUR)
+    kvm.log_state = "monitoring"
+    srv = serve(kvm)
+
+    first = _start_test(srv, "DFU-01", req_id="st-1")
+    second = _start_test(srv, "DFU-01", req_id="st-2")
+
+    assert first["status"] == "error"
+    assert first["error"] == "hid_failed"
+    assert first["message"] == "Dock HID 錯誤: hidg endpoint disconnected"
+    assert second["status"] == "ok"
+    assert second["error"] == ""
+    assert second["data"] == {"action": "ok"}
+    assert len(_clicks_on_ok(kvm)) == 1
+
+
 def test_dfu_hid_failure_is_hid_failed_and_no_ok_click(serve):
     kvm = FailingDfuKVM(FOUR)
     kvm.log_state = "monitoring"
