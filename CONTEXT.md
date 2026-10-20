@@ -15,7 +15,7 @@
 ## Protocol & Flow
 - **JSON Protocol**: 換行符分隔（Newline-Delimited）的 JSON 格式協定。包含 Request ID，取代原先易碎的逗號分隔純字串協定，無向後相容包袱。
 - **Long Polling**: 用於耗時測試的 TCP 等待機制。LabVIEW 對 `check` 送出長 Timeout 請求，Core Service 卡住該 TCP 連線在背景監聽，直到結果出現才回傳，降低頻寬浪費。
-- **Frame Freeze Guard**: 畫面凍結防呆機制。強制檢查 JetKVM 底層回傳影格的時間戳 (Presentation Timestamp)，確保測試機 HDMI 畫面活躍，避免因當機誤判前次結果。
+- **Frame Freeze Guard**: 畫面凍結防呆機制。強制檢查 JetKVM 底層回傳影格的時間戳 (Presentation Timestamp)，確保測試機 HDMI 畫面活躍，避免因當機誤判前次結果。只能證明 JetKVM 串流在送畫面；Mac 或 Log Solution 當機時 HDMI 仍持續輸出、PTS 仍前進，須由「Log Solution 心跳」判斷。觀察串流不算消耗輪次：唯讀的 `inspect` 也會更新凍結狀態。
 
 ## 協作角色
 
@@ -111,3 +111,10 @@ Log Solution 偵測到需由人員處理的衝突、警報或啟動失敗；橋�
 
 **測試結束確認**：
 本輪全部配置位置的結果完整、無待確認事項，且已可靠確認同輪與可交付；不同於測試開始確認，也不代表全部產品PASS。
+
+
+**Log Solution 心跳**：
+Log Solution 在狀態標記右側持續變化的方塊（4 格黑白、16 態計數，每 0.5 秒前進一次），只要 App 活著、任何狀態都在跳。橋接只比對前後觀察是否變化：可讀但 3 秒無變化即 `log_solution_unresponsive`（Mac 或 App 當機，交人員檢查）；讀不到算 Log Solution 不可見，走 Dock 補救。不同於 Frame Freeze Guard（串流問題）。1.2 建議 C8，畫面無此方塊時橋接跳過檢查。
+
+**本輪經過時間**：
+Log Solution 畫面上給人看的計時，開始監控起算、本輪結束停止；不屬於橋接判讀契約，橋接不讀。

@@ -1,6 +1,6 @@
 # B518 Log Solution 修改建議：KVM 顯示契約 1.2
 
-日期：2026-10-16（Asia/Taipei），2026-10-17 補充 C6，2026-10-19 補充 C7、修訂 C5，並改寫 C1 為第五種圖樣（以 `LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 為準）
+日期：2026-10-16（Asia/Taipei），2026-10-17 補充 C6，2026-10-19 補充 C7、修訂 C5，並改寫 C1 為第五種圖樣（以 `LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md` 為準），2026-10-20 補充 C8
 對象：B518 Log Solution 開發者（請依本文件在 Log Solution 專案自行開票）
 提出方：B518 JetKVM Log 橋接程式
 依據：Log Solution `main` `9cad82f`（VERSION 0.1.0）原始碼唯讀查證；`docs/refactoring/KVM_DISPLAY_CONTRACT.md`（1.1）
@@ -15,6 +15,7 @@
 3. **FCT 先監控、後開測的時序可以正常運作**：FCT 治具推入前就開始監控，等待治具推入的時間不會被誤判為 `NOTEST`。
 4. **色帶左側被遮住時一定偵測得到**：左定位方塊移到色帶最左側上方，左右兩個定位方塊涵蓋整條色帶；任何從左側蓋到色帶的視窗都會先蓋住左定位方塊。
 5. **格子顏色有唯一的書面來源**：每種格子狀態的顏色寫進契約，雙方都以契約為準，不再各自抄程式裡的值。
+6. **偵測得到 Log Solution 或 Mac 當機**：畫面上有一塊只要 App 活著就持續變化的心跳方塊（C8）。
 
 排數標記不變。**C1 新增第五種狀態圖樣（0011）、C6 改變左定位方塊的位置**，橋接程式都需要配合更新（見第 4 節）；C7 只把現有顏色寫進契約、移除未使用的 `STALLED`，並統一 NOTEST 的值；C2～C5 不影響橋接判讀。
 
@@ -137,6 +138,18 @@ state_for_round_snapshot(snapshot)
 - **NOTEST** 以 `#f04bf1` 為準，橋接程式改成同一個值。
 - 顏色是 1.1 既有的值（除了移除 `STALLED`），所以這一條不影響橋接判讀，可以和 C5 一起發布。
 
+### C8 Log Solution 心跳方塊與本輪經過時間（解決 P9）
+
+**P9**：橋接的 Frame Freeze Guard 只看 JetKVM 串流的 PTS。Mac 或 Log Solution 當機時 HDMI 仍持續輸出同一張畫面、PTS 仍前進，橋接會把凍住的狀態標記與色帶當成有效畫面（例如停在 Monitoring 時照送開測 HID）。
+
+1. **心跳方塊（給橋接讀）**：
+   - 4 格黑白組成的 4-bit 計數器，每 0.5 秒 +1，16 態循環（一圈 8 秒）。
+   - **只要 App 活著就一直跳**，任何整輪狀態（READY、PREPARING、MONITORING、REVIEW、完成、人工停止）都跳；不隨監控開始／結束啟停。
+   - 位置：狀態標記右側、同一列，使「標記可見」與「心跳可見」同時成立。現行狀態格 (278, 0) 26×26，右定位點在 x=320，中間只有 16 單位，**放不下**；請 Log Solution 決定移動右定位點或其他同列安排，精確座標寫進契約。
+   - 每格不小於狀態格單格（10×10 Tk 單位），建議實際像素至少 12×12、純黑／純白、周圍白色 quiet zone，避免 H.264 壓縮糊掉。
+2. **橋接判讀**（供參考，不需 Log Solution 處理）：只比對前後觀察方塊是否變化，不解碼數值。16 態一圈 8 秒大於 3 秒門檻，任何取樣間隔都不會出現 aliasing（兩態閃爍則可能每次取樣都落在同一態）。方塊可讀但 3 秒無變化 → `log_solution_unresponsive`；方塊讀不到 → 視為 Log Solution 不可見，走 Dock 補救。
+3. **本輪經過時間（給人看）**：開始監控起算、本輪結束停止的計時顯示；不屬於橋接判讀契約，位置自訂，但不得與定位點、標記、色帶或心跳方塊重疊。
+
 ## 4. 相容性
 
 | Log Solution | 橋接程式 | 結果 |
@@ -145,6 +158,7 @@ state_for_round_snapshot(snapshot)
 | 1.2 | 現況（只支援 1.1 幾何） | **讀不到畫面**（左定位方塊位置不同），`check` 會點 Dock 恢復後回 `log_solution_not_visible`；不會誤判，但無法交付 |
 | 1.2 | 現況（不認得 0011） | 人工停止畫面（0011）判為 unknown，`check` 點 Dock 後回 `log_solution_not_visible`；不會誤判，但無法交付 |
 | 1.2 | 支援新舊幾何與 0011 的版本 | 人工停止的輪次以 MANUAL_STOP_COMPLETE 交付並回報人工停止，`results` 含 `STOPPED`；未見本次監控中則回需人工核對；左側遮擋一律判為不可見並點 Dock 恢復 |
+| 1.2（含 C8 心跳） | 支援心跳的版本 | 畫面有心跳方塊就強制檢查；畫面沒有方塊（1.1 或未含 C8 的 1.2）就跳過心跳檢查，行為同前 |
 
 **部署順序：先更新橋接程式（支援新舊兩種幾何），再更新 Log Solution 1.2。** 反過來會讓 1.2 的畫面暫時讀不到。
 
@@ -161,7 +175,8 @@ state_for_round_snapshot(snapshot)
 4. FCT profile `start` 期限設為 120 秒時：監控開始後 100 秒才出現第一筆檔案變動，該格不會被鎖成 `NOTEST`。
 5. 左定位方塊位於色帶第 1 格正上方，符合 C6 五條限制條件；以 Tk 擷取確認「KVM RESULT」字樣已移除、左右定位方塊與排數標記、狀態標記、色帶互不重疊，並在縮放 1.0／1.5 下都成立。
 6. 單元測試：`STATUS_COLOURS` 與契約顏色表逐項相同，且不含 `STALLED`；任兩種顏色在每個通道相差超過 40。
-7. 以 `tools/smoke_state_marker_app.py` 產生「人工停止 → MANUAL_STOP_COMPLETE（0011）」的實際 Tk 擷取，交給橋接程式用既有 frame replay 工具驗證 `check` 回 `kind=taken`、標明人工停止、`results` 含 `STOPPED`。
+7. 心跳方塊（C8）：以 Tk 擷取確認在每種整輪狀態下 0.5 秒前進一次、16 態循環，位置與其他標記不重疊。
+8. 以 `tools/smoke_state_marker_app.py` 產生「人工停止 → MANUAL_STOP_COMPLETE（0011）」的實際 Tk 擷取，交給橋接程式用既有 frame replay 工具驗證 `check` 回 `kind=taken`、標明人工停止、`results` 含 `STOPPED`。
 
 ## 6. 橋接程式與部署的配合事項（供參考，不需 Log Solution 處理）
 
