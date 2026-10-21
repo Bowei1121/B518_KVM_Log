@@ -24,16 +24,6 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# DPI policy for Windows
-try:
-    import ctypes
-    try:
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2))  # SYSTEM_AWARE
-    except Exception:
-        ctypes.windll.user32.SetProcessDPIAware()
-except Exception:
-    pass
-
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -464,6 +454,7 @@ class AtlasUI(_BaseTk):
         if not _TK_OK:
             raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__()
+        apply_windows_tk_scaling(self)
         ui_i18n.set_language(ui_i18n.load_saved_language())
         bind(self, "win_title", option="title")
         self.configure(bg=WINDOW_BG)
@@ -1319,10 +1310,48 @@ class AtlasUI(_BaseTk):
 
 
 # ==============================================================================
+# Windows DPI (issue #107)
+# ==============================================================================
+
+def enable_windows_dpi_awareness(windll: Any = None) -> str:
+    """Declare this process DPI-aware so Windows does not bitmap-stretch the Tk window at 125% / 150%.
+
+    Must run before the first Tk root is created. Returns which call took effect:
+    ``"shcore"``, ``"user32"`` (fallback), ``"failed"``, or ``"skipped"`` on non-Windows (nothing is touched).
+    ``windll`` is injectable for tests; the default is ``ctypes.windll``.
+    """
+    if not sys.platform.startswith("win"):
+        return "skipped"
+    if windll is None:
+        import ctypes
+        windll = ctypes.windll
+    try:
+        if windll.shcore.SetProcessDpiAwareness(1) == 0:  # PROCESS_SYSTEM_DPI_AWARE; S_OK
+            return "shcore"
+    except Exception:  # shcore missing (pre-8.1) or the call itself raised
+        pass
+    try:
+        if windll.user32.SetProcessDPIAware():  # old system-wide awareness; BOOL, nonzero = ok
+            return "user32"
+    except Exception:
+        pass
+    return "failed"
+
+
+def apply_windows_tk_scaling(root: Any) -> None:
+    """Set Tk scaling from the real screen DPI (Tk's unit is pixels per point = DPI / 72). No-op off Windows."""
+    if not sys.platform.startswith("win"):
+        return
+    dpi = float(root.winfo_fpixels("1i"))  # pixels in one inch on the window's current screen
+    root.tk.call("tk", "scaling", dpi / 72.0)
+
+
+# ==============================================================================
 # Main Entry Point
 # ==============================================================================
 
 def main() -> None:
+    enable_windows_dpi_awareness()  # before any Tk root exists
     parser = argparse.ArgumentParser(description="Atlas2 Lightweight Monitor Client")
     parser.add_argument("--host", default="127.0.0.1", help="Core Service TCP host")
     parser.add_argument("--port", type=int, default=5000, help="Core Service TCP port")
