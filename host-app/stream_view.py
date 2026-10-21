@@ -13,10 +13,10 @@ input_sender(method, params): 由呼叫端提供, 負責把 JSON-RPC 指令送�
 import time
 import tkinter as tk
 
-from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG
-
 import cv2
 from PIL import Image, ImageTk
+
+from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, pin_light_appearance
 
 # Tkinter keysym -> USB HID usage code
 _KEYSYM_HID = {}
@@ -75,6 +75,7 @@ class StreamerWindow(tk.Toplevel):
         self.geometry("1280x760")
         self.resizable(True, True)
         self.configure(bg=WINDOW_BG)
+        pin_light_appearance(self)
 
         self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)

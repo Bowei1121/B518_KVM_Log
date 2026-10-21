@@ -8,6 +8,7 @@ mode cannot change them. ttk widgets follow the platform theme; macOS is pinned 
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional, Tuple, Union
@@ -52,6 +53,38 @@ def apply_light_ttk_style(master: tk.Misc) -> None:
     style.configure("TButton", background=BUTTON_BG, foreground=TEXT_FG)
     style.configure("TCheckbutton", background=WINDOW_BG, foreground=TEXT_FG)
     style.configure("TPanedwindow", background=WINDOW_BG)
+    style.configure("TEntry", fieldbackground=ENTRY_BG, foreground=TEXT_FG)
+    style.configure("TCombobox", fieldbackground=ENTRY_BG, background=BUTTON_BG, foreground=TEXT_FG)
+    style.configure("TScrollbar", background=WINDOW_BG, troughcolor=WINDOW_BG)
+
+
+def _set_aqua(window: tk.Misc) -> None:
+    try:
+        window.tk.call("::tk::unsupported::MacWindowStyle", "appearance", str(window), "aqua")
+    except tk.TclError:
+        pass  # Tk without appearance control never goes dark; a destroyed window has nothing to pin
+
+
+def pin_light_appearance(window: tk.Misc) -> None:
+    """macOS: keep this window in the light (aqua) appearance even when the system is in Dark Mode.
+
+    Tk ignores the request until the window is mapped, so it is also re-applied on <Map>. The binding
+    dies with the window (an after_idle callback can outlive it and crash Tk). Call it on every Toplevel,
+    not only the root. No-op on other platforms.
+    """
+    if sys.platform != "darwin":
+        return
+    _set_aqua(window)
+    if not isinstance(window, tk.Tk):
+        # Toplevels are re-pinned on map. The root is not: a <Map> handler on the root segfaults Tk 9 at startup.
+        window.bind("<Map>", lambda _event: _set_aqua(window), add="+")
+
+
+def is_dark_appearance(window: tk.Misc) -> bool:
+    """macOS: True when Tk reports the window as dark. Always False elsewhere."""
+    if sys.platform != "darwin":
+        return False
+    return bool(int(window.tk.call("::tk::unsupported::MacWindowStyle", "isdark", str(window))))
 
 
 def light_for_status(status: str) -> Tuple[str, bool]:
@@ -86,7 +119,11 @@ class StatusLight(tk.Canvas):
         self.set_light(key, blink)
 
     def set_light(self, key: str, blink: bool = False) -> None:
-        self._color = LED_COLORS[key]
+        color = LED_COLORS[key]
+        # The poll repeats the same status every 1.5 s. Keep the current blink phase instead of resetting it.
+        if color == self._color and blink == self._blink and (not blink or self._job is not None):
+            return
+        self._color = color
         self._blink = blink
         self._lit = True
         self.itemconfigure(self._dot, fill=self._color)
@@ -155,6 +192,7 @@ class Tooltip:
         x = self.widget.winfo_rootx()
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         tip.wm_geometry(f"+{x}+{y}")
+        pin_light_appearance(tip)
         tk.Label(
             tip, text=text, justify="left", bg=TIP_BG, fg=TEXT_FG,
             relief="solid", bd=1, padx=6, pady=3,

@@ -14,7 +14,7 @@ from tkinter import ttk
 
 import device_list_editor as editor
 from device_registry import default_registry_path
-from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG
+from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, pin_light_appearance
 
 STATIONS = ("DFU", "FCT", "BT")
 ERROR_COLOR = ERROR_FG
@@ -28,6 +28,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         self.title("設備設定")
         self.geometry("880x520")
         self.configure(bg=WINDOW_BG)
+        pin_light_appearance(self)
         self._client = client
         self._path = Path(path) if path is not None else default_registry_path()
         self._restart_core = restart_core
@@ -246,7 +247,7 @@ class DeviceSettingsWindow(tk.Toplevel):
             self._post(lambda: self._status("重啟 Core 中…", MUTED_FG))
             result = self._restart_core()
             ok = bool(result.get("status") == "ok" or result.get("success"))
-            message = "Core 已重啟。" if ok else f"重啟失敗: {result.get('message', result)}"
+            message = "Core 已重啟。" if ok else str(result.get("message", "重啟失敗"))
             self._post(lambda: self._status(message, OK_COLOR if ok else ERROR_COLOR))
 
         threading.Thread(target=worker, daemon=True).start()

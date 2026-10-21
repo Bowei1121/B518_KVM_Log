@@ -36,6 +36,8 @@ pyinstaller --noconfirm --windowed --onefile \
 
 # 固定淺色外觀：深色模式下 Tk 視窗仍維持淺色（issue #105）
 /usr/libexec/PlistBuddy -c "Add :NSRequiresAquaSystemAppearance bool true" dist/AtlasTest.app/Contents/Info.plist
+# 改過 Info.plist 後簽章會失效，需要重新做 ad-hoc 簽章，否則可能顯示「已損毀」
+codesign --force --deep -s - dist/AtlasTest.app
 
 echo ""
 echo "============================================================"

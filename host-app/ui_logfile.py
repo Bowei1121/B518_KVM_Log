@@ -44,9 +44,15 @@ def prune_old_logs(
         match = _NAME_RE.match(path.name)
         if match is None or (prefix is not None and match.group("prefix") != prefix):
             continue
-        file_day = _dt.date.fromisoformat(match.group("date"))
+        try:
+            file_day = _dt.date.fromisoformat(match.group("date"))
+        except ValueError:  # e.g. monitor_ui_2026-02-30.log: not ours to delete, and must not break startup
+            continue
         if (today - file_day).days >= keep_days:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError:  # locked by antivirus or another process; try again on a later day
+                continue
             removed.append(path)
     return removed
 

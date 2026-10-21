@@ -6,6 +6,7 @@ packaging text) always run.
 
 import datetime as dt
 import gc
+import queue
 import sys
 from pathlib import Path
 
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host-app"))
 
 from ui_logfile import DailyLogFile, log_dir_for_template_root, prune_old_logs  # noqa: E402
-from ui_widgets import ALL_BG, ALL_FG, light_for_status  # noqa: E402
+from ui_widgets import ALL_BG, ALL_FG, is_dark_appearance, light_for_status  # noqa: E402
 
 tk = pytest.importorskip("tkinter")
 
@@ -89,6 +90,13 @@ def test_log_folder_sits_beside_template_root(tmp_path):
     assert log_dir_for_template_root(tmp_path / "template") == tmp_path / "logs"
 
 
+def test_prune_skips_impossible_dates_and_survives_them(tmp_path):
+    bad = tmp_path / "monitor_ui_2026-02-30.log"  # not a real date: left alone, no crash
+    bad.write_text("x", encoding="utf-8")
+    assert prune_old_logs(tmp_path, dt.date(2026, 10, 21), prefix="monitor_ui") == []
+    assert bad.exists()
+
+
 def test_mac_bundle_pins_light_appearance():
     spec = (ROOT / "host-app" / "AtlasKVM.spec").read_text(encoding="utf-8")
     script = (ROOT / "host-app" / "build_mac.command").read_text(encoding="utf-8")
@@ -99,8 +107,9 @@ def test_mac_bundle_pins_light_appearance():
 # ---------------------------------------------------------------- Tk behaviour
 
 try:
+    # Kept alive on purpose: destroying a Tk root before AtlasUI() segfaults Tk 9 (repo .venv).
     _probe = tk.Tk()
-    _probe.destroy()
+    _probe.withdraw()
 except tk.TclError:
     pytest.skip("no Tk display", allow_module_level=True)
 
@@ -121,6 +130,8 @@ def _walk(widget):
 def ui(monkeypatch):
     # The first poll would dial a real Core Service; keep station selection from doing so too.
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
+    # Enabled cropper, so error-line assertions do not depend on whether cv2/PIL are installed.
+    monkeypatch.setattr(ui_app, "PatternCropper", object)
     app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
     try:
         yield app
@@ -228,6 +239,78 @@ def test_frozen_station_blinks_then_stops_on_recovery(ui):
     ui._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "IDLE"}]})
     assert not light.is_blinking()
     assert light.current_fill() == LED_GREEN
+
+
+def test_repeated_blink_status_keeps_the_blink_phase(ui):
+    # The status poll repeats FROZEN every 1.5 s; that must not restart the blink cycle.
+    light = StatusLight(ui)
+    light.set_light("red", blink=True)
+    light._tick()  # dark half; the tick schedules the next timer
+    job = light._job
+    assert light.current_fill() == LED_RED_DIM
+    light.set_light("red", blink=True)
+    assert light.current_fill() == LED_RED_DIM
+    assert light._job == job
+    light._tick()
+    assert light.current_fill() == LED_RED
+
+
+def test_nine_stations_each_get_a_visible_grid_cell(ui):
+    stations = [
+        {"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
+        for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)
+    ]
+    ui._update_status_ui({"status": "ok", "stations": stations})
+    cells = set()
+    for dev, widgets in ui._station_widgets.items():
+        info = widgets["card"].grid_info()
+        assert info, f"{dev} is not placed in the grid"
+        cells.add((int(info["row"]), int(info["column"])))
+    assert len(cells) == 9
+    assert max(col for _row, col in cells) == 2 and max(row for row, _col in cells) == 2
+
+
+def test_restart_failure_is_short_on_the_settings_page_and_full_in_the_log(ui, monkeypatch):
+    import core_daemon
+
+    def fail(**_kwargs):
+        return {"status": "error", "message": "Cannot start Core Daemon: Port 5000 is already in use."}
+
+    monkeypatch.setattr(core_daemon, "restart_core_daemon", fail)
+    res = ui._restart_core_daemon()
+    assert res == {"status": "error", "message": "重啟失敗（詳見日誌）"}
+    # The worker thread queued the Log write; run it on the Tk side.
+    while True:
+        try:
+            ui._ui_queue.get_nowait()()
+        except queue.Empty:
+            break
+    assert "Port 5000 is already in use." in ui.log_text.get("1.0", "end")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS appearance control")
+def test_every_window_is_light_even_in_dark_mode(ui, tmp_path):
+    import device_settings_window
+    from template_catalog import TemplateCatalog
+
+    # stream_view needs Pillow and OpenCV; environments without them still check the other windows.
+    stream_view = pytest.importorskip("stream_view")
+
+    windows = [
+        ui_app.MatchResultsWindow(ui, TemplateCatalog(tmp_path / "template"), "DFU"),
+        device_settings_window.DeviceSettingsWindow(
+            ui, client=None, path=tmp_path / "devices.json", restart_core=lambda: {"status": "ok"}
+        ),
+        stream_view.StreamerWindow(ui, frame_getter=lambda: None),
+    ]
+    try:
+        ui.update_idletasks()  # maps the toplevels, as the mainloop would
+        assert not is_dark_appearance(ui)
+        for window in windows:
+            assert not is_dark_appearance(window), window
+    finally:
+        for window in windows:
+            window.destroy()
 
 
 def test_busy_station_is_yellow_and_not_blinking(ui):

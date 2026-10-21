@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
-from ui_widgets import WINDOW_BG, apply_light_ttk_style
+from ui_widgets import WINDOW_BG, apply_light_ttk_style, pin_light_appearance
 
 
 class PatternCropper(tk.Toplevel):
@@ -22,6 +22,7 @@ class PatternCropper(tk.Toplevel):
         self._start = self._rect = self._selection = None
         self.title("製作 JetKVM 模板")
         self.configure(bg=WINDOW_BG)
+        pin_light_appearance(self)
         apply_light_ttk_style(self)
         self._build_controls(device, template_key)
         self.bind("<Escape>", lambda _event: self.destroy())

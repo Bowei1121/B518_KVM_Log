@@ -21,6 +21,7 @@ import queue
 import sys
 import threading
 import time
+import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 # DPI policy for Windows
@@ -86,6 +87,7 @@ from ui_widgets import (
     StatusLight,
     Tooltip,
     apply_light_ttk_style,
+    pin_light_appearance,
 )
 
 _PATTERN_IMPORT_ERROR: Optional[BaseException] = None
@@ -94,6 +96,11 @@ try:
 except Exception as exc:
     PatternCropper = None  # type: ignore[assignment,misc]
     _PATTERN_IMPORT_ERROR = exc
+
+
+def format_exception_text(exc: BaseException) -> str:
+    """Full traceback text for the Log (the HMI only ever shows a short message)."""
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()
 
 try:
     from stream_view import StreamerWindow
@@ -108,6 +115,7 @@ except Exception:
 logger = logging.getLogger("MonitorUI")
 
 PATTERN_UNAVAILABLE_HINT = "無法製作模板：缺少影像處理元件（OpenCV）。詳見日誌。"
+STATION_ORDER = ("DFU", "FCT", "BT")
 
 
 # ==============================================================================
@@ -323,6 +331,7 @@ class MatchResultsWindow(_BaseToplevel):
         self.title("最近一次匹配結果")
         self.geometry("980x700")
         self.configure(bg=WINDOW_BG)
+        pin_light_appearance(self)
         self.photo: Optional[ImageTk.PhotoImage] = None
         self.summary: Optional[Dict[str, Any]] = None
         self.records: List[Dict[str, Any]] = []
@@ -414,6 +423,7 @@ class AtlasUI(_BaseTk):
         self.title("Atlas2-518 Lightweight Monitor Client")
         self.configure(bg=WINDOW_BG)
         apply_light_ttk_style(self)
+        pin_light_appearance(self)
 
         # Fonts
         if sys.platform == "darwin":
@@ -680,7 +690,7 @@ class AtlasUI(_BaseTk):
         self._append_log("Lightweight Monitor UI Client 啟動完成。")
         self._append_log(f"連線目標 Core Service: {self.client.host}:{self.client.port}")
         if PatternCropper is None:
-            self._append_log(f"製作模板功能不可用，PatternCropper 載入失敗: {_PATTERN_IMPORT_ERROR!r}", level="error")
+            self._append_log(f"製作模板功能不可用，PatternCropper 載入失敗:\n{format_exception_text(_PATTERN_IMPORT_ERROR)}", level="error")
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
@@ -691,26 +701,31 @@ class AtlasUI(_BaseTk):
             w.destroy()
         self._station_widgets.clear()
 
-        for idx, st in enumerate(self._stations):
-            st_name = st.get("station", "UNKNOWN")
+        # One grid row per station (DFU, FCT, BT, then any other), so 9 devices fit in a 3x3 block.
+        rows: Dict[str, int] = {name: i for i, name in enumerate(STATION_ORDER)}
+        next_col: Dict[str, int] = {}
+        for st in self._stations:
+            st_name = str(st.get("station", "UNKNOWN"))
             dev_id = str(st.get("device", ""))
             status = str(st.get("status", "DISCONNECTED")).upper()
+            row = rows.setdefault(st_name, len(rows))
+            col = next_col.get(st_name, 0)
+            next_col[st_name] = col + 1
 
             card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4, bg=WINDOW_BG)
-            card.pack(side="left", fill="both", expand=True, padx=4)
+            card.grid(row=row, column=col, sticky="nsew", padx=4, pady=2)
 
-            # Header
+            # Header: the device ID is the title; the station name sits in the body.
             header = tk.Frame(card, bg=WINDOW_BG)
             header.pack(fill="x")
-            lbl_title = tk.Label(header, text=f"{st_name} (機台 {dev_id})", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
+            lbl_title = tk.Label(header, text=dev_id, font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
             lbl_title.pack(side="left")
 
             light = StatusLight(header, bg=WINDOW_BG)
             light.pack(side="right")
             light.set_status(status)
 
-            # Body info: the device ID is the only address the operator sees or types.
-            lbl_dev = tk.Label(card, text=f"設備: {dev_id}", font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG)
+            lbl_dev = tk.Label(card, text=f"站別: {st_name}", font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG)
             lbl_dev.pack(anchor="w", pady=(2, 4))
             lbl_metrics = tk.Label(
                 card, text=format_reading_metrics(st), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, justify="left"
@@ -812,8 +827,8 @@ class AtlasUI(_BaseTk):
     # --------------------------------------------------------------------------
     # Logging & Threading Queue Plumbing
     # --------------------------------------------------------------------------
-    def _append_log(self, msg: str, level: str = "info", en: str = "") -> str:
-        """Write one line to the Log panel and today's log file. Returns a mark for jumping to the line.
+    def _append_log(self, msg: str, level: str = "info", en: str = "") -> Optional[str]:
+        """Write one line to the Log panel and today's log file. Warning and error lines return a mark to jump to.
 
         ``level`` is ``"info"``, ``"warn"`` (orange) or ``"error"`` (red). ``en`` is the English
         half of a bilingual line; it is passed through to the file writer for #106.
@@ -825,19 +840,20 @@ class AtlasUI(_BaseTk):
             line = format_log_line(datetime.datetime.now(), msg, en)
         start = self.log_text.index("end-1c")
         self.log_text.insert("end", line + "\n")
-        if level in ("error", "warn"):
-            self.log_text.tag_add(level, start, "end-1c")
+        self.log_text.see("end")
+        if level not in ("error", "warn"):
+            return None
+        self.log_text.tag_add(level, start, "end-1c")
         self._log_seq += 1
         mark = f"log_{self._log_seq}"
         self.log_text.mark_set(mark, start)
         self.log_text.mark_gravity(mark, "left")
-        self.log_text.see("end")
         return mark
 
     def _jump_to_log(self, mark: str) -> None:
         self.log_text.see(mark)
 
-    def _report_error(self, label: tk.Label, brief: str, detail: str, level: str = "error") -> str:
+    def _report_error(self, label: tk.Label, brief: str, detail: str, level: str = "error") -> Optional[str]:
         """Show a short message on the HMI, write the full detail to the Log, and make the label jump there."""
         mark = self._append_log(detail, level=level)
         fg = ERROR_FG if level == "error" else WARN_FG
@@ -887,15 +903,21 @@ class AtlasUI(_BaseTk):
         self._settings_window = DeviceSettingsWindow(self, client=self.client, restart_core=self._restart_core_daemon)
 
     def _restart_core_daemon(self) -> Dict[str, Any]:
-        """Stop and start Core Service on this machine; the settings page checks for busy devices first."""
+        """Stop and start Core Service on this machine; the settings page checks for busy devices first.
+
+        Runs on a worker thread: the full error goes to the Log through the UI queue.
+        """
         from core_daemon import restart_core_daemon
 
         try:
             res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=10.0)
         except Exception as exc:
-            return {"status": "error", "message": str(exc)}
-        ok = res.get("status") == "ok"
-        return {"status": "ok" if ok else "error", "message": res.get("message", res)}
+            res = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
+        if res.get("status") == "ok":
+            return {"status": "ok", "message": res.get("message", res)}
+        detail = res.get("message", res)
+        self._ui_queue.put(lambda: self._append_log(f"重啟 Core Service 失敗: {detail}", level="error"))
+        return {"status": "error", "message": "重啟失敗（詳見日誌）"}
 
     def on_toggle_connect(self) -> None:
         """Parse core service address and reconnect."""
@@ -1093,27 +1115,31 @@ class AtlasUI(_BaseTk):
         else:
             self._report_error(self.lbl_check_result, brief_manual_check_error(res), text, level="error")
 
-    def on_save_capture(self) -> None:
-        """Save latest snapshot frame to template capture path."""
+    def on_save_capture(self) -> bool:
+        """Save latest snapshot frame to template capture path. Returns False when nothing was saved."""
         if self._latest_pil_image is None:
             self._append_log("尚未擷取影格，請先點擊『📷 擷取快照』。", level="warn")
-            return
+            return False
         save_path = self._templates.capture_path()
-        save_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             self._latest_pil_image.save(save_path)
-            self._append_log(f"已儲存影格至模板目錄: {save_path}")
         except Exception as exc:
             self._append_log(f"儲存影格失敗: {exc}", level="error")
+            return False
+        self._append_log(f"已儲存影格至模板目錄: {save_path}")
+        return True
 
     def on_create_pattern(self) -> None:
         """Save the latest snapshot as the capture, then open the pattern cropper on it."""
         if PatternCropper is None:
-            self._append_log(f"無法製作模板：PatternCropper 載入失敗: {_PATTERN_IMPORT_ERROR!r}", level="error")
+            self._append_log(
+                f"無法製作模板：PatternCropper 載入失敗:\n{format_exception_text(_PATTERN_IMPORT_ERROR)}", level="error"
+            )
             return
         # The latest snapshot replaces the old capture; with no snapshot yet, reuse the saved one.
-        if self._latest_pil_image is not None:
-            self.on_save_capture()
+        if self._latest_pil_image is not None and not self.on_save_capture():
+            return
         src = self._templates.capture_path()
         if not src.exists():
             self._append_log("請先按『📷 擷取快照』取得影格。", level="warn")
