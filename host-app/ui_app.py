@@ -24,16 +24,6 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# DPI policy for Windows
-try:
-    import ctypes
-    try:
-        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-2))  # SYSTEM_AWARE
-    except Exception:
-        ctypes.windll.user32.SetProcessDPIAware()
-except Exception:
-    pass
-
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -464,6 +454,7 @@ class AtlasUI(_BaseTk):
         if not _TK_OK:
             raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__()
+        self._tk_scaling = apply_windows_tk_scaling(self)
         ui_i18n.set_language(ui_i18n.load_saved_language())
         bind(self, "win_title", option="title")
         self.configure(bg=WINDOW_BG)
@@ -766,6 +757,11 @@ class AtlasUI(_BaseTk):
 
         self._log_key("log_started")
         self._log_key("log_target", addr=f"{self.client.host}:{self.client.port}")
+        if self._tk_scaling is not None:
+            self._append_log(
+                f"Windows DPI: {_DPI_AWARENESS_MODE}, tk scaling {self._tk_scaling:.3f}",
+                f"Windows DPI 設定：{_DPI_AWARENESS_MODE}，tk scaling {self._tk_scaling:.3f}",
+            )
         if PatternCropper is None:
             self._log_key("log_pattern_unavailable", level="error", detail=format_exception_text(_PATTERN_IMPORT_ERROR))
 
@@ -1319,10 +1315,84 @@ class AtlasUI(_BaseTk):
 
 
 # ==============================================================================
+# Windows DPI (issue #107)
+# ==============================================================================
+
+def enable_windows_dpi_awareness(windll: Any = None) -> str:
+    """Declare this process DPI-aware so Windows does not bitmap-stretch the Tk window at 125% / 150%.
+
+    Must run before the first Tk root is created. Returns which call took effect:
+    ``"shcore"``, ``"user32"`` (fallback), ``"failed"``, or ``"skipped"`` on non-Windows (nothing is touched).
+    ``windll`` is injectable for tests; the default is ``ctypes.windll``.
+    """
+    if not sys.platform.startswith("win"):
+        return "skipped"
+    if windll is None:
+        import ctypes
+        windll = ctypes.windll
+    try:
+        if windll.shcore.SetProcessDpiAwareness(1) == 0:  # PROCESS_SYSTEM_DPI_AWARE; S_OK
+            return "shcore"
+    except Exception:  # shcore missing (pre-8.1) or the call itself raised
+        pass
+    try:
+        if windll.user32.SetProcessDPIAware():  # old system-wide awareness; BOOL, nonzero = ok
+            return "user32"
+    except Exception:
+        pass
+    return "failed"
+
+
+def apply_windows_tk_scaling(root: Any) -> Optional[float]:
+    """Set Tk scaling from the real screen DPI (Tk's unit is pixels per point = DPI / 72). No-op off Windows.
+
+    Returns the scaling that was applied, or ``None`` when nothing was touched.
+    """
+    if not sys.platform.startswith("win"):
+        return None
+    dpi = float(root.winfo_fpixels("1i"))  # pixels in one inch on the window's current screen
+    scaling = dpi / 72.0
+    root.tk.call("tk", "scaling", scaling)
+    return scaling
+
+
+# Filled in by main(); AtlasUI writes it to the Log so a field report shows which DPI path ran.
+_DPI_AWARENESS_MODE = "not-run"
+
+
+def runtime_self_test() -> List[str]:
+    """Import every runtime dependency the Monitor UI needs. Returns the problems found (empty = OK).
+
+    Run from the source tree in CI, and against the frozen exe (``AtlasKVM.exe --self-test``), so a
+    package that PyInstaller failed to bundle fails the build instead of the operator's first launch.
+    """
+    import importlib
+
+    problems: List[str] = []
+    for name in ("cv2", "av", "aiortc", "onnxruntime", "rapidocr_onnxruntime", "PIL", "tkinter"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            problems.append(f"import {name}: {exc!r}")
+    checks = {
+        "_TK_OK": _TK_OK,
+        "_PIL_OK": _PIL_OK,
+        "_CV2_OK": _CV2_OK,
+        "PatternCropper": PatternCropper is not None,
+        "StreamerWindow": StreamerWindow is not None,
+        "DeviceSettingsWindow": DeviceSettingsWindow is not None,
+    }
+    problems += [f"{flag} is not set ({_PATTERN_IMPORT_ERROR!r})" for flag, ok in checks.items() if not ok]
+    return problems
+
+
+# ==============================================================================
 # Main Entry Point
 # ==============================================================================
 
 def main() -> None:
+    global _DPI_AWARENESS_MODE
+    _DPI_AWARENESS_MODE = enable_windows_dpi_awareness()  # must run before the first Tk root is created
     parser = argparse.ArgumentParser(description="Atlas2 Lightweight Monitor Client")
     parser.add_argument("--host", default="127.0.0.1", help="Core Service TCP host")
     parser.add_argument("--port", type=int, default=5000, help="Core Service TCP port")
@@ -1331,7 +1401,18 @@ def main() -> None:
         action="store_true",
         help="Perform a quick TCP ping/status check and exit without GUI",
     )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Import every runtime dependency, print the result and exit (non-zero on failure)",
+    )
     args = parser.parse_args()
+
+    if args.self_test:
+        problems = runtime_self_test()
+        if sys.stdout is not None:  # the --windowed exe has no console; the exit code is the signal there
+            print("self-test OK" if not problems else "self-test FAILED:\n  " + "\n  ".join(problems))
+        sys.exit(1 if problems else 0)
 
     if args.headless_check:
         client = CoreServiceClient(host=args.host, port=args.port)

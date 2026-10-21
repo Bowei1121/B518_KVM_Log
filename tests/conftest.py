@@ -21,6 +21,10 @@ def isolated_user_home(tmp_path_factory, monkeypatch):
     # Own sibling directory, not inside tmp_path: tests may list their tmp_path contents.
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setenv("HOME", str(home))
+    # Windows ignores HOME: Path.home() reads USERPROFILE, and the Monitor UI prefs live under APPDATA.
+    # Without these, a Windows test run rewrites the operator's real ui_prefs.json (issue #107 review).
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
     monkeypatch.delenv(DEVICES_FILE_ENV, raising=False)
     return home
 

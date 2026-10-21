@@ -1,0 +1,112 @@
+# Windows build for the Monitor UI (issue #107).
+# PyInstaller cannot cross-compile, so the Windows exe is built here on windows-latest.
+# The build step mirrors host-app/build_exe.bat flag for flag, so CI and the on-site script produce the same bundle.
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'host-app/**', 'tests/**', '.github/workflows/build-windows.yml' ]
+  pull_request:
+    paths: [ 'host-app/**', 'tests/**', '.github/workflows/build-windows.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'  # Tk 8.6.12+ on Windows; matches the on-site Python
+          cache: pip
+          cache-dependency-path: host-app/requirements.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r host-app/requirements.txt pytest
+
+      - name: Run Windows tests
+        shell: bash
+        # Scoped on purpose. The full suite has 17 Windows-only failures (daemon/pid, Monitor UI prefs,
+        # UI client cancel), tracked in #111. Until that is closed, only the Windows-relevant modules run here;
+        # the full suite stays a macOS/local run.
+        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py
+
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: host-app/requirements.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r host-app/requirements.txt
+          python -m pip freeze > pip-freeze-windows.txt  # exact versions of this build, for on-site comparison
+
+      - name: Import smoke test (fails the job if any runtime dependency is missing)
+        working-directory: host-app
+        shell: bash
+        run: |
+          # Direct imports: a missing package must fail here, not inside the frozen exe at runtime.
+          python -c "import cv2, av, aiortc, onnxruntime, rapidocr_onnxruntime, pattern_tools, stream_view, device_settings_window, ui_i18n, ui_app"
+          # Same check the frozen exe runs below; exits non-zero on any missing runtime part.
+          python ui_app.py --self-test
+          # ui_app swallows import errors into None/False fallbacks (e.g. PatternCropper); turn those into hard failures.
+          python -c "
+          import ui_app as a
+          missing = [n for n, ok in [('_TK_OK', a._TK_OK), ('_PIL_OK', a._PIL_OK), ('_CV2_OK', a._CV2_OK),
+                                     ('PatternCropper', a.PatternCropper), ('StreamerWindow', a.StreamerWindow),
+                                     ('DeviceSettingsWindow', a.DeviceSettingsWindow)] if not ok]
+          assert not missing, (missing, a._PATTERN_IMPORT_ERROR)
+          print('import smoke test: all modules OK')
+          "
+
+      - name: Build with PyInstaller (same flags as host-app/build_exe.bat)
+        working-directory: host-app
+        shell: bash
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM \
+            --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all av \
+            --collect-all aiortc --collect-all cv2 ui_app.py
+
+      - name: Verify exe exists
+        shell: bash
+        run: test -f host-app/dist/AtlasKVM/AtlasKVM.exe
+
+      - name: Self-test the frozen exe (catches anything PyInstaller failed to bundle)
+        shell: bash
+        run: host-app/dist/AtlasKVM/AtlasKVM.exe --self-test
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtlasKVM-windows
+          path: host-app/dist/AtlasKVM
+          if-no-files-found: error
+
+      - name: Upload pip freeze
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-freeze-windows
+          path: pip-freeze-windows.txt
+          if-no-files-found: error
