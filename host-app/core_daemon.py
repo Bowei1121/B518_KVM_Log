@@ -27,6 +27,7 @@ if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
 from core_protocol import build_request, dumps_request, read_reply  # noqa: E402
+from bilingual_log import BilingualFormatter  # noqa: E402
 
 # Ensure repo root is discoverable
 _REPO_ROOT = _HOST_APP_DIR.parent
@@ -71,10 +72,7 @@ def setup_rotating_logging(
     target_logger = logging.getLogger(logger_name)
     target_logger.setLevel(level)
 
-    formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] [%(name)s] [PID:%(process)d]: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    formatter = BilingualFormatter()
 
     if log_file is not None:
         log_path = Path(log_file).resolve()
@@ -180,7 +178,8 @@ def find_pids_on_port(port: int) -> List[int]:
                         except ValueError:
                             pass
         except Exception as exc:
-            logger.warning("Failed to inspect netstat on Windows: %s", exc)
+            logger.warning("Failed to inspect netstat on Windows: %s", exc,
+                           extra={"zh": "讀取 Windows netstat 失敗: %s"})
     else:
         # macOS / Linux: use lsof
         try:
@@ -203,7 +202,8 @@ def find_pids_on_port(port: int) -> List[int]:
             except Exception:
                 pass
         except Exception as exc:
-            logger.warning("Failed to query port using lsof: %s", exc)
+            logger.warning("Failed to query port using lsof: %s", exc,
+                           extra={"zh": "以 lsof 查詢連接埠失敗: %s"})
 
     return sorted(pids)
 
@@ -321,7 +321,7 @@ def graceful_stop_core_service(
         # Service might already be stopped
         pass
     except Exception as exc:
-        logger.warning("Shutdown command failed: %s", exc)
+        logger.warning("Shutdown command failed: %s", exc, extra={"zh": "關閉指令執行失敗: %s"})
 
     # 2. Confirm termination
     deadline = time.time() + timeout
@@ -575,6 +575,7 @@ def run_service_foreground(
         host,
         port,
         effective_log_file,
+        extra={"zh": "無頭模式 CoreDaemon 已啟動 (PID: %d)，監聽 %s:%d。Log 檔: %s"},
     )
 
     # 3. Load device list; refuse to start when it is missing or invalid
@@ -582,7 +583,7 @@ def run_service_foreground(
         registry = DeviceRegistry.load(devices_file)
     except DeviceRegistryError as exc:
         for line in exc.errors:
-            log.error("Device list error: %s", line)
+            log.error("Device list error: %s", line, extra={"zh": "設備清單錯誤: %s"})
             print(f"Device list error: {line}", file=sys.stderr)
         _cleanup()
         raise SystemExit(1) from exc
@@ -592,7 +593,8 @@ def run_service_foreground(
 
     # 4. Handle OS signals
     def _signal_handler(signum, frame):
-        log.info("Received termination signal %s; stopping server gracefully...", signum)
+        log.info("Received termination signal %s; stopping server gracefully...", signum,
+                 extra={"zh": "收到終止訊號 %s，正在優雅停止服務中..."})
         server.stop()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -605,7 +607,7 @@ def run_service_foreground(
         server.serve_forever()
     finally:
         _cleanup()
-        log.info("CoreDaemon stopped cleanly.")
+        log.info("CoreDaemon stopped cleanly.", extra={"zh": "CoreDaemon 已正常停止。"})
 
 
 def parse_args() -> argparse.Namespace:

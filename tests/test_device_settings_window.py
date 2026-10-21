@@ -28,6 +28,13 @@ class _Client:
         return self.status
 
 
+@pytest.fixture(autouse=True)
+def chinese_ui():
+    # These assertions are the Chinese wording; the Monitor UI defaults to English (#106).
+    import ui_i18n
+    ui_i18n.set_language("zh")
+
+
 @pytest.fixture
 def window(tmp_path):
     path = tmp_path / "devices.json"

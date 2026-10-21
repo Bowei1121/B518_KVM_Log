@@ -51,7 +51,7 @@ class BtFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "template"
             missing_kvm = FakeKvm(np.zeros((30, 30, 3), dtype=np.uint8))
-            missing = asyncio.run(run_focus(missing_kvm, "FCT", template_root=root, log=lambda _msg: None))
+            missing = asyncio.run(run_focus(missing_kvm, "FCT", template_root=root, log=lambda *_: None))
             self.assertFalse(missing["ok"])
             self.assertEqual(missing_kvm.clicks, [])
 

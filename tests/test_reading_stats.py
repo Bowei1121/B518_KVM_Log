@@ -127,10 +127,10 @@ def test_format_reading_metrics_shows_size_scale_cell_and_ratio():
         "readable_ratio": {"ratio": 0.9, "samples": 50},
     })
 
-    assert "影格 752×220" in text
-    assert "換算 2.000" in text
-    assert "小格 20.0 px" in text
-    assert "可讀率 90% (最近 50 次)" in text
+    assert "Frame 752×220" in text
+    assert "Scale 2.000" in text
+    assert "Cell 20.0 px" in text
+    assert "Readable 90% (last 50)" in text
 
 
 def test_format_reading_metrics_without_readings_shows_dashes():
@@ -139,5 +139,5 @@ def test_format_reading_metrics_without_readings_shows_dashes():
         "last_reading": None, "readable_ratio": {"ratio": None, "samples": 0},
     })
 
-    assert "影格 —" in text
-    assert "可讀率 — (0 次)" in text
+    assert "Frame —" in text
+    assert "Readable — (0 samples)" in text

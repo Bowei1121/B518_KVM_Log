@@ -102,7 +102,7 @@ class CoreChannel:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError as exc:
-                log.debug("abort shutdown failed errno=%s", exc.errno)
+                log.debug("abort shutdown failed errno=%s", exc.errno, extra={"zh": "中止連線的 shutdown 失敗 errno=%s"})
         # Idle only. blocking=False: a request inside recv keeps the lock and
         # closes the socket itself. Never block behind that request.
         if self._lock.acquire(blocking=False):

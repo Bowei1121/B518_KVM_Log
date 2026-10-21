@@ -117,10 +117,11 @@ class HidSession:
         path = self.catalog.path(device, key)
         image = load_gray(str(path))
         if image is None and record_missing:
-            note = f"讀不到模板，期待檔案: {path}"
-            self.log(note)
+            en = f"Template file missing: {path}"
+            zh = f"讀不到模板，期待檔案: {path}"
+            self.log(en, zh)
             if self.diagnostics:
-                self.diagnostics.record(key, None, self.threshold, note=note)
+                self.diagnostics.record(key, None, self.threshold, note={"en": en, "zh": zh})
         return image
 
     def frame(self, missing="沒有 JetKVM 影格"):
@@ -215,7 +216,7 @@ async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
         device = catalog.normalize_device(device)
         dock_key = catalog.focus_template(device)
     except ValueError as exc:
-        log(str(exc))
+        log("Invalid device for Dock focus", str(exc))
         return {"ok": False}
     diagnostics = MatchDiagnostics(catalog.root, device)
     session = HidSession(kvm, template_root, diagnostics, threshold=threshold, log=log)
@@ -231,8 +232,8 @@ async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
     try:
         frame = session.frame()
     except FlowError:
-        log("沒有影格 (確認 KVM 已連線且遠端有畫面)")
-        diagnostics.record("frame", None, threshold, note="沒有 JetKVM 影格")
+        log("No JetKVM frame", "沒有影格 (確認 KVM 已連線且遠端有畫面)")
+        diagnostics.record("frame", None, threshold, note={"en": "No JetKVM frame", "zh": "沒有 JetKVM 影格"})
         return finish()
     try:
         box = session.find(
@@ -240,15 +241,15 @@ async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
             message="找不到 Dock icon (相似度 {value:.2f} < {threshold})")
     except FlowError as exc:
         result["dock_icon"] = exc.score
-        log(str(exc))
+        log(exc.code, str(exc))
         return finish()
     result["dock_icon"] = box.score
     try:
         await session.click(box, failure="Dock HID 錯誤", settle=0.5)
     except FlowError as exc:
         result["hid_error"] = session.last_hid_error()
-        log(str(exc))
+        log(exc.code, str(exc))
         return finish()
     result["ok"] = True
-    log("Dock 前景化完成")
+    log("Dock focus done", "Dock 前景化完成")
     return finish()

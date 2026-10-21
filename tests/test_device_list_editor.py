@@ -10,7 +10,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 import device_list_editor as editor  # noqa: E402
+import ui_i18n  # noqa: E402
 from device_registry import DeviceRegistry  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def chinese_messages():
+    # The editor's messages follow the Monitor UI language (#106, default English); these assertions are Chinese.
+    ui_i18n.set_language("zh")
 
 
 def _row(device, station, ip, channels=4):

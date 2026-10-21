@@ -149,7 +149,7 @@ class KVMConnectionPool:
         entry.in_use -= 1
         entry.last_used_at = time.time()
         if entry.in_use == 0 and not entry.client.is_healthy():
-            await self._evict_or_defer(entry, "released while unhealthy")
+            await self._evict_or_defer(entry, "released while unhealthy", "釋放時判定不健康")
 
     async def _get_connection(self, ip: str, password: str, lease: bool) -> Any:
         canonical_ip = normalize_kvm_ip(ip)
@@ -162,11 +162,12 @@ class KVMConnectionPool:
             if entry is not None and not entry.client.is_healthy():
                 if entry.in_use > 0:
                     # Leased by a running command: do not share it or replace it; eviction waits for the release.
-                    await self._evict_or_defer(entry, "connection lost while in use")
+                    await self._evict_or_defer(entry, "connection lost while in use", "使用中連線中斷")
                     raise KVMUnavailableError(
                         f"KVM '{canonical_ip}' connection was lost while a command is using it"
                     )
-                logger.warning("Existing KVM connection for '%s' is unhealthy; discarding", canonical_ip)
+                logger.warning("Existing KVM connection for '%s' is unhealthy; discarding", canonical_ip,
+                               extra={"zh": "既有的 KVM 連線 '%s' 不健康，丟棄"})
                 await self._evict_entry(canonical_ip)
                 entry = None
 
@@ -174,17 +175,19 @@ class KVMConnectionPool:
                 entry.last_used_at = now
                 if lease:
                     entry.in_use += 1
-                logger.debug("Reusing existing KVM connection for '%s'", canonical_ip)
+                logger.debug("Reusing existing KVM connection for '%s'", canonical_ip,
+                             extra={"zh": "重用既有的 KVM 連線 '%s'"})
                 return entry.client
 
-            logger.info("Connecting to KVM '%s'...", canonical_ip)
+            logger.info("Connecting to KVM '%s'...", canonical_ip, extra={"zh": "正在連線 KVM '%s'..."})
             client = self._client_factory(canonical_ip, password=password)
             await client.connect()
 
             entry = PooledKVMConnection(canonical_ip, client)
             entry.in_use = 1 if lease else 0
             self._pool[canonical_ip] = entry
-            logger.info("KVM connection established and pooled for '%s'", canonical_ip)
+            logger.info("KVM connection established and pooled for '%s'", canonical_ip,
+                        extra={"zh": "KVM 連線已建立並放入連線池 '%s'"})
             return client
 
     async def perform_heartbeat(self) -> int:
@@ -198,24 +201,27 @@ class KVMConnectionPool:
 
         for entry in entries:
             if not entry.client.is_healthy():
-                await self._evict_or_defer(entry, "unhealthy during heartbeat")
+                await self._evict_or_defer(entry, "unhealthy during heartbeat", "心跳時判定不健康")
                 continue
 
             entry.last_heartbeat_at = now
             entry.heartbeat_count += 1
             success_count += 1
-            logger.debug("Heartbeat ok for KVM '%s' (total=%d)", entry.ip, entry.heartbeat_count)
+            logger.debug("Heartbeat ok for KVM '%s' (total=%d)", entry.ip, entry.heartbeat_count,
+                         extra={"zh": "KVM '%s' 心跳正常 (累計=%d)"})
 
         return success_count
 
-    async def _evict_or_defer(self, entry: PooledKVMConnection, reason: str) -> None:
+    async def _evict_or_defer(self, entry: PooledKVMConnection, reason: str, reason_zh: str) -> None:
         """Evict now if no command holds it; otherwise defer until the last lease is released."""
         if self._pool.get(entry.ip) is not entry:
             return
         if entry.in_use > 0:
-            logger.warning("KVM '%s' %s while in use; eviction deferred until release", entry.ip, reason)
+            logger.warning(f"KVM '{entry.ip}' {reason} while in use; eviction deferred until release",
+                           extra={"zh": f"KVM '{entry.ip}' {reason_zh}，待釋放後才移除"})
             return
-        logger.warning("KVM '%s' %s; evicting connection", entry.ip, reason)
+        logger.warning(f"KVM '{entry.ip}' {reason}; evicting connection",
+                       extra={"zh": f"KVM '{entry.ip}' {reason_zh}，移除連線"})
         await self._evict_entry(entry.ip)
 
     async def prune_idle_connections(self, max_idle: Optional[float] = None) -> int:
@@ -242,7 +248,8 @@ class KVMConnectionPool:
             if target_entry is None or target_entry.in_use > 0:
                 continue
             idle_duration = now - target_entry.last_used_at
-            logger.info("Evicting idle KVM connection '%s' (idle %.1fs > %.1fs)", ip, idle_duration, timeout)
+            logger.info("Evicting idle KVM connection '%s' (idle %.1fs > %.1fs)", ip, idle_duration, timeout,
+                        extra={"zh": "移除閒置 KVM 連線 '%s' (閒置 %.1f 秒 > %.1f 秒)"})
             await self._evict_entry(ip)
             evicted += 1
 
@@ -252,7 +259,8 @@ class KVMConnectionPool:
         try:
             await entry.client.close()
         except Exception as exc:
-            logger.warning("Error closing KVM client '%s': %s", entry.ip, exc)
+            logger.warning("Error closing KVM client '%s': %s", entry.ip, exc,
+                           extra={"zh": "關閉 KVM 用戶端 '%s' 失敗: %s"})
 
     async def _evict_entry(self, ip: str) -> None:
         entry = self._pool.pop(ip, None)
@@ -261,7 +269,7 @@ class KVMConnectionPool:
 
     async def _maintenance_worker(self) -> None:
         """Background worker that periodically triggers heartbeats and idle pruning."""
-        logger.info("KVM pool background worker started.")
+        logger.info("KVM pool background worker started.", extra={"zh": "KVM 連線池背景工作已啟動。"})
         try:
             while self._is_running:
                 await asyncio.sleep(self.heartbeat_interval)
@@ -272,9 +280,10 @@ class KVMConnectionPool:
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("Unexpected error in KVM pool maintenance worker")
+            logger.exception("Unexpected error in KVM pool maintenance worker",
+                             extra={"zh": "KVM 連線池維護工作發生未預期錯誤"})
         finally:
-            logger.info("KVM pool background worker stopped.")
+            logger.info("KVM pool background worker stopped.", extra={"zh": "KVM 連線池背景工作已停止。"})
 
     async def start(self) -> None:
         """Start the background maintenance worker."""

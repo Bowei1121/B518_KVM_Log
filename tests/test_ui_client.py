@@ -272,6 +272,9 @@ class TestLightweightMonitorUIClient:
     def test_manual_check_names_state_and_started_channels(self, running_core_service):
         """Manual inspect text names every Log state and lists started-channel evidence."""
         from ui_app import format_manual_check
+        import ui_i18n
+
+        ui_i18n.set_language("zh")  # these assertions are the Chinese wording; the default is English (#106)
 
         _server, kvm_map, (host, port) = running_core_service
         kvm = kvm_map.setdefault("192.168.1.10", LogSolutionKVM())

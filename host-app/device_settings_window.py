@@ -14,7 +14,8 @@ from tkinter import ttk
 
 import device_list_editor as editor
 from device_registry import default_registry_path
-from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, pin_light_appearance
+from ui_i18n import bind, t
+from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip, pin_light_appearance
 
 STATIONS = ("DFU", "FCT", "BT")
 ERROR_COLOR = ERROR_FG
@@ -25,7 +26,7 @@ class DeviceSettingsWindow(tk.Toplevel):
     def __init__(self, parent: Any, client: Any, path: Optional[Path] = None,
                  restart_core: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
         super().__init__(parent)
-        self.title("設備設定")
+        bind(self, "ds_title", option="title")
         self.geometry("880x520")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
@@ -46,7 +47,7 @@ class DeviceSettingsWindow(tk.Toplevel):
     def _build(self) -> None:
         head = tk.Frame(self, padx=10, pady=6, bg=WINDOW_BG)
         head.pack(fill="x")
-        tk.Label(head, text=f"設備清單檔: {self._path}", font=("Arial", 10), bg=WINDOW_BG, fg=TEXT_FG).pack(anchor="w")
+        bind(tk.Label(head, font=("Arial", 10), bg=WINDOW_BG, fg=TEXT_FG), "ds_path", path=str(self._path)).pack(anchor="w")
         self.lbl_status = tk.Label(head, text="", font=("Arial", 10), anchor="w", justify="left", wraplength=840,
                                    bg=WINDOW_BG, fg=TEXT_FG)
         self.lbl_status.pack(fill="x", pady=(4, 0))
@@ -62,22 +63,26 @@ class DeviceSettingsWindow(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
 
-        for col, title in enumerate(("選取", "設備 ID", "站別", "KVM IP", "測試通道數", "連線測試")):
-            tk.Label(self.table, text=title, font=("Arial", 10, "bold"), bg=WINDOW_BG, fg=TEXT_FG).grid(row=0, column=col, padx=4, sticky="w")
+        headers = ("ds_h_select", "ds_h_device", "ds_h_station", "ds_h_ip", "ds_h_channels", "ds_h_probe")
+        for col, key in enumerate(headers):
+            bind(tk.Label(self.table, font=("Arial", 10, "bold"), bg=WINDOW_BG, fg=TEXT_FG), key).grid(
+                row=0, column=col, padx=4, sticky="w")
 
         bar = tk.Frame(self, padx=10, pady=8, bg=WINDOW_BG)
         bar.pack(fill="x")
         buttons = (
-            ("➕ 新增設備", self._add_row),
-            ("🗑 刪除選取", self._delete_selected),
-            ("🔌 全部測試", self._probe_all),
-            ("↺ 還原", self._restore),
-            ("💾 儲存", self._save),
-            ("🔄 重啟 Core", self._restart),
+            ("ds_add", "tip_ds_add", self._add_row),
+            ("ds_delete", "tip_ds_delete", self._delete_selected),
+            ("ds_test_all", "tip_ds_test_all", self._probe_all),
+            ("ds_revert", "tip_ds_revert", self._restore),
+            ("ds_save", "tip_ds_save", self._save),
+            ("ds_restart", "tip_ds_restart", self._restart),
         )
-        for text, command in buttons:
-            tk.Button(bar, text=text, command=command, font=("Arial", 10), padx=8, pady=3,
-                      bg=BUTTON_BG, fg=TEXT_FG).pack(side="left", padx=4)
+        for key, tip, command in buttons:
+            button = bind(tk.Button(bar, command=command, font=("Arial", 10), padx=8, pady=3,
+                                    bg=BUTTON_BG, fg=TEXT_FG), key)
+            button.pack(side="left", padx=4)
+            Tooltip(button, lambda tip=tip: t(tip))
 
     # ------------------------------------------------------------------ rows
     def _load_from_file(self) -> None:
@@ -91,9 +96,9 @@ class DeviceSettingsWindow(tk.Toplevel):
         if state.load_error:
             self._status(state.load_error, ERROR_COLOR)
         elif state.prefilled:
-            self._status("尚無設備清單，已預填 B518 九台（通道數 4）。按「儲存」後生效，需重啟 Core。", OK_COLOR)
+            self._status(t("ds_prefilled"), OK_COLOR)
         else:
-            self._status(f"已載入 {len(state.rows)} 台設備。修改後按「儲存」，需重啟 Core 才會生效。", MUTED_FG)
+            self._status(t("ds_loaded", count=len(state.rows)), MUTED_FG)
         self._show_errors({})
 
     def _clear_rows(self) -> None:
@@ -129,7 +134,15 @@ class DeviceSettingsWindow(tk.Toplevel):
         # The probe is bound to this entry object, not to its position in self._rows.
         entry: Dict[str, Any] = {"selected": selected, "vars": vars_, "probe": probe_lbl, "error": error_lbl,
                                  "widgets": []}
-        probe_btn = tk.Button(self.table, text="測試", command=lambda: self._probe_row(entry), bg=BUTTON_BG, fg=TEXT_FG)
+        probe_btn = bind(tk.Button(self.table, command=lambda: self._probe_row(entry), bg=BUTTON_BG, fg=TEXT_FG),
+                         "ds_probe_btn")
+
+        Tooltip(check, lambda: t("tip_ds_select"))
+        Tooltip(e_device, lambda: t("tip_ds_device"))
+        Tooltip(combo, lambda: t("tip_ds_station"))
+        Tooltip(e_ip, lambda: t("tip_ds_ip"))
+        Tooltip(e_channels, lambda: t("tip_ds_channels"))
+        Tooltip(probe_btn, lambda: t("tip_ds_probe"))
 
         for col, widget in enumerate((check, e_device, combo, e_ip, e_channels, probe_btn), start=0):
             widget.grid(row=r * 2 - 1, column=col, padx=4, pady=2, sticky="w")
@@ -162,28 +175,28 @@ class DeviceSettingsWindow(tk.Toplevel):
         keep = [entry for entry in self._rows if not entry["selected"].get()]
         dropped = [entry for entry in self._rows if entry["selected"].get()]
         if not dropped:
-            self._status("沒有選取要刪除的列。", MUTED_FG)
+            self._status(t("ds_nothing_selected"), MUTED_FG)
             return
         rows = [{key: var.get() for key, var in entry["vars"].items()} for entry in keep]
         self._clear_rows()
         for row in rows:
             self._add_row_widgets(row)
         self._show_errors({})
-        self._status(f"已刪除 {len(dropped)} 列（尚未儲存）。", MUTED_FG)
+        self._status(t("ds_deleted", count=len(dropped)), MUTED_FG)
 
     def _restore(self) -> None:
         self._load_from_file()
-        self._status("已還原為檔案內容。", MUTED_FG)
+        self._status(t("ds_reverted"), MUTED_FG)
 
     # ------------------------------------------------------------ validation
     def _show_errors(self, errors: Dict[Any, List[str]]) -> None:
         self._errors = errors
         for index, entry in enumerate(self._rows):
             messages = errors.get(index, [])
-            entry["error"].config(text=("⚠ " + "；".join(messages)) if messages else "")
+            entry["error"].config(text=("⚠ " + t("sep_clause").join(messages)) if messages else "")
         form = errors.get(editor.FORM_ERROR, [])
         if form:
-            self._status("；".join(form), ERROR_COLOR)
+            self._status(t("sep_clause").join(form), ERROR_COLOR)
 
     def _save(self) -> None:
         rows = self._current_rows()
@@ -191,22 +204,22 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._show_errors(errors)
         if errors:
             count = len([k for k in errors if k != editor.FORM_ERROR])
-            self._status(f"未儲存：{count} 列有錯誤，請依列內提示修正。", ERROR_COLOR)
+            self._status(t("ds_has_errors", count=count), ERROR_COLOR)
             return
         try:
             backup = editor.save_rows(rows, self._path)
         except (editor.SaveRefused, OSError) as exc:
-            self._status(f"未儲存: {exc}", ERROR_COLOR)
+            self._status(t("ds_not_saved", error=exc), ERROR_COLOR)
             return
         self._saved_snapshot = self._snapshot()
         self._update_dirty()
-        note = f"已儲存（備份: {backup.name}）。需重啟 Core 才會生效。" if backup else "已儲存。需重啟 Core 才會生效。"
+        note = t("ds_saved_backup", name=backup.name) if backup else t("ds_saved")
         self._status(note, OK_COLOR)
 
     # -------------------------------------------------------------- probing
     def _probe_row(self, entry: Dict[str, Any]) -> None:
         ip = entry["vars"]["kvm_ip"].get().strip()
-        entry["probe"].config(text="測試中…", fg=MUTED_FG)
+        entry["probe"].config(text=t("ds_probing"), fg=MUTED_FG)
 
         def worker() -> None:
             result = editor.probe_kvm(ip)
@@ -222,14 +235,14 @@ class DeviceSettingsWindow(tk.Toplevel):
     def _probe_all(self) -> None:
         for entry in list(self._rows):
             self._probe_row(entry)
-        self._status(f"已送出 {len(self._rows)} 台連線測試。", MUTED_FG)
+        self._status(t("ds_probe_started", count=len(self._rows)), MUTED_FG)
 
     # -------------------------------------------------------------- restart
     def _restart(self) -> None:
         if self.dirty:
-            self._status("有未儲存的修改。請先儲存，再重啟 Core。", ERROR_COLOR)
+            self._status(t("ds_dirty"), ERROR_COLOR)
             return
-        self._status("檢查設備狀態…", MUTED_FG)
+        self._status(t("ds_checking"), MUTED_FG)
 
         def worker() -> None:
             try:
@@ -242,12 +255,12 @@ class DeviceSettingsWindow(tk.Toplevel):
                 self._post(lambda: self._status(refusal, ERROR_COLOR))
                 return
             if self._restart_core is None:
-                self._post(lambda: self._status("此視窗未提供重啟功能。", ERROR_COLOR))
+                self._post(lambda: self._status(t("ds_no_restart"), ERROR_COLOR))
                 return
-            self._post(lambda: self._status("重啟 Core 中…", MUTED_FG))
+            self._post(lambda: self._status(t("ds_restarting"), MUTED_FG))
             result = self._restart_core()
             ok = bool(result.get("status") == "ok" or result.get("success"))
-            message = "Core 已重啟。" if ok else str(result.get("message", "重啟失敗"))
+            message = t("ds_restarted") if ok else str(result.get("message", t("err_restart")))
             self._post(lambda: self._status(message, OK_COLOR if ok else ERROR_COLOR))
 
         threading.Thread(target=worker, daemon=True).start()

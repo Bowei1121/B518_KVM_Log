@@ -182,7 +182,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                     f"{start_timeout_sec:g} 秒內未見監控中")
             await asyncio.sleep(POLL_INTERVAL_SEC)
     except FlowError as exc:
-        log(str(exc))
+        log(exc.code, str(exc))
         raise
     finally:
         diagnostics.finalize(ok, "monitor_start")

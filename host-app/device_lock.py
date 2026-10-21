@@ -42,9 +42,10 @@ class DeviceLockManager:
 
         acquired = lock.acquire(blocking=False)
         if acquired:
-            logger.debug("Acquired lock for device '%s'", key)
+            logger.debug("Acquired lock for device '%s'", key, extra={"zh": "已取得設備 '%s' 的鎖"})
         else:
-            logger.debug("Failed to acquire lock for device '%s' (busy)", key)
+            logger.debug("Failed to acquire lock for device '%s' (busy)", key,
+                         extra={"zh": "取得設備 '%s' 的鎖失敗（忙碌中）"})
         return acquired
 
     def release(self, device: Any) -> None:
@@ -60,7 +61,7 @@ class DeviceLockManager:
         if lock is not None:
             try:
                 lock.release()
-                logger.debug("Released lock for device '%s'", key)
+                logger.debug("Released lock for device '%s'", key, extra={"zh": "已釋放設備 '%s' 的鎖"})
             except RuntimeError:
                 # Lock was not acquired / already unlocked
                 pass

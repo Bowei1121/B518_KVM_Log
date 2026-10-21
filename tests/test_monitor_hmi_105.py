@@ -42,23 +42,23 @@ def test_station_status_maps_to_one_light(status, expected):
 def test_daily_log_writes_one_file_per_day_and_switches_at_midnight(tmp_path):
     clock = {"now": dt.datetime(2026, 10, 21, 23, 59, 50)}
     log = DailyLogFile(tmp_path, "monitor_ui", clock=lambda: clock["now"])
-    log.write("第一行")
+    log.write("First line", "第一行")
     clock["now"] = dt.datetime(2026, 10, 22, 0, 0, 1)
-    log.write("第二行")
+    log.write("Second line", "第二行")
     log.close()
 
     day1 = (tmp_path / "monitor_ui_2026-10-21.log").read_text(encoding="utf-8")
     day2 = (tmp_path / "monitor_ui_2026-10-22.log").read_text(encoding="utf-8")
-    assert day1 == "2026-10-21(23:59:50): 第一行\n"
-    assert day2 == "2026-10-22(00:00:01): 第二行\n"
+    assert day1 == "23:59:50 | First line | 第一行\n"
+    assert day2 == "00:00:01 | Second line | 第二行\n"
 
 
-def test_daily_log_accepts_english_and_chinese_halves(tmp_path):
+def test_daily_log_writes_english_then_chinese_on_every_line(tmp_path):
     log = DailyLogFile(tmp_path, "monitor_ui", clock=lambda: dt.datetime(2026, 10, 21, 9, 0, 0))
-    line = log.write("中文說明", "English text")
+    line = log.write("English text", "中文說明")
     log.close()
-    assert line.endswith(": 中文說明")
-    assert "中文說明" in (tmp_path / "monitor_ui_2026-10-21.log").read_text(encoding="utf-8")
+    assert line == "09:00:00 | English text | 中文說明"
+    assert "English text | 中文說明" in (tmp_path / "monitor_ui_2026-10-21.log").read_text(encoding="utf-8")
 
 
 def test_prune_keeps_thirty_days_and_only_touches_matching_names(tmp_path):
@@ -166,9 +166,9 @@ def test_every_tk_widget_has_an_explicit_light_colour(ui):
 
 def test_template_buttons_are_merged_and_capture_button_is_gone(ui):
     texts = [_cget(w, "text") for w in _walk(ui) if w.winfo_class() == "Button"]
-    assert "✂️ 製作模板" in texts
-    assert "📋 比對結果" in texts
-    assert not any("儲存目前影格為 Capture" in t for t in texts)
+    assert "✂ Make template" in texts
+    assert "📋 Match results" in texts
+    assert not any("Capture" in t for t in texts)
 
 
 def test_pattern_button_is_disabled_with_reason_when_cropper_missing(monkeypatch):
@@ -181,17 +181,17 @@ def test_pattern_button_is_disabled_with_reason_when_cropper_missing(monkeypatch
         full_log = app.log_text.get("1.0", "end")
         assert "No module named 'cv2'" in full_log
         app.on_create_pattern()  # direct call must not crash and must log
-        assert "無法製作模板" in app.log_text.get("1.0", "end")
+        assert "Cannot make templates" in app.log_text.get("1.0", "end")
     finally:
         app._file_log.close()
         app.destroy()
 
 
 def test_error_line_is_red_and_short_hmi_text_jumps_to_it(ui):
-    detail = "診斷錯誤: Communication error with Core Service: timed out"
+    detail = "Check error: Communication error with Core Service: timed out"
     ui._display_check_result({"status": "error", "message": "Communication error with Core Service: timed out"})
 
-    assert ui.lbl_check_result.cget("text") == "診斷失敗（詳見日誌）"
+    assert ui.lbl_check_result.cget("text") == "Check failed (see log)"
     assert "timed out" not in ui.lbl_check_result.cget("text")
     error_ranges = ui.log_text.tag_ranges("error")
     assert error_ranges, "error line must carry the red tag"
@@ -205,7 +205,7 @@ def test_error_line_is_red_and_short_hmi_text_jumps_to_it(ui):
 
 
 def test_warning_line_is_orange_tag(ui):
-    ui._append_log("尚未選定設備，無法擷取快照。", level="warn")
+    ui._append_log("No device selected; cannot take a snapshot.", "尚未選定設備，無法擷取快照。", level="warn")
     assert ui.log_text.tag_ranges("warn")
     assert not ui.log_text.tag_ranges("error")
 
@@ -213,15 +213,15 @@ def test_warning_line_is_orange_tag(ui):
 def test_core_service_lamp_shows_detail_in_tip_and_logs_each_outage_once(ui):
     ui._update_status_ui({"status": "ok", "uptime_seconds": 49, "active_connections": 2, "busy_devices": []})
     assert ui.light_core.current_fill() == LED_GREEN
-    assert "Uptime: 49s" in ui._core_tooltip_text()
-    assert "連線數: 2" in ui._core_tooltip_text()
+    assert "Running for 49 s" in ui._core_tooltip_text()
+    assert "2 program(s)" in ui._core_tooltip_text()
 
     down = {"status": "error", "message": "Communication error with Core Service: timed out"}
     ui._update_status_ui(down)
     ui._update_status_ui(down)
     assert ui.light_core.current_fill() == LED_RED
-    assert ui._core_tooltip_text() == "服務未連線（詳見日誌）"
-    assert ui.log_text.get("1.0", "end").count("Core Service 未連線") == 1
+    assert ui._core_tooltip_text() == "Service not connected (see log)"
+    assert ui.log_text.get("1.0", "end").count("Core Service not connected") == 1
 
 
 def test_frozen_station_blinks_then_stops_on_recovery(ui):
@@ -290,7 +290,7 @@ def test_restart_failure_is_short_on_the_settings_page_and_full_in_the_log(ui, m
 
     monkeypatch.setattr(core_daemon, "restart_core_daemon", fail)
     res = ui._restart_core_daemon()
-    assert res == {"status": "error", "message": "重啟失敗（詳見日誌）"}
+    assert res == {"status": "error", "message": "Restart failed (see log)"}
     # The worker thread queued the Log write; run it on the Tk side.
     while True:
         try:
@@ -364,9 +364,9 @@ def test_tooltip_text_is_read_when_shown(ui):
 
 def test_snapshot_failure_shows_short_text_and_clears_when_fixed(ui):
     ui._display_snapshot_result({"status": "error", "message": "timed out after 5s"})
-    assert ui.lbl_preview_info.cget("text") == "快照失敗（詳見日誌）"
+    assert ui.lbl_preview_info.cget("text") == "Snapshot failed (see log)"
     assert "timed out after 5s" in ui.log_text.get("1.0", "end")
 
-    ui._set_info(ui.lbl_preview_info, "解析度: 1x1", "#555555")
-    assert ui.lbl_preview_info.cget("text") == "解析度: 1x1"
+    ui._set_info(ui.lbl_preview_info, "Size: 1x1", "#555555")
+    assert ui.lbl_preview_info.cget("text") == "Size: 1x1"
     assert ui.lbl_preview_info.bind("<Button-1>") == ""

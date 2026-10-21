@@ -3,7 +3,7 @@
 
 Each day gets one file, ``<prefix>_YYYY-MM-DD.log``, in the ``logs`` folder that sits beside the
 template root (``<template root>/../logs``). Files older than ``RETENTION_DAYS`` are deleted when a
-new day's file is opened and on startup.
+new day's file is opened and on startup. Every line is bilingual: ``HH:MM:SS | EN | 中文`` (issue #106).
 """
 
 from __future__ import annotations
@@ -14,19 +14,15 @@ import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
+from bilingual_log import format_bilingual_line
+
 RETENTION_DAYS = 30
 _NAME_RE = re.compile(r"^(?P<prefix>[A-Za-z0-9_]+)_(?P<date>\d{4}-\d{2}-\d{2})\.log$")
-_TIME_FORMAT = "%Y-%m-%d(%H:%M:%S)"
 
 
 def log_dir_for_template_root(root: Union[str, Path]) -> Path:
     """``<template root>/../logs``: beside the template folder, not inside it."""
     return Path(root).expanduser().parent / "logs"
-
-
-def format_log_line(now: _dt.datetime, zh: str, en: str = "") -> str:
-    """One Log line. ``en`` is accepted now so #106 can switch to ``HH:MM:SS | EN | 中文`` without a new call site."""
-    return f"{now.strftime(_TIME_FORMAT)}: {zh}"
 
 
 def prune_old_logs(
@@ -76,10 +72,10 @@ class DailyLogFile:
     def path_for(self, day: _dt.date) -> Path:
         return self.directory / f"{self.prefix}_{day.isoformat()}.log"
 
-    def write(self, zh: str, en: str = "", when: Optional[_dt.datetime] = None) -> str:
-        """Append one line and return the text that was written (without the newline)."""
+    def write(self, en: str, zh: str = "", when: Optional[_dt.datetime] = None) -> str:
+        """Append one bilingual line and return the text that was written (without the newline)."""
         now = when or self._clock()
-        line = format_log_line(now, zh, en)
+        line = format_bilingual_line(now, en, zh or en)
         with self._lock:
             if self._fh is None or now.date() != self._day:
                 self._open(now.date())

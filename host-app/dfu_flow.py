@@ -109,7 +109,7 @@ def _control(session, frame, window_box, template, key):
 def _boxes_or_fail(frame, window, templates, channels, diagnostics):
     boxes = find_checkboxes(frame, window, templates["checkbox_checked"], templates["checkbox_unchecked"])
     diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
-                       note="expected {}".format(channels))
+                       note={"en": "expected {}".format(channels), "zh": "預期 {} 個 checkbox".format(channels)})
     if len(boxes) != channels:
         raise FlowError("hid_failed", f"DFU 視窗找到 {len(boxes)} 個 checkbox，設備設定為 {channels} 個通道")
     return boxes
@@ -181,7 +181,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         ok = True
         return {"entered": entered}
     except FlowError as exc:
-        log(str(exc))
+        log(exc.code, str(exc))
         raise
     finally:
         diagnostics.finalize(ok, "dfu_input")
@@ -208,7 +208,7 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
         ok = True
         return {"action": "ok"}
     except FlowError as exc:
-        log(str(exc))
+        log(exc.code, str(exc))
         raise
     finally:
         diagnostics.finalize(ok, "ok")

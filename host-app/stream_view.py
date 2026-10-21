@@ -16,6 +16,7 @@ import tkinter as tk
 import cv2
 from PIL import Image, ImageTk
 
+from ui_i18n import bind
 from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, pin_light_appearance
 
 # Tkinter keysym -> USB HID usage code
@@ -79,8 +80,7 @@ class StreamerWindow(tk.Toplevel):
 
         self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)
-        self.status = tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG,
-                               text="串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤)")
+        self.status = bind(tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG), "streaming_hint")
         self.status.pack(fill="x")
 
         if self.input_sender:
