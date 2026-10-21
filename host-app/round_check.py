@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from device_round import MANUAL_VERIFICATION_REQUIRED, MONITOR_NOT_READY
 from frame_stream import FRESHNESS_PENDING
+from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import FINISHED_STATES, reportable_active
 
 
@@ -75,6 +76,8 @@ class Reading:
         of a waiting screen."""
         if decision.kind == "frozen" or decision.reason == "frame_frozen":
             return cls.failed("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
+        if decision.kind == "heartbeat_stopped":
+            return cls.failed(HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE)
         if decision.kind == "round_lost":
             return cls.failed("round_lost", "Log Solution returned to standby before this round was taken")
         state = decision.state

@@ -105,11 +105,12 @@ class SyntheticDfuKVM(FakeKVM):
 
     def latest_frame(self):
         import time as _time
-        from protocol_helpers import render_log_solution
+        from protocol_helpers import live_heartbeat, render_log_solution
 
         self._frame_seq += 1
         now = _time.monotonic()
-        app = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4)
+        app = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4,
+                                  heartbeat=live_heartbeat(now))
         return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
                              stream_id="synthetic", pts=now)
 

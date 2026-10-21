@@ -171,14 +171,18 @@ class _Admitted:
     args: Any
 
 
-def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str, Any], Any]:
+def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = None) -> Tuple[Dict[str, Any], Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
     Returns ``(reply, state)``. Reports what the screen shows now. Never returns taken and never
     arms or consumes the device's round gate. Two agreeing fresh frames fill ``active``.
     With ``stream``, the reading also observes the device's FrameStream: a frozen picture is frame_frozen.
+    With ``heartbeat``, the device's HeartbeatTracker judges the display: stopped is log_solution_heartbeat_stopped.
     """
     from frame_stream import FRESHNESS_PENDING
+    from log_solution_heartbeat import (
+        HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, Step, cells_of, unreadable_heartbeat,
+    )
     from log_solution_reader import (
         CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
     )
@@ -187,12 +191,19 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None) -> Tuple[Dict[str
     if stream is not None:
         verdict = stream.observe_snapshot(snapshot)
         if verdict.kind == "frozen":
+            if heartbeat is not None:
+                heartbeat.reset()
             return {"error": "frame_frozen", "message": verdict.message}, None
         if not verdict.advanced:
             # PTS has not been seen to move: not judged, and the tracker does not see this frame.
             return _unknown(FRESHNESS_PENDING), None
     if snapshot is None:
         return {"error": "frame_frozen", "message": "No frame received from KVM yet"}, None
+    if heartbeat is not None:
+        step = heartbeat.observe(snapshot.stream_id, snapshot.sequence, snapshot.received_monotonic, cells_of(obs))
+        if step is Step.STOPPED:
+            return {"error": HEARTBEAT_STOPPED, "message": HEARTBEAT_STOPPED_MESSAGE}, None
+        obs = unreadable_heartbeat(obs)
     rows = tracker.observe(obs, snapshot.sequence, snapshot.received_monotonic)
     kind = screen_kind(obs)
     if kind is ScreenKind.UNKNOWN:
@@ -470,7 +481,8 @@ class TcpJsonServer:
         Each reader asks FrameStream first, then judges. RoundCheck only sees the resulting Reading.
         """
         if mode is CheckMode.INSPECT:
-            return lambda: Reading.from_inspect(*_inspect_round(kvm, slot.inspect_tracker, slot.stream))
+            return lambda: Reading.from_inspect(
+                *_inspect_round(kvm, slot.inspect_tracker, slot.stream, slot.heartbeat))
         report_active = mode is CheckMode.CHECK_START
 
         def job() -> Reading:
@@ -500,7 +512,23 @@ class TcpJsonServer:
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
             return "frame_frozen", verdict.message
-        return None
+        return await self._heartbeat_refusal(ctx)
+
+    async def _heartbeat_refusal(self, ctx: CommandContext) -> Optional[Tuple[str, str]]:
+        """Why a HID-sending command must not run because the Log Solution display stopped (issue #77).
+
+        A change seen within RECENT_CHANGE_SEC passes at once. Otherwise the picture is sampled for up to
+        PROBE_MAX_SEC on a worker thread; only three identical counted readings refuse.
+        """
+        from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, probe
+        from log_solution_reader import read_app_frame
+
+        tracker = self._slot(ctx.entry.device_id).heartbeat
+        if tracker.changed_within(time.monotonic()):
+            return None
+        stopped = await asyncio.wrap_future(self._inspector.submit(
+            probe, tracker, lambda: read_app_frame(ctx.kvm)))
+        return (HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE) if stopped else None
 
     def _template_root(self) -> Any:
         """Configured template root, or TemplateCatalog.default_root() (~/Documents/template)."""

@@ -17,6 +17,7 @@ import time
 
 from hid_session import FlowError, HidSession
 from match_diagnostics import MatchDiagnostics
+from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import MarkerState, read_latest_app_frame
 from round_frame_consumer import observe_latest_round_frame
 from template_catalog import TemplateCatalog
@@ -164,6 +165,9 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 if not kvm.is_healthy():
                     raise _kvm_lost_waiting()
                 raise FlowError("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
+            if decision.kind == "heartbeat_stopped":
+                # The display stopped while waiting: no later reading can count as monitoring.
+                raise FlowError(HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE)
             if decision.state == MarkerState.MONITORING:
                 ok = True
                 return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}

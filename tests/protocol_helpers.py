@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import uuid
 import weakref
 from pathlib import Path
@@ -130,6 +131,23 @@ class LogSolutionKVM(FakeKVM):
         self.stream_id = "synthetic-stream"
         self._cover = None
         self.connected = False
+        # A live App's heartbeat counts 0.5 s steps (live_heartbeat) unless stop_heartbeat() holds it.
+        self._heartbeat_held = None
+
+    def heartbeat_value(self):
+        """The 16-state heartbeat counter now: 0.5 s per step while alive, held where stop_heartbeat() froze it."""
+        if self._heartbeat_held is not None:
+            return self._heartbeat_held
+        return live_heartbeat()
+
+    def stop_heartbeat(self):
+        """The App stops drawing: the picture keeps arriving (PTS moves) but the heartbeat cells hold still."""
+        with self._lock:
+            self._heartbeat_held = self.heartbeat_value()
+
+    def resume_heartbeat(self):
+        with self._lock:
+            self._heartbeat_held = None
 
     def show(self, state, statuses=()):
         """Show a state. Standby/monitoring/review screens default to four waiting slots."""
@@ -211,7 +229,8 @@ class LogSolutionKVM(FakeKVM):
                 self._seq += 1
             if not self._frozen:
                 self._pts += 0.033
-            window = render_log_solution(None if self._hidden else self._state, self._statuses)
+            window = render_log_solution(None if self._hidden else self._state, self._statuses,
+                                         heartbeat=self.heartbeat_value())
             if self._cover is not None and not self._hidden:
                 _paint_cover(window, *self._cover)
             strip = np.full((DOCK_HEIGHT, window.shape[1], 3), DOCK_COLOR, dtype=np.uint8)
@@ -251,6 +270,12 @@ _LOG_COLORS = {
     "COMPLETING": (255, 199, 130), "STOPPED": (191, 191, 191),
     "TIMEOUT": (0, 153, 255),
 }
+
+
+def live_heartbeat(now=None):
+    """The counter a live App shows at ``now`` (monotonic): one 0.5 s step each, 16 states."""
+    now = time.monotonic() if now is None else now
+    return int(now / 0.5) % 16
 
 
 def heartbeat_bits(state):
