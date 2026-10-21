@@ -358,6 +358,19 @@ def test_look_alike_square_beside_a_hidden_left_locator_is_not_read(cover, shift
     assert not obs.reliable or obs.statuses == tuple(statuses), obs.statuses
 
 
+@pytest.mark.parametrize("cover", [(191, 191, 191), (200, 200, 200)])
+def test_look_alike_square_right_of_a_hidden_left_locator_needs_every_gutter_point(cover):
+    # The cover hides only the real left locator; the look-alike sits 6.5 units right of it. A single
+    # gutter sample at x=17 lands on App background and lets slot 1 read the cover as STOPPED.
+    statuses = ["PASS", "STOPPED", "FAIL", "TESTING"]
+    frame = render_frame(MarkerState.COMPLETE, statuses)
+    frame[:, :23 + 23 * 2] = cover
+    _paint_locator(frame, 6.5)
+    obs = inspect_app_frame(frame, 10, 10)
+
+    assert not obs.reliable or obs.statuses == tuple(statuses), obs.statuses
+
+
 @pytest.mark.parametrize("px_per_unit", [1.2, 4 / 3, 1.5, 0.75])
 def test_resampled_two_row_frame_reads_capacity_twenty_and_heartbeat(px_per_unit):
     statuses = ["PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"] * 4
