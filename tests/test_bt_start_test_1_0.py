@@ -24,7 +24,7 @@ from hid_session import FlowError  # noqa: E402
 from fake_kvm import FakeKVM, beside, make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from kvm_pool import KVMConnectionPool  # noqa: E402
-from protocol_helpers import make_registry, render_log_solution  # noqa: E402
+from protocol_helpers import live_heartbeat, make_registry, render_log_solution  # noqa: E402
 from tcp_server import TcpJsonServer  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
@@ -59,11 +59,13 @@ class BtKvm(FakeKvm):
     def __init__(self, frame, log_state="monitoring"):
         super().__init__(frame)
         self.log_state = log_state
+        self._frame_seq = 0
 
     def latest_frame(self):
         now = time.monotonic()
-        app = render_log_solution(self.log_state, ["WAITING"] * 4)
-        return make_snapshot(beside(self.frame, app), sequence=1, received_monotonic=now,
+        self._frame_seq += 1
+        app = render_log_solution(self.log_state, ["WAITING"] * 4, heartbeat=live_heartbeat(now))
+        return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
                              stream_id="synthetic", pts=now)
 
 

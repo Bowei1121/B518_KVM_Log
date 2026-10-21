@@ -24,7 +24,9 @@ def _cycle_frames(fps=10):
                 + [("preparing", ["WAITING"] * 4)] * max(1, fps // 2)
                 + [("monitoring", ["WAITING"] * 4)] * (2 * fps)
                 + [("complete", ["PASS", "FAIL", "PASS", "PASS"])] * fps)
-    frames = [render_log_solution(state, statuses) for state, statuses in sequence]
+    # The heartbeat counts 0.5 s steps of the recording, as a live App's does.
+    frames = [render_log_solution(state, statuses, heartbeat=int(i / fps / 0.5) % 16)
+              for i, (state, statuses) in enumerate(sequence)]
     pts = [round(i / fps + 100.0, 4) for i in range(len(frames))]
     return frames, pts
 

@@ -103,6 +103,19 @@ def _check(srv, device):
                        "timeout_sec": 0})
 
 
+def _warm_heartbeat(srv, device):
+    """Three inspect readings 0.9 s apart, so a heartbeat change is on record for this device.
+
+    Before a HID command the server samples the Log Solution heartbeat for up to 2.5 s unless it saw a change in the
+    last 3 s (issue #77). A live Log Solution keeps changing, and a Monitor UI or LabVIEW polls between commands; this
+    stands in for that polling, so the command's own timing is what the test measures.
+    """
+    payload = {"protocol_version": "1.0", "req_id": "warm", "device": device, "cmd": "inspect", "timeout_sec": 0}
+    for _ in range(3):
+        _send(srv, payload)
+        time.sleep(0.9)
+
+
 @pytest.mark.parametrize("device", STATIONS)
 @pytest.mark.parametrize("start_state", ["standby", "complete"])
 def test_success_clicks_dock_then_shortcut_and_reports_monitoring(serve, device, start_state):
@@ -235,6 +248,7 @@ def test_preparing_at_start_waits_without_a_shortcut_then_monitoring_is_seen(ser
     """2026-10-19: a preparing screen establishes the round-start request and this call's monitoring counts."""
     kvm = LogSolutionKVM(state="preparing")
     srv = serve(kvm)
+    _warm_heartbeat(srv, "DFU-01")
     out = {}
 
     def run():
@@ -293,6 +307,7 @@ def test_preparing_after_the_shortcut_keeps_waiting_until_monitoring(serve):
     kvm = LogSolutionKVM(state="standby")
     kvm.state_after_shortcut = "preparing"
     srv = serve(kvm)
+    _warm_heartbeat(srv, "DFU-01")
     out = {}
 
     def run():
@@ -312,6 +327,7 @@ def test_review_after_the_shortcut_is_log_solution_review_at_once(serve):
     kvm = LogSolutionKVM(state="standby")
     kvm.state_after_shortcut = "review"
     srv = serve(kvm)
+    _warm_heartbeat(srv, "DFU-01")
 
     resp = _monitor_start(srv, "DFU-01")
 

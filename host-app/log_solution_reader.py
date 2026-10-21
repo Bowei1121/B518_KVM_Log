@@ -11,6 +11,8 @@ from enum import Enum
 import time
 from typing import Optional, Tuple
 
+from log_solution_heartbeat import unreadable_heartbeat
+
 import cv2
 import numpy as np
 
@@ -326,10 +328,14 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
 
 
 def read_snapshot(snapshot, now=None):
-    """Reading of one ``FrameSnapshot``, or None when there is no picture yet."""
+    """Reading of one ``FrameSnapshot``, or None when there is no picture yet.
+
+    A reliable reading whose heartbeat is not fully readable comes back unreliable (Log Solution not visible),
+    so every caller that checks ``reliable`` sees the heartbeat rule (issue #77).
+    """
     if snapshot is None:
         return None
-    return inspect_app_frame(snapshot.image, snapshot.received_monotonic, now=now)
+    return unreadable_heartbeat(inspect_app_frame(snapshot.image, snapshot.received_monotonic, now=now))
 
 
 def read_app_frame(kvm):

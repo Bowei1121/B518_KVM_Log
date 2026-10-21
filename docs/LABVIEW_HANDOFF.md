@@ -65,6 +65,7 @@
 | `round_lost` | 本輪已監控就緒後，Log Solution 回到待命（例如當掉重開） | 本輪結果已無法取得，暫停並交人工 |
 | `capacity_mismatch` | 畫面格數和設定的測試通道數不同 | 設定錯誤，暫停檢查 Log Solution 與設備清單 |
 | `frame_frozen` | 畫面停止更新（或沒有時間戳）。`input`、`start_test`、`monitor_start` 回此碼時沒有送出任何 HID：ATE 沒有開測、Log Solution 也沒有開始監控，**不可視為本輪已開始** | 設備異常，暫停 |
+| `log_solution_heartbeat_stopped` | Log Solution 畫面心跳停止（約 2 秒內判定）：畫面仍在送、PTS 仍前進，但 Log Solution 的心跳方塊不再跳。`input`、`start_test`、`monitor_start` 回此碼時沒有送出任何 HID；`check_start`、`check_finish`、`inspect` 長輪詢中途回覆。message：「畫面心跳停止，請人員檢查測試電腦與 Log Solution」 | **不得判產品 FAIL，不做設備動作、不自動重試、不重新開測**；暫停並請人員檢查測試電腦與 Log Solution。橋接不鎖定，心跳恢復後同指令可再送 |
 | `device_busy` | 同一台設備已有指令在執行 | 不要並行送指令，稍後再送 |
 | 其他（`invalid_*`、`unknown_*`、`forbidden_field` 等） | 請求格式錯誤 | 修正 LabVIEW 程式 |
 

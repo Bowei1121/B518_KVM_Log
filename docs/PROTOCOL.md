@@ -240,6 +240,22 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 - 連續 30 秒看不到：點一次 Log Solution 的 Dock 圖示，滑鼠移到中性位置，等 5 秒後重新判讀。同一請求最多 3 次，仍看不到回 `log_solution_not_visible`。
 - Dock 上找不到圖示：立即回 `log_solution_not_found`，不算一次恢復。
 - 本輪已見監控中之後回到待命：立即回 `round_lost`。
+- 心跳讀不到（可靠讀數但心跳任一格讀不到）：`kind = unknown`、`reason = heartbeat_unreadable`，屬 Log Solution 看不到，走上述 Dock 補救。
+
+#### Log Solution 心跳停止（issue #77）
+
+Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3，每 0.5 秒 +1，App 活著就一直跳）。Mac 或 Log Solution 當機時 HDMI 仍送出同一張畫面、PTS 仍前進，所以只看 PTS 無法判斷。橋接只比對四格黑白是否改變，不解讀計數值。
+
+- 計入序列的觀察：新影格（序號不同）、四格可讀、與上一張已計入者的接收時間相隔 0.8～3 秒。相隔不到 0.8 秒的觀察不計入、不清空；相隔超過 3 秒，序列重新開始。
+- 任一無效觀察（四格有讀不到、影格過舊、串流凍結、換 stream、定位失敗）清空序列。
+- 連續 3 張有效觀察四格相同 → `log_solution_heartbeat_stopped`，message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。正常時約 2 秒內判定。這不宣稱 App 已當機。
+- 心跳讀不到不是心跳停止：可靠讀數但四格有讀不到，或定位失敗，一律屬 Log Solution 看不到，走 Dock 補救，不回 `log_solution_heartbeat_stopped`。
+- 不鎖定、沒有人工復位指令：之後四格再變化即恢復正常。橋接不自動重試、不重新開測、不取用不確定結果。
+- 判讀順序：KVM 健康 → 串流凍結（`frame_frozen`）→ 心跳 → 判讀標記與色帶。`check_start`、`check_finish`、`inspect` 長輪詢中途看到心跳停止就立即回覆，不等 `timeout_sec`。
+- `input`、`start_test`、`monitor_start` 送 HID 前（接在凍結檢查之後）：最近 3 秒內見過有效變化即放行；否則主動取樣最多約 2.5 秒。見變化放行；3 張同圖回 `log_solution_heartbeat_stopped`；取樣時間內判不出（讀不到或沒有新影格）則交給各指令既有的流程（`hid_failed`、`monitor_not_ready`、Dock 補救）。三者回此碼時都不送 HID。
+- 已知限制：心跳剛停止、距上一次有效變化未滿 3 秒時，送 HID 前的檢查會放行。
+- `monitor_start` 等待監控中時心跳停止，立即回 `log_solution_heartbeat_stopped`，保留已建立的本輪開始請求（同等待中的 `frame_frozen`）。
+- `data` 沿用各指令既有預設形狀。
 
 ### 5.5 `input`（僅 DFU）
 
@@ -259,7 +275,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | --- | --- | --- |
 | `entered` | array of number | 實際完成輸入的位置 |
 
-送 HID 前先做畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線回 `kvm_connect_failed`，凍結回 `frame_frozen`，兩者都不送 HID。
+送 HID 前先做畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線回 `kvm_connect_failed`，凍結回 `frame_frozen`，兩者都不送 HID。接著做心跳檢查，心跳停止回 `log_solution_heartbeat_stopped`，同樣不送 HID（見 5.4「Log Solution 心跳停止」）。
 
 是否允許輸入（2026-10-19 決定；一般完成與人工停止完成都屬 READY）：
 
@@ -284,7 +300,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 流程（依序，任一步失敗即停止）：
 
-0. 畫面凍結檢查（`input`、`start_test`、`monitor_start` 共用，ADR-0005 2026-10-20 第 3 點）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`。不送 HID，不建立本輪開始請求。凍結判定是主動窗口：最近 1 秒內 PTS 有前進就直接放行，否則最多等 2 秒讀到 PTS 前進。窗口內 KVM 死亡回 `kvm_connect_failed`。檢查只做一次，之後的點擊不再逐次檢查。沒有影格不算凍結，仍依下列各步回 `hid_failed`。
+0. 畫面凍結檢查（`input`、`start_test`、`monitor_start` 共用，ADR-0005 2026-10-20 第 3 點）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`。不送 HID，不建立本輪開始請求。凍結判定是主動窗口：最近 1 秒內 PTS 有前進就直接放行，否則最多等 2 秒讀到 PTS 前進。窗口內 KVM 死亡回 `kvm_connect_failed`。檢查只做一次，之後的點擊不再逐次檢查。沒有影格不算凍結，仍依下列各步回 `hid_failed`。心跳檢查（issue #77）接在凍結檢查之後，心跳停止回 `log_solution_heartbeat_stopped`，不送 HID、不建立本輪開始請求；規則見 5.4。
 1. 沒有影格 → `hid_failed`。
 2. 已在監控中 → `log_solution_busy`，不送 HID，也不建立新的本輪開始請求。
 3. 待確認 → `log_solution_review`，不送 HID。
@@ -308,7 +324,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 流程：
 
-0. 畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`，不送 HID。
+0. 畫面凍結檢查（同 5.6 第 0 步）：KVM 已斷線 → `kvm_connect_failed`；畫面凍結 → `frame_frozen`，不送 HID。心跳檢查接在其後：心跳停止 → `log_solution_heartbeat_stopped`，不送 HID。
 1. 讀取最新畫面。不是監控中（含準備中、待命、待確認、完成、看不清楚、沒有影格）→ `monitor_not_ready`，不送 HID。
 2. DFU：點 DFU Dock 圖示，找到視窗與 OK 後點一次。BT：點 BT Dock 圖示，找到 Start All 後點一次。
 3. 模板找不到或 HID 錯誤 → `hid_failed`。
@@ -370,6 +386,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進，或畫面沒有 PTS（ADR-0005）。`input`、`start_test`、`monitor_start` 送 HID 前檢查，`monitor_start` 等待中也會檢查；這三個指令回此碼時未送出任何 HID | 設備異常，暫停，不得判產品 FAIL |
+| `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。不鎖定，心跳再變化即恢復 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
 | `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
