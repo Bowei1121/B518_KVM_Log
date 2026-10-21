@@ -53,6 +53,7 @@ def test_pair_returns_english_then_chinese():
 
 def test_prefs_file_lives_in_the_user_settings_folder_per_os(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() reads USERPROFILE on Windows
     monkeypatch.setattr(sys, "platform", "darwin")
     assert ui_i18n.prefs_path() == tmp_path / "Library" / "Application Support" / "AtlasKVM" / "ui_prefs.json"
 
@@ -76,9 +77,10 @@ def test_saved_language_round_trips_and_bad_files_fall_back_to_english(tmp_path,
 
 
 def test_saving_the_language_never_raises_when_the_folder_is_blocked(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    blocker = tmp_path / "Library"
-    blocker.write_text("a file, not a folder", encoding="utf-8")  # mkdir under it must fail
+    # A file where the prefs folder should be: mkdir under it must fail on every OS.
+    blocker = tmp_path / "blocked"
+    blocker.write_text("a file, not a folder", encoding="utf-8")
+    monkeypatch.setattr(ui_i18n, "prefs_path", lambda: blocker / "AtlasKVM" / "ui_prefs.json")
     assert ui_i18n.save_language("zh") is False
 
 
