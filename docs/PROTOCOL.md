@@ -360,6 +360,13 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `kvm_pool` | object | `active_connections`、`cached_ips` |
 | `freeze_guard` | object | 凍結檢查狀態 |
 | `stations` | array of object | 各設備的 `station`、`device`、`kvm_ip`、`status`（`BUSY`／`FROZEN`／`IDLE`／`DISCONNECTED`）等 |
+| `stations[].frame_size` | array or null | 最近一次讀取的影格 `[寬, 高]`（像素）。尚無讀取為 `null` |
+| `stations[].picture_scale` | number or null | 最近一次讀取換算的比例（Log Solution 1.3 基準單位→像素），四捨五入到 0.001。最近一次讀取未定位（無法換算）或尚無讀取為 `null` |
+| `stations[].cell_px` | number or null | 標記小格像素，`picture_scale` × 10，四捨五入到 0.001。`picture_scale` 為 `null` 時也為 `null` |
+| `stations[].last_reading` | object or null | 最近一次讀取：`reason`（可靠時為 `""`，否則為實際不可見原因，例如 `locators_missing_or_ambiguous`）、`age_sec`（距今秒數）。尚無讀取為 `null` |
+| `stations[].readable_ratio` | object | `ratio`：最近 50 次讀取中可靠的比例（0–1，四捨五入到 0.001），無樣本為 `null`；`samples`：樣本數（≤ 50） |
+
+上列五欄位為讀取時累積的統計，`core_status` 本身不讀畫面、不拿設備鎖，因此未讀取過的設備一律為 `null`／0 樣本。每次解碼一張影格記一次，包括 check、inspect、monitor_start、HID 前拒絕判斷與心跳取樣。LabVIEW 的 `status` 不回傳這些欄位。
 
 變更紀錄：版本欄位原為 `version`（固定 `"1.0.0"`），改為 `core_version`（`CORE_VERSION`，即 `ping` 回的版本）。
 

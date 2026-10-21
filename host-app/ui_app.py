@@ -128,6 +128,28 @@ def format_manual_check(res: Dict[str, Any]) -> str:
     return f"診斷錯誤: {err}"
 
 
+def format_reading_metrics(station: Dict[str, Any]) -> str:
+    """Three lines for one station card (issue #94): frame size and scale, last reading, readable ratio."""
+    size = station.get("frame_size")
+    frame = f"{size[0]}×{size[1]}" if size else "—"
+    scale = station.get("picture_scale")
+    cell = station.get("cell_px")
+    last = station.get("last_reading")
+    ratio = station.get("readable_ratio") or {}
+    lines = [f"影格 {frame}  換算 {'—' if scale is None else f'{scale:.3f}'}  小格 {'—' if cell is None else f'{cell:.1f} px'}"]
+    if last:
+        reason = last.get("reason") or "可讀"
+        lines.append(f"最近讀取 {reason} ({last.get('age_sec', 0):.1f}s 前)")
+    else:
+        lines.append("最近讀取 —")
+    samples = int(ratio.get("samples") or 0)
+    if samples and ratio.get("ratio") is not None:
+        lines.append(f"可讀率 {ratio['ratio'] * 100:.0f}% (最近 {samples} 次)")
+    else:
+        lines.append("可讀率 — (0 次)")
+    return "\n".join(lines)
+
+
 class CoreServiceClient:
     """Monitor UI client to the Core Service.
 
@@ -612,6 +634,8 @@ class AtlasUI(_BaseTk):
             # Body info: the device ID is the only address the operator sees or types.
             lbl_dev = tk.Label(card, text=f"設備: {dev_id}", font=self.f_mono, fg="#555")
             lbl_dev.pack(anchor="w", pady=(2, 4))
+            lbl_metrics = tk.Label(card, text=format_reading_metrics(st), font=self.f_mono, fg="#555", justify="left")
+            lbl_metrics.pack(anchor="w", pady=(0, 4))
 
             # Select button
             btn_sel = tk.Button(
@@ -626,6 +650,7 @@ class AtlasUI(_BaseTk):
                 "card": card,
                 "badge": lbl_badge,
                 "device": lbl_dev,
+                "metrics": lbl_metrics,
             }
 
     @staticmethod
@@ -692,6 +717,7 @@ class AtlasUI(_BaseTk):
                     w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
                         self._apply_badge_style(w["badge"], st.get("status", "DISCONNECTED"))
+                        w["metrics"].config(text=format_reading_metrics(st))
         else:
             err = status_res.get("message") or status_res.get("error") or "連線中斷"
             self.lbl_core_status.config(text="○ 服務未連線", fg="#c62828")

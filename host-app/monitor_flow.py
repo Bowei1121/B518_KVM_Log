@@ -18,7 +18,8 @@ import time
 from hid_session import FlowError, HidSession
 from match_diagnostics import MatchDiagnostics
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
-from log_solution_reader import MarkerState, read_latest_app_frame
+from log_solution_reader import MarkerState
+from reading_stats import read_latest_app_frame_recorded
 from round_frame_consumer import observe_latest_round_frame
 from template_catalog import TemplateCatalog
 
@@ -41,11 +42,11 @@ def _busy(state):
     return FlowError("log_solution_busy", f"Log Solution 為 {state.value}，未送出快捷鍵")
 
 
-async def _wait_for_reliable_reading(kvm, timeout_sec):
+async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None):
     """Newest reliable Log Solution reading within timeout_sec, or None."""
     deadline = time.monotonic() + timeout_sec
     while True:
-        _frame, observation = read_latest_app_frame(kvm)
+        _frame, observation = read_latest_app_frame_recorded(kvm, stats)
         if observation is not None and observation.reliable:
             return observation
         if time.monotonic() >= deadline:
@@ -77,7 +78,7 @@ async def click_dock_icon(kvm, frame, session):
     return True, box.score
 
 
-async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD):
+async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD, stats=None):
     """check's visibility recovery: one Dock click, no keys. Returns False when the Dock icon is not on screen.
 
     ``diagnostics_key`` is the device ID; match diagnostics are kept per device (ADR-0007).
@@ -86,7 +87,7 @@ async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, t
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
     ok = False
     try:
-        frame, _observation = read_latest_app_frame(kvm)
+        frame, _observation = read_latest_app_frame_recorded(kvm, stats)
         if frame is None:
             raise FlowError("hid_failed", "沒有 JetKVM 影格")
         session = HidSession(kvm, template_root, diagnostics, threshold=threshold)
@@ -124,7 +125,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             on_preparing()
 
     try:
-        frame, observation = read_latest_app_frame(kvm)
+        frame, observation = read_latest_app_frame_recorded(kvm, gate.stats)
         if frame is None:
             raise FlowError("hid_failed", "沒有 JetKVM 影格")
         if observation.reliable and observation.state == MarkerState.MONITORING:
@@ -137,7 +138,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             if not clicked:
                 raise FlowError("log_solution_not_found",
                                 f"找不到 Log Solution Dock 圖示（相似度 {score:.2f}）")
-            observation = await _wait_for_reliable_reading(kvm, confirm_sec)
+            observation = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats)
             if observation is None:
                 raise FlowError("log_solution_not_found",
                                 f"點擊 Dock 後 {confirm_sec:g} 秒內找不到 Log Solution，未送出快捷鍵")

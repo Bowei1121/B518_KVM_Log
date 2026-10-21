@@ -58,6 +58,11 @@ except ImportError:
     )
 
 try:
+    from reading_stats import empty_report
+except ImportError:
+    from .reading_stats import empty_report  # type: ignore[import-not-found,no-redef]
+
+try:
     from hid_session import FlowError
     from bt_flow import run_start_all
     from dfu_flow import parse_items, run_dfu_input, run_dfu_ok
@@ -171,7 +176,8 @@ class _Admitted:
     args: Any
 
 
-def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = None) -> Tuple[Dict[str, Any], Any]:
+def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = None,
+                   stats: Any = None) -> Tuple[Dict[str, Any], Any]:
     """Read-only reading of the Log Solution screen. Runs on a worker thread.
 
     Returns ``(reply, state)``. Reports what the screen shows now. Never returns taken and never
@@ -182,10 +188,11 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = 
     from frame_stream import FRESHNESS_PENDING
     from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, Step, cells_of
     from log_solution_reader import (
-        CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
+        CONFIRMATION_REQUIRED, ScreenKind, reportable_active, screen_kind,
     )
+    from reading_stats import read_app_frame_recorded
 
-    snapshot, obs = read_app_frame(kvm)
+    snapshot, obs = read_app_frame_recorded(kvm, stats)
     if stream is not None:
         verdict = stream.observe_snapshot(snapshot)
         if verdict.kind == "frozen":
@@ -322,7 +329,10 @@ class TcpJsonServer:
         return {"pong": True, "core_version": CORE_VERSION}
 
     def _station_rows(self) -> list[Dict[str, Any]]:
-        """Real-time status of every configured test station (the ``stations`` list of core_status)."""
+        """Real-time status of every configured test station (the ``stations`` list of core_status).
+
+        Reads no frame and takes no device lock: the reading fields are whatever readings already recorded.
+        """
         active_devices = set(self.lock_manager.get_active_devices())
         fg_status = self.freeze_guard.get_status()
         frozen_devices = set(fg_status.get("frozen_devices", []))
@@ -347,6 +357,10 @@ class TcpJsonServer:
             else:
                 status_str = "DISCONNECTED"
 
+            # Reading statistics come from the slot's recorded readings. A device without a slot has none yet.
+            slot = self._slots.get(str(dev_id))
+            reading = slot.stats.report() if slot is not None else empty_report()
+
             stations_list.append({
                 "station": st_name,
                 "device": dev_id,
@@ -355,6 +369,7 @@ class TcpJsonServer:
                 "is_busy": is_busy,
                 "is_frozen": is_frozen,
                 "is_connected": is_connected,
+                **reading,
             })
         return stations_list
 
@@ -479,7 +494,7 @@ class TcpJsonServer:
         """
         if mode is CheckMode.INSPECT:
             return lambda: Reading.from_inspect(
-                *_inspect_round(kvm, slot.inspect_tracker, slot.stream, slot.heartbeat))
+                *_inspect_round(kvm, slot.inspect_tracker, slot.stream, slot.heartbeat, slot.stats))
         report_active = mode is CheckMode.CHECK_START
 
         def job() -> Reading:
@@ -522,13 +537,14 @@ class TcpJsonServer:
         PROBE_MAX_SEC on a worker thread; only three identical counted readings refuse.
         """
         from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, probe
-        from log_solution_reader import read_snapshot
+        from reading_stats import read_snapshot_recorded
 
-        tracker = self._slot(ctx.entry.device_id).heartbeat
+        slot = self._slot(ctx.entry.device_id)
+        tracker = slot.heartbeat
         if tracker.changed_within(time.monotonic()):
             return None
         stopped = await asyncio.wrap_future(self._inspector.submit(
-            probe, tracker, ctx.kvm.latest_frame, read_snapshot))
+            probe, tracker, ctx.kvm.latest_frame, lambda snapshot: read_snapshot_recorded(snapshot, slot.stats)))
         return (HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE) if stopped else None
 
     def _template_root(self) -> Any:
@@ -539,9 +555,10 @@ class TcpJsonServer:
 
     def _log_solution_refusal(self, kvm: Any, entry: Any) -> Optional[Tuple[str, str]]:
         """Why SN input must wait, as (code, message): None when the Log Solution is in standby or its round was taken."""
-        from log_solution_reader import MarkerState, read_latest_app_frame
+        from log_solution_reader import MarkerState
+        from reading_stats import read_latest_app_frame_recorded
 
-        frame, observation = read_latest_app_frame(kvm)
+        frame, observation = read_latest_app_frame_recorded(kvm, self._slot(entry.device_id).stats)
         if frame is None:
             return "hid_failed", "no frame to read the Log Solution state"
         if not observation.reliable:
@@ -556,11 +573,12 @@ class TcpJsonServer:
             return "log_solution_busy", "round result not yet taken"
         return "log_solution_busy", f"Log Solution state is {observation.state.value}"
 
-    def _monitor_refusal(self, kvm: Any) -> Optional[Tuple[str, str]]:
+    def _monitor_refusal(self, kvm: Any, stats: Any = None) -> Optional[Tuple[str, str]]:
         """Why start_test must wait, as (code, message): None when a reliable Log Solution frame reads Monitoring."""
-        from log_solution_reader import MarkerState, read_latest_app_frame
+        from log_solution_reader import MarkerState
+        from reading_stats import read_latest_app_frame_recorded
 
-        frame, observation = read_latest_app_frame(kvm)
+        frame, observation = read_latest_app_frame_recorded(kvm, stats)
         if frame is None:
             return "monitor_not_ready", "Log Solution is not monitoring (no frame); no HID sent"
         if observation.reliable and observation.state == MarkerState.MONITORING:
@@ -572,7 +590,8 @@ class TcpJsonServer:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
         refusal = await self._picture_refusal(ctx)
         if refusal is None:
-            refusal = await asyncio.wrap_future(self._inspector.submit(self._monitor_refusal, ctx.kvm))
+            refusal = await asyncio.wrap_future(
+                self._inspector.submit(self._monitor_refusal, ctx.kvm, self._slot(ctx.entry.device_id).stats))
         if refusal is not None:
             code, message = refusal
             return {"status": "error", "error": code, "message": message}
@@ -686,7 +705,7 @@ class TcpJsonServer:
             if isinstance(outcome, ClickDock):
                 try:
                     clicked = await bring_log_solution_forward(kvm, template_root=self._template_root(),
-                                                               diagnostics_key=entry.device_id)
+                                                               diagnostics_key=entry.device_id, stats=slot.stats)
                 except FlowError as exc:
                     return check.fail(exc.code, str(exc))
                 if not clicked:
