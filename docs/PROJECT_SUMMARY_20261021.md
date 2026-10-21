@@ -57,3 +57,17 @@
 - #34 顏色釘選尚未實作，可交 Grok。
 - 現場：`docs/FIELD_VERIFICATION.md` D／K／R／L 各項，特別是 L1、L2（實際 KVM 像素與 HDMI 輸出解析度）；#69 拔線偵測時間。
 - 協定 1.1（輪次 UUID、ACK、持久化）仍未開始。
+
+## 本日後段（2026-10-21）
+
+| 票 | PR | 實作／審查 | 重點 | 合併後 main |
+| --- | --- | --- | --- | --- |
+| #77 心跳停止偵測 | #97 | Haiku／Opus | 心跳格被遮、標記可讀時 HID 仍送出 → 規則移入 `read_snapshot`；驗收 3／4（replay 素材與「心跳被遮時 check 點 Dock」的 socket 測試待補） | `02ce202` |
+| #34 色表釘選 | #100 | Grok／Claude | NOTEST 改 `#f04bf1`；hex 釘選、色距、表外顏色測試；5 個 mutation 全抓到 | `9565c89` |
+| #94 core_status 診斷 | #99 | Haiku／Opus | `frame_size`、`picture_scale`、`cell_px`、`last_reading`、`readable_ratio`；經 3 輪審查補足記錄點測試 | `92170b5` |
+| #95 非整數縮放定位 | #101 | Haiku／Opus | 白洞容差與中心原點；方向取樣移入黑環；新增第 1 格上方背景檢查，修掉 main 既有讀錯（左定位被遮＋假方塊）；單色遮擋讀錯 803→0；經 3 輪審查 | `9f143d5` |
+
+- **流程新規則**：每輪審查（含再審）結束後，審查 session 要在 issue 勾選已驗證的驗收條件，並留結論 comment（`docs/agents/issue-tracker.md`「驗收勾選」、AGENTS.md）。另外 AGENTS.md 最前面明訂回覆、PR 與 comment 一律使用繁體中文。
+- **使用者裁決**：兩段色遮擋（淺色標題列＋狀態色剛好蓋住第 1 格）的殘留讀錯風險予以接受，不另開票（測試網格下 971→420）。
+- **審查越權**：#95 審查 session 曾在本機 commit 修正、打算推上 PR 分支，被主 session 擋下；修法只以 comment 提供，實際修正仍由實作方完成。
+- 仍開著的 issue：#69（現場 K1）、#13（LabVIEW，人工）、#1／#21／#40（Spec 母票，子票皆已完成，待使用者決定是否關閉）。
