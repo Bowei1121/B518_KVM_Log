@@ -321,6 +321,43 @@ def test_resampled_four_status_frame_reads_at_every_pixel_phase(px_per_unit):
         assert obs.heartbeat == heartbeat_bits(5)
 
 
+@pytest.mark.parametrize("px_per_unit", [0.75, 0.8, 0.85, 0.9, 1.1, 4 / 3])
+@pytest.mark.parametrize("background", [128, 245])
+def test_resampled_frame_reads_at_every_source_and_screen_phase(px_per_unit, background):
+    # Source phase (origin) and an integer screen shift after resampling; the origin must land
+    # within half a pixel of the true position, so the sample points stay inside their bands.
+    statuses = ["TESTING", "PASS", "FAIL", "WAITING"]
+    for origin in range(6, 14):
+        for shift in (0, 1):
+            image = render_resampled(MarkerState.MONITORING, statuses, px_per_unit, heartbeat=5,
+                                     origin=(origin, origin))
+            image = cv2.copyMakeBorder(image, shift, 0, shift, 0, cv2.BORDER_CONSTANT,
+                                       value=(background,) * 3)
+            obs = inspect_app_frame(image, 10, 10)
+            truth = origin * px_per_unit / 2.0 + shift
+
+            assert obs.reliable, (origin, shift, obs.reason)
+            assert obs.statuses == tuple(statuses), (origin, shift)
+            assert obs.state == MarkerState.MONITORING
+            assert obs.heartbeat == heartbeat_bits(5)
+            assert obs.app_origin[0] == pytest.approx(truth, abs=0.45), (origin, shift)
+            assert obs.app_origin[1] == pytest.approx(truth, abs=0.45), (origin, shift)
+
+
+@pytest.mark.parametrize("cover", [(191, 191, 191), (200, 200, 200), (0, 239, 0)])
+@pytest.mark.parametrize("shift", [-7, -6, 6])
+def test_look_alike_square_beside_a_hidden_left_locator_is_not_read(cover, shift):
+    # A grey window hides the real left locator and slot 1's left half; a look-alike square sits
+    # on the same row. The reader may refuse the frame, but must never report a wrong result.
+    statuses = ["PASS", "STOPPED", "FAIL", "TESTING"]
+    frame = render_frame(MarkerState.COMPLETE, statuses)
+    frame[:, :23 + (23 + max(shift, 0)) * 2] = cover
+    _paint_locator(frame, shift)
+    obs = inspect_app_frame(frame, 10, 10)
+
+    assert not obs.reliable or obs.statuses == tuple(statuses), obs.statuses
+
+
 @pytest.mark.parametrize("px_per_unit", [1.2, 4 / 3, 1.5, 0.75])
 def test_resampled_two_row_frame_reads_capacity_twenty_and_heartbeat(px_per_unit):
     statuses = ["PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"] * 4

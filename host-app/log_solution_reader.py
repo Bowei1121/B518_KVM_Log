@@ -23,6 +23,13 @@ LEFT_LOCATOR = (0, 2, 3)
 RIGHT_LOCATOR = (320, 2, 11)
 LOCATOR_INSET_SIZE = 8
 LOCATOR_DISTANCE = RIGHT_LOCATOR[0] - LEFT_LOCATOR[0]
+# Offsets inside each locator: the white hole's centre, and the middle of the black band
+# above-left of the hole (half the inset), where a sample stays clear of blended edges.
+LEFT_HOLE_CENTRE = LEFT_LOCATOR[2] + LOCATOR_INSET_SIZE / 2.0
+RIGHT_HOLE_CENTRE = RIGHT_LOCATOR[2] + LOCATOR_INSET_SIZE / 2.0
+LEFT_BLACK_MID = LEFT_LOCATOR[2] / 2.0
+RIGHT_BLACK_MID = RIGHT_LOCATOR[2] / 2.0
+HOLE_DISTANCE = RIGHT_LOCATOR[0] + RIGHT_HOLE_CENTRE - (LEFT_LOCATOR[0] + LEFT_HOLE_CENTRE)
 MARKER_ORIGIN = (250, 0)
 HEARTBEAT_ORIGIN = (278, 0)
 MARKER_CELL_SIZE = 10
@@ -36,6 +43,11 @@ RESULT_CELL_HEIGHT = 26
 RESULT_COLUMNS = 10
 BLACK_MAX = 80
 WHITE_MIN = 176
+# The App background between the locator row and the result band, sampled straight above slot 1's
+# corner samples. Every channel at or above GUTTER_MIN is at least 26 from WAITING (217, 217, 217),
+# the palest status, so a cover that passes cannot read as a status.
+GUTTER_POINTS = ((6, 29), (17, 29), (28, 29))
+GUTTER_MIN = 232
 COLOR_TOLERANCE = 20
 TERMINAL_STATUSES = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
@@ -165,12 +177,11 @@ def _locate_app(frame):
                     and abs(((ls + rs) / 2.0) - scale) <= scale * 0.08):
                 # Hole centres, not outer corners, anchor the origin: a dark desktop neighbour
                 # widens the outer box, while blur moves the hole centre by about a pixel at most.
-                hole_dx = RIGHT_LOCATOR[0] + 15 - (LEFT_LOCATOR[0] + 7)
-                hole_scale = (rcx - lcx) / float(hole_dx)
-                x = ((lcx - (LEFT_LOCATOR[0] + 7) * hole_scale)
-                     + (rcx - (RIGHT_LOCATOR[0] + 15) * hole_scale)) / 2.0
-                y = ((lcy - (LEFT_LOCATOR[1] + 7) * hole_scale)
-                     + (rcy - (RIGHT_LOCATOR[1] + 15) * hole_scale)) / 2.0
+                hole_scale = (rcx - lcx) / HOLE_DISTANCE
+                x = ((lcx - (LEFT_LOCATOR[0] + LEFT_HOLE_CENTRE) * hole_scale)
+                     + (rcx - (RIGHT_LOCATOR[0] + RIGHT_HOLE_CENTRE) * hole_scale)) / 2.0
+                y = ((lcy - (LEFT_LOCATOR[1] + LEFT_HOLE_CENTRE) * hole_scale)
+                     + (rcy - (RIGHT_LOCATOR[1] + RIGHT_HOLE_CENTRE) * hole_scale)) / 2.0
                 pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly), x, y, hole_scale))
     if not pairs:
         return None
@@ -263,17 +274,27 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
     if x0 < 0 or y0 < 0 or required_width > frame.shape[1] or required_height > frame.shape[0]:
         return FrameObservation(False, reason="app_band_cropped", scale=scale, app_origin=(x0, y0))
 
-    locator_points = ((LEFT_LOCATOR[0] + 7) * scale, (LEFT_LOCATOR[1] + 7) * scale,
-                      (LEFT_LOCATOR[0] + 1) * scale, (LEFT_LOCATOR[1] + 1) * scale,
-                      (RIGHT_LOCATOR[0] + 1) * scale, (RIGHT_LOCATOR[1] + 1) * scale,
-                      (RIGHT_LOCATOR[0] + 15) * scale, (RIGHT_LOCATOR[1] + 15) * scale)
-    locator_values = [_median_patch(frame, x0 + locator_points[i], y0 + locator_points[i + 1],
-                                    max(1, scale * 0.8)) for i in range(0, 8, 2)]
+    # Black samples sit mid-band: under 1 px per unit a patch 1 unit from the outer edge
+    # always takes in blended edge pixels.
+    locator_points = ((LEFT_LOCATOR[0] + LEFT_HOLE_CENTRE, LEFT_LOCATOR[1] + LEFT_HOLE_CENTRE),
+                      (LEFT_LOCATOR[0] + LEFT_BLACK_MID, LEFT_LOCATOR[1] + LEFT_BLACK_MID),
+                      (RIGHT_LOCATOR[0] + RIGHT_BLACK_MID, RIGHT_LOCATOR[1] + RIGHT_BLACK_MID),
+                      (RIGHT_LOCATOR[0] + RIGHT_HOLE_CENTRE, RIGHT_LOCATOR[1] + RIGHT_HOLE_CENTRE))
+    locator_values = [_median_patch(frame, x0 + px * scale, y0 + py * scale, max(1, scale * 0.8))
+                      for px, py in locator_points]
     if (any(value is None for value in locator_values)
             or np.mean(locator_values[0]) < WHITE_MIN
             or np.mean(locator_values[1]) > BLACK_MAX
             or np.mean(locator_values[2]) > BLACK_MAX
             or np.mean(locator_values[3]) < WHITE_MIN):
+        return FrameObservation(False, reason="locator_orientation_or_contrast_invalid",
+                                scale=scale, app_origin=(x0, y0))
+    # A look-alike square paired with the real right locator shifts the origin a few units; whatever
+    # hides the real left locator then also covers this gutter and slot 1, so it must still be App
+    # background before any cell is read.
+    gutter = [_median_patch(frame, x0 + gx * scale, y0 + gy * scale, max(1, scale * 1.2))
+              for gx, gy in GUTTER_POINTS]
+    if any(value is None or float(np.min(value)) < GUTTER_MIN for value in gutter):
         return FrameObservation(False, reason="locator_orientation_or_contrast_invalid",
                                 scale=scale, app_origin=(x0, y0))
 
