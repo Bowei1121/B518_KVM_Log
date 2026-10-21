@@ -35,11 +35,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt pytest
 
-      - name: Run Windows DPI tests
+      - name: Run Windows tests
         shell: bash
-        # Scoped to this issue's tests. The full suite was run on Windows and has 17 failures from POSIX-only
-        # behaviour (daemon/pid, `resource`/`pwd`, Monitor UI prefs path/isolation), so it stays a macOS/local run.
-        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py
+        # Scoped on purpose. The full suite has 17 Windows-only failures (daemon/pid, Monitor UI prefs,
+        # UI client cancel), tracked in #111. Until that is closed, only the Windows-relevant modules run here;
+        # the full suite stays a macOS/local run.
+        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py
 
   build:
     runs-on: windows-latest
@@ -60,6 +61,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt
+          python -m pip freeze > pip-freeze-windows.txt  # exact versions of this build, for on-site comparison
 
       - name: Import smoke test (fails the job if any runtime dependency is missing)
         working-directory: host-app
@@ -67,6 +69,8 @@ jobs:
         run: |
           # Direct imports: a missing package must fail here, not inside the frozen exe at runtime.
           python -c "import cv2, av, aiortc, onnxruntime, rapidocr_onnxruntime, pattern_tools, stream_view, device_settings_window, ui_i18n, ui_app"
+          # Same check the frozen exe runs below; exits non-zero on any missing runtime part.
+          python ui_app.py --self-test
           # ui_app swallows import errors into None/False fallbacks (e.g. PatternCropper); turn those into hard failures.
           python -c "
           import ui_app as a
@@ -89,9 +93,20 @@ jobs:
         shell: bash
         run: test -f host-app/dist/AtlasKVM/AtlasKVM.exe
 
+      - name: Self-test the frozen exe (catches anything PyInstaller failed to bundle)
+        shell: bash
+        run: host-app/dist/AtlasKVM/AtlasKVM.exe --self-test
+
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         with:
           name: AtlasKVM-windows
           path: host-app/dist/AtlasKVM
+          if-no-files-found: error
+
+      - name: Upload pip freeze
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-freeze-windows
+          path: pip-freeze-windows.txt
           if-no-files-found: error
