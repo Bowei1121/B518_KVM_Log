@@ -51,8 +51,8 @@
 
 | # | 步驟 | 預期 | 結果 | 備註 |
 | --- | --- | --- | --- | --- |
-| L1 | 以實際 JetKVM 擷取 Log Solution 1.3 畫面，量測狀態與心跳每小格像素（LS7） | 量測並記錄每小格像素；確認 1 倍輸出下 10 px 格在壓縮後仍判讀正確，否則由 App 放大兩組標記後重測 | | |
-| L2 | 現場 ATE Mac 的 HDMI 輸出解析度與 macOS 縮放設定 | 記錄實際值，與 L1 一致 | | |
+| L1 | 以實際 JetKVM 擷取 Log Solution 1.3 畫面，量測狀態與心跳每小格像素（LS7）。讀數取自 `core_status` 每台設備的 `frame_size`（影格寬×高）與 `cell_px`（標記小格像素，= `picture_scale` × 10）；Monitor UI 站別卡片同步顯示，須先讓 App 產生幾次讀取（check／inspect 或 monitor）再記錄 | 記錄每台的 `frame_size` 與 `cell_px`；確認 1 倍輸出下 10 px 格在壓縮後仍判讀正確，否則由 App 放大兩組標記後重測。`readable_ratio` 低於 1 時記下 `last_reading.reason` | | |
+| L2 | 現場 ATE Mac 的 HDMI 輸出解析度與 macOS 縮放設定。與同一台設備的 `core_status` `frame_size` 對照：兩者不同（例如 HDMI 720p、縮放模式），即為影格被縮小 | 記錄實際值（HDMI 輸出、縮放設定、`frame_size`），與 L1 一致；不一致時標示為降解析度 | | |
 | L3 | 正常運作下長輪詢 10 分鐘 | 不回 `log_solution_heartbeat_stopped` | | |
 | L4 | 讓 Log Solution 主迴圈卡住（例如除錯中斷） | 約 2 秒（3 張有效觀察）內回 `log_solution_heartbeat_stopped`，不送 HID | | |
 | L5 | 以其他視窗蓋住心跳格／整個 Log Solution | 判不可見並點 Dock，不誤報 heartbeat_stopped | | |

@@ -21,7 +21,7 @@ class RoundFrameGate:
                  max_frame_gap=1.0, clock=time.monotonic,
                  require_presentation_time=False,
                  freeze_threshold=1.0, round_state=None, frame_stream=None, require_proof=False,
-                 heartbeat=None):
+                 heartbeat=None, stats=None):
         self.device_id = str(device_id)
         self.max_age = float(max_age)
         self.clock = clock
@@ -38,6 +38,8 @@ class RoundFrameGate:
         self.require_proof = bool(require_proof)
         # The device's HeartbeatTracker (issue #77). None skips the heartbeat step.
         self.heartbeat = heartbeat
+        # The device's ReadingStats (issue #94). None skips the recording.
+        self.stats = stats
         # The stream generation this gate has acted on. Another reader (inspect) may switch the stream first.
         self._seen_generation = 0
 
@@ -95,13 +97,17 @@ class RoundFrameGate:
             self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason="out_of_order_source_frame")
         observation = inspect_app_frame(frame, received_at, verdict.at, self.max_age)
+        stopped = False
         if self.heartbeat is not None:
-            step = self.heartbeat.observe(stream_id, sequence, received_at, cells_of(observation))
-            if step is Step.STOPPED:
-                self.round.lose_continuity()
-                return TakeDecision("heartbeat_stopped", self.device_id, reason=HEARTBEAT_STOPPED,
-                                    detail=HEARTBEAT_STOPPED_MESSAGE)
+            stopped = self.heartbeat.observe(stream_id, sequence, received_at, cells_of(observation)) is Step.STOPPED
             observation = unreadable_heartbeat(observation)
+        # Recorded once per inspected frame, after the heartbeat rule, so "readable" is the final verdict.
+        if self.stats is not None:
+            self.stats.record(observation, frame)
+        if stopped:
+            self.round.lose_continuity()
+            return TakeDecision("heartbeat_stopped", self.device_id, reason=HEARTBEAT_STOPPED,
+                                detail=HEARTBEAT_STOPPED_MESSAGE)
         return self.round.judge(observation, sequence, received_at)
 
 
