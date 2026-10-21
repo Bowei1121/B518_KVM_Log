@@ -8,6 +8,8 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 from PIL import Image, ImageTk
 
+from ui_widgets import WINDOW_BG, apply_light_ttk_style
+
 
 class PatternCropper(tk.Toplevel):
     """Create one canonical device template without exposing file naming controls."""
@@ -19,6 +21,8 @@ class PatternCropper(tk.Toplevel):
         self.scale = 1.0
         self._start = self._rect = self._selection = None
         self.title("製作 JetKVM 模板")
+        self.configure(bg=WINDOW_BG)
+        apply_light_ttk_style(self)
         self._build_controls(device, template_key)
         self.bind("<Escape>", lambda _event: self.destroy())
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -108,7 +112,8 @@ class PatternCropper(tk.Toplevel):
         dw, dh = max(1, int(iw * self.scale)), max(1, int(ih * self.scale))
         rgb = cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB)
         self.photo = ImageTk.PhotoImage(Image.fromarray(rgb).resize((dw, dh)))
-        self.canvas = tk.Canvas(self.canvas_holder, width=dw, height=dh, cursor="cross", highlightthickness=0)
+        self.canvas = tk.Canvas(self.canvas_holder, width=dw, height=dh, cursor="cross", highlightthickness=0,
+                                bg=WINDOW_BG)
         self.canvas.pack()
         self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
         self.canvas.bind("<ButtonPress-1>", self._down)

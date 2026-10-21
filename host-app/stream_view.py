@@ -13,6 +13,8 @@ input_sender(method, params): 由呼叫端提供, 負責把 JSON-RPC 指令送�
 import time
 import tkinter as tk
 
+from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG
+
 import cv2
 from PIL import Image, ImageTk
 
@@ -72,10 +74,11 @@ class StreamerWindow(tk.Toplevel):
 
         self.geometry("1280x760")
         self.resizable(True, True)
+        self.configure(bg=WINDOW_BG)
 
-        self.label = tk.Label(self, bg="black")
+        self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)
-        self.status = tk.Label(self, anchor="w",
+        self.status = tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG,
                                text="串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤)")
         self.status.pack(fill="x")
 

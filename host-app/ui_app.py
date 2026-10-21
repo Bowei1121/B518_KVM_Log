@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import io
 import json
 import logging
@@ -65,11 +66,34 @@ from core_channel import CoreChannel, channel_name_for
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
+from ui_logfile import DailyLogFile, format_log_line, log_dir_for_template_root
+from ui_widgets import (
+    BUTTON_BG,
+    ENTRY_BG,
+    ERROR_FG,
+    INFO_FG,
+    LOG_BG,
+    LOG_ERROR_FG,
+    LOG_FG,
+    LOG_WARN_FG,
+    MUTED_FG,
+    OK_FG,
+    PANEL_BG,
+    PREVIEW_BG,
+    TEXT_FG,
+    WARN_FG,
+    WINDOW_BG,
+    StatusLight,
+    Tooltip,
+    apply_light_ttk_style,
+)
 
+_PATTERN_IMPORT_ERROR: Optional[BaseException] = None
 try:
     from pattern_tools import PatternCropper
-except Exception:
+except Exception as exc:
     PatternCropper = None  # type: ignore[assignment,misc]
+    _PATTERN_IMPORT_ERROR = exc
 
 try:
     from stream_view import StreamerWindow
@@ -82,6 +106,8 @@ except Exception:
     DeviceSettingsWindow = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("MonitorUI")
+
+PATTERN_UNAVAILABLE_HINT = "無法製作模板：缺少影像處理元件（OpenCV）。詳見日誌。"
 
 
 # ==============================================================================
@@ -126,6 +152,15 @@ def format_manual_check(res: Dict[str, Any]) -> str:
         return "診斷結果: BUSY (設備忙碌中/LabVIEW測試中)"
     err = res.get("message") or res.get("error") or "未知錯誤"
     return f"診斷錯誤: {err}"
+
+
+def brief_manual_check_error(res: Dict[str, Any]) -> str:
+    """Short HMI text for a failed inspect reply. The full text goes to the Log."""
+    if res.get("status") == "timeout":
+        return "診斷逾時"
+    if res.get("error") == "device_busy":
+        return "設備忙碌中"
+    return "診斷失敗"
 
 
 def format_reading_metrics(station: Dict[str, Any]) -> str:
@@ -287,13 +322,14 @@ class MatchResultsWindow(_BaseToplevel):
         self.catalog = catalog
         self.title("最近一次匹配結果")
         self.geometry("980x700")
+        self.configure(bg=WINDOW_BG)
         self.photo: Optional[ImageTk.PhotoImage] = None
         self.summary: Optional[Dict[str, Any]] = None
         self.records: List[Dict[str, Any]] = []
 
-        top = ttk.Frame(self, padding=8)
+        top = tk.Frame(self, padx=8, pady=8, bg=WINDOW_BG)
         top.pack(fill="x")
-        ttk.Label(top, text="設備：").pack(side="left")
+        tk.Label(top, text="設備：", bg=WINDOW_BG, fg=TEXT_FG).pack(side="left")
         self.device_var = tk.StringVar(value=device)
         self.device_box = ttk.Combobox(
             top,
@@ -305,18 +341,20 @@ class MatchResultsWindow(_BaseToplevel):
         self.device_box.pack(side="left")
         self.device_box.bind("<<ComboboxSelected>>", lambda _event: self.load())
         self.status_var = tk.StringVar()
-        ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=12)
+        tk.Label(top, textvariable=self.status_var, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left", padx=12)
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        left = ttk.Frame(body, width=320)
-        right = ttk.Frame(body)
+        left = tk.Frame(body, width=320, bg=WINDOW_BG)
+        right = tk.Frame(body, bg=WINDOW_BG)
         body.add(left, weight=1)
         body.add(right, weight=3)
-        self.listbox = tk.Listbox(left, font=("Arial", 11), exportselection=False)
+        self.listbox = tk.Listbox(left, font=("Arial", 11), exportselection=False, bg=PANEL_BG, fg=TEXT_FG)
         self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._select)
-        self.image_label = ttk.Label(right, text="選擇左側項目以查看疊圖", anchor="center")
+        self.image_label = tk.Label(
+            right, text="選擇左側項目以查看疊圖", anchor="center", bg=WINDOW_BG, fg=TEXT_FG
+        )
         self.image_label.pack(fill="both", expand=True)
         self.load()
 
@@ -374,6 +412,8 @@ class AtlasUI(_BaseTk):
             raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__()
         self.title("Atlas2-518 Lightweight Monitor Client")
+        self.configure(bg=WINDOW_BG)
+        apply_light_ttk_style(self)
 
         # Fonts
         if sys.platform == "darwin":
@@ -394,6 +434,8 @@ class AtlasUI(_BaseTk):
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._ui_queue: queue.Queue[Any] = queue.Queue()
         self._templates = TemplateCatalog()
+        self._file_log = DailyLogFile(log_dir_for_template_root(self._templates.root), "monitor_ui")
+        self._log_seq = 0
 
         # Stream & Snapshot state
         self._streaming_active = False
@@ -408,6 +450,10 @@ class AtlasUI(_BaseTk):
         self._stations: List[Dict[str, Any]] = []
         self._rendered_device_ids: List[str] = []
         self._station_widgets: Dict[str, Dict[str, Any]] = {}
+
+        # Core Service state: None until the first poll answers; True/False after that.
+        self._service_ok: Optional[bool] = None
+        self._service_info: Dict[str, Any] = {}
 
         # Polling
         self._is_closing = False
@@ -432,41 +478,49 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Top Bar: Core Service Connection
         # ----------------------------------------------------------------------
-        top_frame = tk.LabelFrame(self, text="Core Service 連線設定", font=self.f_bold, padx=8, pady=6)
+        top_frame = tk.LabelFrame(
+            self, text="Core Service 連線設定", font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG
+        )
         top_frame.pack(fill="x", padx=PADX, pady=(GAP, GAP))
 
-        tk.Label(top_frame, text="服務位址:", font=self.f_label).pack(side="left")
-        self.e_core_addr = tk.Entry(top_frame, font=self.f_entry, width=18, justify="center")
+        tk.Label(top_frame, text="服務位址:", font=self.f_label, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left")
+        self.e_core_addr = tk.Entry(
+            top_frame, font=self.f_entry, width=18, justify="center", bg=ENTRY_BG, fg=TEXT_FG
+        )
         self.e_core_addr.insert(0, f"{self.client.host}:{self.client.port}")
         self.e_core_addr.pack(side="left", padx=6)
 
         self.btn_connect = tk.Button(
-            top_frame, text="重新連線", font=self.f_btn, command=self.on_toggle_connect
+            top_frame, text="重新連線", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG, command=self.on_toggle_connect
         )
         self.btn_connect.pack(side="left", padx=6)
 
         self.btn_device_settings = tk.Button(
-            top_frame, text="⚙ 設備設定", font=self.f_btn, command=self.on_open_device_settings
+            top_frame, text="⚙ 設備設定", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_open_device_settings,
         )
         self.btn_device_settings.pack(side="left", padx=6)
 
-        self.lbl_core_status = tk.Label(
-            top_frame, text="● 未連線", font=self.f_bold, fg="gray"
-        )
-        self.lbl_core_status.pack(side="left", padx=12)
-
-        self.lbl_core_info = tk.Label(top_frame, text="", font=self.f_mono, fg="#555")
-        self.lbl_core_info.pack(side="right", padx=6)
+        # One lamp for the Core Service: green = connected, red = not connected.
+        # Uptime and connection count are in its hover tip.
+        self.light_core = StatusLight(top_frame, bg=WINDOW_BG)
+        self.light_core.pack(side="left", padx=(12, 2))
+        self.light_core.set_light("red")
+        self.lbl_core_caption = tk.Label(top_frame, text="服務", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
+        self.lbl_core_caption.pack(side="left")
+        self._core_tip = Tooltip(self.light_core, self._core_tooltip_text)
+        Tooltip(self.lbl_core_caption, self._core_tooltip_text)
 
         # ----------------------------------------------------------------------
         # Station Real-Time Status Dashboard
         # ----------------------------------------------------------------------
         dash_frame = tk.LabelFrame(
-            self, text="測試機台即時狀態 (Configured Test Stations)", font=self.f_bold, padx=8, pady=6
+            self, text="測試機台即時狀態 (Configured Test Stations)", font=self.f_bold, padx=8, pady=6,
+            bg=WINDOW_BG, fg=TEXT_FG,
         )
         dash_frame.pack(fill="x", padx=PADX, pady=GAP)
 
-        self.stations_container = tk.Frame(dash_frame)
+        self.stations_container = tk.Frame(dash_frame, bg=WINDOW_BG)
         self.stations_container.pack(fill="x", expand=True)
 
         self._render_station_cards()
@@ -478,43 +532,54 @@ class AtlasUI(_BaseTk):
         mid_paned.pack(fill="both", expand=True, padx=PADX, pady=GAP)
 
         # Left pane: Live Monitor Display
-        view_frame = tk.LabelFrame(mid_paned, text="即時畫面監控 (Live Stream / Snapshot)", font=self.f_bold, padx=6, pady=6)
+        view_frame = tk.LabelFrame(
+            mid_paned, text="即時畫面監控 (Live Stream / Snapshot)", font=self.f_bold, padx=6, pady=6,
+            bg=WINDOW_BG, fg=TEXT_FG,
+        )
         mid_paned.add(view_frame, weight=3)
 
-        self.canvas_preview = tk.Canvas(view_frame, bg="#1e1e1e", width=480, height=270, highlightthickness=0)
+        self.canvas_preview = tk.Canvas(
+            view_frame, bg=PREVIEW_BG, width=480, height=270, highlightthickness=0
+        )
         self.canvas_preview.pack(fill="both", expand=True, padx=4, pady=4)
 
-        view_bottom = tk.Frame(view_frame)
+        view_bottom = tk.Frame(view_frame, bg=WINDOW_BG)
         view_bottom.pack(fill="x", pady=(4, 0))
 
         self.lbl_preview_info = tk.Label(
-            view_bottom, text="尚未擷取影格", font=self.f_mono, fg="#444", anchor="w"
+            view_bottom, text="尚未擷取影格", font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_preview_info.pack(side="left", fill="x", expand=True)
 
         self.btn_snapshot = tk.Button(
-            view_bottom, text="📷 擷取快照", font=self.f_btn, command=self.on_capture_snapshot
+            view_bottom, text="📷 擷取快照", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_capture_snapshot,
         )
         self.btn_snapshot.pack(side="right", padx=4)
 
         self.btn_live_stream = tk.Button(
-            view_bottom, text="▶ 開始串流", font=self.f_btn, command=self.on_toggle_live_stream
+            view_bottom, text="▶ 開始串流", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_toggle_live_stream,
         )
         self.btn_live_stream.pack(side="right", padx=4)
 
         self.btn_streamer_window = tk.Button(
-            view_bottom, text="⇱ 獨立視窗", font=self.f_btn, command=self.on_open_streamer_window
+            view_bottom, text="⇱ 獨立視窗", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_open_streamer_window,
         )
         self.btn_streamer_window.pack(side="right", padx=4)
 
         # Right pane: Diagnostics & Pattern tools
-        ctrl_frame = tk.LabelFrame(mid_paned, text="手動診斷與操作 (Diagnostics)", font=self.f_bold, padx=8, pady=6)
+        ctrl_frame = tk.LabelFrame(
+            mid_paned, text="手動診斷與操作 (Diagnostics)", font=self.f_bold, padx=8, pady=6,
+            bg=WINDOW_BG, fg=TEXT_FG,
+        )
         mid_paned.add(ctrl_frame, weight=2)
 
         # Target selection
-        row_target = tk.Frame(ctrl_frame)
+        row_target = tk.Frame(ctrl_frame, bg=WINDOW_BG)
         row_target.pack(fill="x", pady=4)
-        tk.Label(row_target, text="設備 ID:", font=self.f_label).pack(side="left")
+        tk.Label(row_target, text="設備 ID:", font=self.f_label, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left")
         self.var_sel_device = tk.StringVar(value="")
         self.combo_device = ttk.Combobox(
             row_target,
@@ -526,66 +591,84 @@ class AtlasUI(_BaseTk):
         self.combo_device.pack(side="left", padx=4)
         self.combo_device.bind("<<ComboboxSelected>>", self._on_device_selected)
 
-        tk.Label(row_target, text="站別:", font=self.f_label).pack(side="left", padx=(8, 0))
+        tk.Label(row_target, text="站別:", font=self.f_label, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left", padx=(8, 0))
         self.var_sel_station = tk.StringVar(value="")
-        tk.Label(row_target, textvariable=self.var_sel_station, font=self.f_mono, width=6, anchor="w").pack(side="left", padx=4)
+        tk.Label(
+            row_target, textvariable=self.var_sel_station, font=self.f_mono, width=6, anchor="w",
+            bg=WINDOW_BG, fg=TEXT_FG,
+        ).pack(side="left", padx=4)
 
         # Manual Check button
-        check_box = tk.LabelFrame(ctrl_frame, text="手動檢查 (Check)", font=self.f_label, padx=6, pady=4)
+        check_box = tk.LabelFrame(
+            ctrl_frame, text="手動檢查 (Check)", font=self.f_label, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG
+        )
         check_box.pack(fill="x", pady=6)
 
-        row_check_opt = tk.Frame(check_box)
+        row_check_opt = tk.Frame(check_box, bg=WINDOW_BG)
         row_check_opt.pack(fill="x", pady=2)
-        tk.Label(row_check_opt, text="Timeout(s):", font=self.f_label).pack(side="left")
+        tk.Label(row_check_opt, text="Timeout(s):", font=self.f_label, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left")
         self.var_timeout = tk.StringVar(value="5.0")
-        tk.Entry(row_check_opt, textvariable=self.var_timeout, width=5, font=self.f_entry).pack(side="left", padx=4)
+        tk.Entry(
+            row_check_opt, textvariable=self.var_timeout, width=5, font=self.f_entry, bg=ENTRY_BG, fg=TEXT_FG
+        ).pack(side="left", padx=4)
 
         self.btn_run_check = tk.Button(
-            check_box, text="⚡ 執行手動診斷檢查", font=self.f_bold, fg="blue", command=self.on_run_manual_check
+            check_box, text="⚡ 執行手動診斷檢查", font=self.f_bold, fg=INFO_FG, bg=BUTTON_BG,
+            command=self.on_run_manual_check,
         )
         self.btn_run_check.pack(fill="x", pady=4)
 
-        self.lbl_check_result = tk.Label(check_box, text="診斷結果: 尚未執行", font=self.f_bold, fg="#555")
+        self.lbl_check_result = tk.Label(
+            check_box, text="診斷結果: 尚未執行", font=self.f_bold, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
+        )
         self.lbl_check_result.pack(anchor="w", pady=2)
 
         # Pattern creation
-        pat_box = tk.LabelFrame(ctrl_frame, text="模板工具 (Pattern)", font=self.f_label, padx=6, pady=4)
+        pat_box = tk.LabelFrame(
+            ctrl_frame, text="模板工具 (Pattern)", font=self.f_label, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG
+        )
         pat_box.pack(fill="x", pady=6)
 
-        self.btn_save_capture = tk.Button(
-            pat_box, text="儲存目前影格為 Capture", font=self.f_btn, command=self.on_save_capture
-        )
-        self.btn_save_capture.pack(fill="x", pady=2)
-
         self.btn_create_pattern = tk.Button(
-            pat_box, text="製作 JetKVM Pattern", font=self.f_btn, command=self.on_create_pattern
+            pat_box, text="✂️ 製作模板", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_create_pattern,
         )
         self.btn_create_pattern.pack(fill="x", pady=2)
+        if PatternCropper is None:
+            self.btn_create_pattern.config(state="disabled")
+            Tooltip(self.btn_create_pattern, PATTERN_UNAVAILABLE_HINT)
 
         self.btn_match_results = tk.Button(
-            pat_box, text="查看最近匹配診斷", font=self.f_btn, command=self.on_show_match_results
+            pat_box, text="📋 比對結果", font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_show_match_results,
         )
         self.btn_match_results.pack(fill="x", pady=2)
 
         # ----------------------------------------------------------------------
         # Bottom: Log Viewer
         # ----------------------------------------------------------------------
-        log_frame = tk.LabelFrame(self, text="系統與操作日誌 (Log)", font=self.f_bold, padx=6, pady=4)
+        log_frame = tk.LabelFrame(
+            self, text="系統與操作日誌 (Log)", font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG
+        )
         log_frame.pack(fill="both", expand=True, padx=PADX, pady=(GAP, GAP))
 
-        txt_wrap = tk.Frame(log_frame)
+        txt_wrap = tk.Frame(log_frame, bg=WINDOW_BG)
         txt_wrap.pack(fill="both", expand=True)
-        vscroll = tk.Scrollbar(txt_wrap, orient="vertical")
-        hscroll = tk.Scrollbar(txt_wrap, orient="horizontal")
+        vscroll = tk.Scrollbar(txt_wrap, orient="vertical", bg=WINDOW_BG)
+        hscroll = tk.Scrollbar(txt_wrap, orient="horizontal", bg=WINDOW_BG)
         self.log_text = tk.Text(
             txt_wrap,
             height=6,
             font=self.f_mono,
-            fg="#222",
+            bg=LOG_BG,
+            fg=LOG_FG,
+            insertbackground=LOG_FG,
             wrap="none",
             yscrollcommand=vscroll.set,
             xscrollcommand=hscroll.set,
         )
+        self.log_text.tag_configure("error", foreground=LOG_ERROR_FG)
+        self.log_text.tag_configure("warn", foreground=LOG_WARN_FG)
         vscroll.config(command=self.log_text.yview)
         hscroll.config(command=self.log_text.xview)
         self.log_text.grid(row=0, column=0, sticky="nsew")
@@ -596,12 +679,14 @@ class AtlasUI(_BaseTk):
 
         self._append_log("Lightweight Monitor UI Client 啟動完成。")
         self._append_log(f"連線目標 Core Service: {self.client.host}:{self.client.port}")
+        if PatternCropper is None:
+            self._append_log(f"製作模板功能不可用，PatternCropper 載入失敗: {_PATTERN_IMPORT_ERROR!r}", level="error")
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
     # --------------------------------------------------------------------------
     def _render_station_cards(self) -> None:
-        """Render card badges for all configured test stations."""
+        """Render one status light per configured test station."""
         for w in self.stations_container.winfo_children():
             w.destroy()
         self._station_widgets.clear()
@@ -611,30 +696,25 @@ class AtlasUI(_BaseTk):
             dev_id = str(st.get("device", ""))
             status = str(st.get("status", "DISCONNECTED")).upper()
 
-            card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4)
+            card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4, bg=WINDOW_BG)
             card.pack(side="left", fill="both", expand=True, padx=4)
 
             # Header
-            header = tk.Frame(card)
+            header = tk.Frame(card, bg=WINDOW_BG)
             header.pack(fill="x")
-            lbl_title = tk.Label(header, text=f"{st_name} (機台 {dev_id})", font=self.f_bold)
+            lbl_title = tk.Label(header, text=f"{st_name} (機台 {dev_id})", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
             lbl_title.pack(side="left")
 
-            lbl_badge = tk.Label(
-                header,
-                text=status,
-                font=self.f_bold,
-                padx=6,
-                pady=1,
-                relief="flat",
-            )
-            lbl_badge.pack(side="right")
-            self._apply_badge_style(lbl_badge, status)
+            light = StatusLight(header, bg=WINDOW_BG)
+            light.pack(side="right")
+            light.set_status(status)
 
             # Body info: the device ID is the only address the operator sees or types.
-            lbl_dev = tk.Label(card, text=f"設備: {dev_id}", font=self.f_mono, fg="#555")
+            lbl_dev = tk.Label(card, text=f"設備: {dev_id}", font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG)
             lbl_dev.pack(anchor="w", pady=(2, 4))
-            lbl_metrics = tk.Label(card, text=format_reading_metrics(st), font=self.f_mono, fg="#555", justify="left")
+            lbl_metrics = tk.Label(
+                card, text=format_reading_metrics(st), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, justify="left"
+            )
             lbl_metrics.pack(anchor="w", pady=(0, 4))
 
             # Select button
@@ -642,28 +722,18 @@ class AtlasUI(_BaseTk):
                 card,
                 text="選定觀測",
                 font=("Arial", 9),
+                bg=BUTTON_BG,
+                fg=TEXT_FG,
                 command=lambda d=dev_id: self._select_device(d),
             )
             btn_sel.pack(fill="x")
 
             self._station_widgets[dev_id] = {
                 "card": card,
-                "badge": lbl_badge,
+                "light": light,
                 "device": lbl_dev,
                 "metrics": lbl_metrics,
             }
-
-    @staticmethod
-    def _apply_badge_style(label: tk.Label, status: str) -> None:
-        status_up = status.upper()
-        if "BUSY" in status_up or "TESTING" in status_up:
-            label.config(text="BUSY (Testing)", bg="#ff9800", fg="white")
-        elif "FROZEN" in status_up:
-            label.config(text="FROZEN 警示", bg="#f44336", fg="white")
-        elif "IDLE" in status_up or "OK" in status_up:
-            label.config(text="IDLE 閒置", bg="#4caf50", fg="white")
-        else:
-            label.config(text="DISCONNECTED", bg="#9e9e9e", fg="white")
 
     def _station_of(self, device: str) -> str:
         for st in self._stations:
@@ -692,15 +762,24 @@ class AtlasUI(_BaseTk):
         self.client.start_status_poll(lambda res: self._ui_queue.put(lambda: self._update_status_ui(res)))
         self.after(1500, self._poll_status)
 
+    def _core_tooltip_text(self) -> str:
+        """Hover tip for the Core Service lamp: uptime, connection count and busy devices."""
+        if self._service_ok:
+            info = self._service_info
+            busy = info.get("busy_devices", []) or "無"
+            return (
+                "服務連線正常\n"
+                f"Uptime: {info.get('uptime_seconds', 0)}s\n"
+                f"連線數: {info.get('active_connections', 0)}\n"
+                f"忙碌機台: {busy}"
+            )
+        return "服務未連線（詳見日誌）"
+
     def _update_status_ui(self, status_res: Dict[str, Any]) -> None:
         if status_res.get("status") == "ok":
-            uptime = status_res.get("uptime_seconds", 0)
-            active_conns = status_res.get("active_connections", 0)
-            busy_devs = status_res.get("busy_devices", [])
-            self.lbl_core_status.config(text="● 服務連線正常", fg="#2e7d32")
-            self.lbl_core_info.config(
-                text=f"Uptime: {uptime}s | 連線數: {active_conns} | 忙碌機台: {busy_devs or '無'}"
-            )
+            self._service_ok = True
+            self._service_info = status_res
+            self.light_core.set_light("green")
 
             # Update stations list if returned
             stations = status_res.get("stations")
@@ -716,22 +795,61 @@ class AtlasUI(_BaseTk):
                 for st in stations:
                     w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
-                        self._apply_badge_style(w["badge"], st.get("status", "DISCONNECTED"))
+                        w["light"].set_status(st.get("status", "DISCONNECTED"))
                         w["metrics"].config(text=format_reading_metrics(st))
         else:
-            err = status_res.get("message") or status_res.get("error") or "連線中斷"
-            self.lbl_core_status.config(text="○ 服務未連線", fg="#c62828")
-            self.lbl_core_info.config(text=f"{err}")
+            # Log once per outage (first poll or connected -> disconnected), not on every 1.5 s poll.
+            was_ok = self._service_ok
+            self._service_ok = False
+            self._service_info = status_res
+            self.light_core.set_light("red")
+            if was_ok is not False:
+                err = status_res.get("message") or status_res.get("error") or "連線中斷"
+                self._append_log(f"Core Service 未連線: {err}", level="error")
             for w in self._station_widgets.values():
-                self._apply_badge_style(w["badge"], "DISCONNECTED")
+                w["light"].set_status("DISCONNECTED")
 
     # --------------------------------------------------------------------------
     # Logging & Threading Queue Plumbing
     # --------------------------------------------------------------------------
-    def _append_log(self, msg: str) -> None:
-        ts = time.strftime("%Y-%m-%d(%H:%M:%S)")
-        self.log_text.insert("end", f"{ts}: {msg}\n")
+    def _append_log(self, msg: str, level: str = "info", en: str = "") -> str:
+        """Write one line to the Log panel and today's log file. Returns a mark for jumping to the line.
+
+        ``level`` is ``"info"``, ``"warn"`` (orange) or ``"error"`` (red). ``en`` is the English
+        half of a bilingual line; it is passed through to the file writer for #106.
+        """
+        try:
+            line = self._file_log.write(msg, en)
+        except OSError:
+            # A full or read-only disk must not stop the UI; the Log panel still shows the line.
+            line = format_log_line(datetime.datetime.now(), msg, en)
+        start = self.log_text.index("end-1c")
+        self.log_text.insert("end", line + "\n")
+        if level in ("error", "warn"):
+            self.log_text.tag_add(level, start, "end-1c")
+        self._log_seq += 1
+        mark = f"log_{self._log_seq}"
+        self.log_text.mark_set(mark, start)
+        self.log_text.mark_gravity(mark, "left")
         self.log_text.see("end")
+        return mark
+
+    def _jump_to_log(self, mark: str) -> None:
+        self.log_text.see(mark)
+
+    def _report_error(self, label: tk.Label, brief: str, detail: str, level: str = "error") -> str:
+        """Show a short message on the HMI, write the full detail to the Log, and make the label jump there."""
+        mark = self._append_log(detail, level=level)
+        fg = ERROR_FG if level == "error" else WARN_FG
+        label.config(text=f"{brief}（詳見日誌）", fg=fg, cursor="hand2")
+        label.bind("<Button-1>", lambda _event, m=mark: self._jump_to_log(m))
+        return mark
+
+    @staticmethod
+    def _set_info(label: tk.Label, text: str, fg: str) -> None:
+        """Plain (non-error) label text: clears any click-to-log binding left by an earlier error."""
+        label.config(text=text, fg=fg, cursor="")
+        label.unbind("<Button-1>")
 
     def _drain_queues(self) -> None:
         try:
@@ -745,7 +863,7 @@ class AtlasUI(_BaseTk):
                 try:
                     fn()
                 except Exception as exc:
-                    self._append_log(f"UI 回呼錯誤: {exc}")
+                    self._append_log(f"UI 回呼錯誤: {exc}", level="error")
         except queue.Empty:
             pass
         if not self._is_closing:
@@ -757,7 +875,7 @@ class AtlasUI(_BaseTk):
     def on_open_device_settings(self) -> None:
         """Open the device list settings page (works without a running Core Service)."""
         if DeviceSettingsWindow is None:
-            self._append_log("設備設定頁模組不可用。")
+            self._append_log("設備設定頁模組不可用。", level="error")
             return
         existing = getattr(self, "_settings_window", None)
         if existing is not None:
@@ -800,7 +918,7 @@ class AtlasUI(_BaseTk):
         """Request a single snapshot frame from Core Service."""
         device = self.var_sel_device.get().strip()
         if not device:
-            self._append_log("尚未選定設備，無法擷取快照。")
+            self._append_log("尚未選定設備，無法擷取快照。", level="warn")
             return
         self._append_log(f"向 Core Service 請求快照 (設備 {device})...")
 
@@ -822,18 +940,19 @@ class AtlasUI(_BaseTk):
                     pil_img = Image.open(io.BytesIO(img_bytes))
                     self._latest_pil_image = pil_img
                     self._render_image_on_canvas(pil_img)
-                    self.lbl_preview_info.config(
-                        text=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"
+                    self._set_info(
+                        self.lbl_preview_info,
+                        f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}",
+                        MUTED_FG,
                     )
                     self._append_log(f"快照接收成功 ({w}x{h})")
                 except Exception as exc:
-                    self._append_log(f"解碼快照影像失敗: {exc}")
+                    self._report_error(self.lbl_preview_info, "快照解碼失敗", f"解碼快照影像失敗: {exc}")
             else:
-                self._append_log("快照資料為空")
+                self._append_log("快照資料為空", level="warn")
         else:
             err = res.get("message") or res.get("error") or "未知錯誤"
-            self._append_log(f"擷取快照失敗: {err}")
-            self.lbl_preview_info.config(text=f"快照錯誤: {err}")
+            self._report_error(self.lbl_preview_info, "快照失敗", f"擷取快照失敗: {err}")
 
     def _render_image_on_canvas(self, pil_img: Image.Image) -> None:
         """Fit and render PIL image onto canvas with letterbox scaling."""
@@ -895,7 +1014,7 @@ class AtlasUI(_BaseTk):
 
                         def update_ui(img=pil_img, info=f"解析度: {w}x{h} | 時間: {time.strftime('%H:%M:%S')}"):
                             self._render_image_on_canvas(img)
-                            self.lbl_preview_info.config(text=info)
+                            self._set_info(self.lbl_preview_info, info, MUTED_FG)
 
                         self._ui_queue.put(update_ui)
                     except Exception:
@@ -905,7 +1024,7 @@ class AtlasUI(_BaseTk):
     def on_open_streamer_window(self) -> None:
         """Open a standalone StreamerWindow using current snapshot stream getter."""
         if StreamerWindow is None:
-            self._append_log("StreamerWindow 模組不可用。")
+            self._append_log("StreamerWindow 模組不可用。", level="error")
             return
         if self._streamer_window is not None:
             try:
@@ -941,7 +1060,7 @@ class AtlasUI(_BaseTk):
         """Trigger a manual check command over TCP."""
         device = self.var_sel_device.get().strip()
         if not device:
-            self._append_log("尚未選定設備，無法執行手動檢查。")
+            self._append_log("尚未選定設備，無法執行手動檢查。", level="warn")
             return
         try:
             timeout_sec = float(self.var_timeout.get().strip())
@@ -950,7 +1069,7 @@ class AtlasUI(_BaseTk):
 
         self._append_log(f"手動送出 inspect 指令: Device={device}, Timeout={timeout_sec}s...")
         self.btn_run_check.config(state="disabled", text="⏳ 檢查執行中...")
-        self.lbl_check_result.config(text="診斷結果: 執行中...", fg="blue")
+        self._set_info(self.lbl_check_result, "診斷結果: 執行中...", INFO_FG)
 
         def worker() -> None:
             res = self.client.manual_check(
@@ -966,20 +1085,18 @@ class AtlasUI(_BaseTk):
         text = format_manual_check(res)
         status = res.get("status", "error")
         if status == "ok":
-            fg = "#2e7d32" if res.get("active") else "#555"
-        elif status == "timeout":
-            fg = "#d84315"
-        elif res.get("error") == "device_busy":
-            fg = "#e65100"
+            self._set_info(self.lbl_check_result, text, OK_FG if res.get("active") else MUTED_FG)
+            self._append_log(text)
+            return
+        if status == "timeout" or res.get("error") == "device_busy":
+            self._report_error(self.lbl_check_result, brief_manual_check_error(res), text, level="warn")
         else:
-            fg = "#b71c1c"
-        self.lbl_check_result.config(text=text, fg=fg)
-        self._append_log(text)
+            self._report_error(self.lbl_check_result, brief_manual_check_error(res), text, level="error")
 
     def on_save_capture(self) -> None:
         """Save latest snapshot frame to template capture path."""
         if self._latest_pil_image is None:
-            self._append_log("尚未擷取影格，請先點擊『📷 擷取快照』。")
+            self._append_log("尚未擷取影格，請先點擊『📷 擷取快照』。", level="warn")
             return
         save_path = self._templates.capture_path()
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -987,20 +1104,20 @@ class AtlasUI(_BaseTk):
             self._latest_pil_image.save(save_path)
             self._append_log(f"已儲存影格至模板目錄: {save_path}")
         except Exception as exc:
-            self._append_log(f"儲存影格失敗: {exc}")
+            self._append_log(f"儲存影格失敗: {exc}", level="error")
 
     def on_create_pattern(self) -> None:
-        """Open pattern cropper with latest captured frame."""
+        """Save the latest snapshot as the capture, then open the pattern cropper on it."""
         if PatternCropper is None:
-            self._append_log("PatternCropper 模組不可用。")
+            self._append_log(f"無法製作模板：PatternCropper 載入失敗: {_PATTERN_IMPORT_ERROR!r}", level="error")
             return
+        # The latest snapshot replaces the old capture; with no snapshot yet, reuse the saved one.
+        if self._latest_pil_image is not None:
+            self.on_save_capture()
         src = self._templates.capture_path()
         if not src.exists():
-            if self._latest_pil_image:
-                self.on_save_capture()
-            else:
-                self._append_log("請先按『擷取快照』並儲存影格。")
-                return
+            self._append_log("請先按『📷 擷取快照』取得影格。", level="warn")
+            return
         PatternCropper(
             self,
             self._templates,
@@ -1037,6 +1154,7 @@ class AtlasUI(_BaseTk):
         except Exception:
             pass
 
+        self._file_log.close()
         self.destroy()
 
 

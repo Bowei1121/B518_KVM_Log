@@ -34,6 +34,9 @@ pyinstaller --noconfirm --windowed --onefile \
     --name AtlasTest \
     ui_app.py
 
+# 固定淺色外觀：深色模式下 Tk 視窗仍維持淺色（issue #105）
+/usr/libexec/PlistBuddy -c "Add :NSRequiresAquaSystemAppearance bool true" dist/AtlasTest.app/Contents/Info.plist
+
 echo ""
 echo "============================================================"
 echo " 完成! 執行檔在:  dist/AtlasTest.app"

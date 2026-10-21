@@ -45,7 +45,6 @@ def handle_start(args: argparse.Namespace) -> int:
             port=args.port,
             log_file=args.log_file,
             log_level=args.log_level,
-            max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
             timeout=args.timeout,
@@ -88,7 +87,6 @@ def handle_restart(args: argparse.Namespace) -> int:
             port=args.port,
             log_file=args.log_file,
             log_level=args.log_level,
-            max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
             timeout=args.timeout,
@@ -174,8 +172,7 @@ def main() -> None:
     _add_common(p_start)
     p_start.add_argument("--log-file", default=None, help="Path to rotating log file")
     p_start.add_argument("--log-level", default="INFO", help="Logging level")
-    p_start.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log bytes")
-    p_start.add_argument("--backup-count", type=int, default=5, help="Backup count")
+    p_start.add_argument("--backup-count", type=int, default=30, help="Daily log files to keep (days)")
 
     # stop
     p_stop = subparsers.add_parser("stop", help="Gracefully stop Core Service")
@@ -186,8 +183,7 @@ def main() -> None:
     _add_common(p_restart)
     p_restart.add_argument("--log-file", default=None, help="Path to rotating log file")
     p_restart.add_argument("--log-level", default="INFO", help="Logging level")
-    p_restart.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max log bytes")
-    p_restart.add_argument("--backup-count", type=int, default=5, help="Backup count")
+    p_restart.add_argument("--backup-count", type=int, default=30, help="Daily log files to keep (days)")
 
     # status
     p_status = subparsers.add_parser("status", help="Check status of Core Service")

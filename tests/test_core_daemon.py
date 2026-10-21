@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from logging.handlers import TimedRotatingFileHandler
 import socket
 import subprocess
 import sys
@@ -89,7 +90,6 @@ def test_rotating_file_logging(tmp_path: Path):
     logger = setup_rotating_logging(
         log_file=log_file,
         log_level="DEBUG",
-        max_bytes=350,  # Small size to trigger fast rotation
         backup_count=3,
         console=False,
         logger_name="TestRotatingLogger",
@@ -110,9 +110,14 @@ def test_rotating_file_logging(tmp_path: Path):
     )
     assert pattern.search(content) is not None, f"Pattern not found in log content:\n{content}"
 
-    # Verify that rotation occurred and backup file exists
-    backup_file = tmp_path / "test_service.log.1"
-    assert backup_file.exists(), "Log rotation did not produce expected .1 backup file"
+    # Daily rotation: the active file rolls to a dated backup at local midnight, keeping 3 days.
+    handler = next(h for h in logger.handlers if isinstance(h, TimedRotatingFileHandler))
+    assert handler.when == "MIDNIGHT"
+    assert handler.backupCount == 3
+    handler.doRollover()
+    backups = sorted(tmp_path.glob("test_service.log.*"))
+    assert len(backups) == 1, f"Expected one dated backup after rollover, got {backups}"
+    assert re.fullmatch(r"test_service\.log\.\d{4}-\d{2}-\d{2}", backups[0].name)
 
 
 def test_start_status_and_graceful_stop_lifecycle(tmp_path: Path):
