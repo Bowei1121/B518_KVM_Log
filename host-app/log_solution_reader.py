@@ -64,7 +64,7 @@ STATUS_COLORS = {
     "PASS": (0, 239, 0),
     "FAIL": (0, 0, 255),
     "TESTING": (0, 255, 255),
-    "NOTEST": (240, 75, 240),
+    "NOTEST": (241, 75, 240),
     "WAITING": (217, 217, 217),
     "COMPLETING": (255, 199, 130),
     "STOPPED": (191, 191, 191),
