@@ -96,6 +96,18 @@ class HeartbeatTracker:
                 return Step.STOPPED
             return Step.COUNTED
 
+    def wants(self, stream_id: Optional[str], sequence: Optional[int], received_at: float) -> bool:
+        """False when observe() would not count this frame: a repeated or older frame, or under STEP_MIN_SEC.
+
+        Lets the probe skip decoding frames that cannot change the run. Only reads; a True answer changes nothing.
+        """
+        with self._lock:
+            if stream_id != self._stream_id:
+                return True
+            if sequence is not None and self._sequence is not None and sequence <= self._sequence:
+                return False
+            return self._received_at is None or received_at - self._received_at >= STEP_MIN_SEC
+
     def changed_within(self, now: float, window: float = RECENT_CHANGE_SEC) -> bool:
         """A counted change was seen at most ``window`` seconds ago and no invalid reading came since."""
         with self._lock:
@@ -113,22 +125,26 @@ class HeartbeatTracker:
         self._changed_at = None
 
 
-def probe(tracker: HeartbeatTracker, read: Callable[[], Tuple[Any, Any]], *,
+def probe(tracker: HeartbeatTracker, latest: Callable[[], Any], decode: Callable[[Any], Any], *,
           clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], Any] = time.sleep) -> bool:
     """Sample the picture for up to PROBE_MAX_SEC before a HID command. True when the display is stopped.
 
-    ``read`` returns ``(snapshot, observation)`` as log_solution_reader.read_app_frame does. A change or an
-    unreadable reading ends the probe as not stopped: the command goes on, and the existing Log Solution
-    rules (Dock recovery, state refusals) decide the rest. Only three identical counted readings refuse.
+    ``latest()`` returns the newest FrameSnapshot (or None); ``decode(snapshot)`` reads its Log Solution observation.
+    Decoding only happens for frames the tracker would count. A change or an unreadable reading ends the probe as
+    not stopped: the command goes on, and the existing Log Solution rules (Dock recovery, state refusals) decide the
+    rest. Only three identical counted readings refuse.
     """
     deadline = clock() + PROBE_MAX_SEC
     while True:
-        snapshot, observation = read()
+        snapshot = latest()
         if snapshot is None:
             tracker.reset()
             return False
-        step = tracker.observe(snapshot.stream_id, snapshot.sequence, snapshot.received_monotonic,
-                               cells_of(observation))
+        if tracker.wants(snapshot.stream_id, snapshot.sequence, snapshot.received_monotonic):
+            step = tracker.observe(snapshot.stream_id, snapshot.sequence, snapshot.received_monotonic,
+                                   cells_of(decode(snapshot)))
+        else:
+            step = Step.NOT_COUNTED
         if step is Step.STOPPED:
             return True
         if step in (Step.CHANGED, Step.INVALID):

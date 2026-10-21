@@ -44,6 +44,41 @@ class HeartbeatStoppedDfuKVM(SyntheticDfuKVM):
                              stream_id="synthetic", pts=now)
 
 
+class CoveredHeartbeatDfuKVM(SyntheticDfuKVM):
+    """A DFU screen with a live App whose heartbeat box is covered by another window (grey, all four cells gone).
+
+    The state marker stays readable. The heartbeat box is contract 1.3 (278, 0) 26x26 at scale 2, origin (23, 31).
+    """
+
+    def latest_frame(self):
+        import time as _time
+
+        from protocol_helpers import live_heartbeat
+
+        self._frame_seq += 1
+        now = _time.monotonic()
+        app = render_log_solution(self.log_state, self.log_statuses or ["WAITING"] * 4,
+                                  heartbeat=live_heartbeat(now))
+        app[31:83, 579:631] = 128
+        return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
+                             stream_id="synthetic", pts=now)
+
+
+class DyingDuringProbeDfuKVM(HeartbeatStoppedDfuKVM):
+    """Stopped heartbeat, and the video track ends on the probe's third picture read (the first two pass the window)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reads = 0
+
+    def latest_frame(self):
+        self.reads += 1
+        snap = super().latest_frame()
+        if self.reads >= 3:
+            self.end_track()
+        return snap
+
+
 def _hid(kvm):
     return [event for event in kvm.events if event[0] in HID_KINDS]
 
@@ -103,6 +138,39 @@ def test_stopped_heartbeat_refuses_dfu_hid_commands_before_any_hid(serve, comman
 
     _assert_heartbeat_stopped(resp)
     assert resp["data"] == expected_data
+    assert _hid(kvm) == []
+
+
+@pytest.mark.parametrize(("command", "log_state", "error", "expected_data"), [
+    ("input", "standby", "hid_failed", {"entered": []}),  # the same unreadable reply as a screen that cannot be read
+    ("start_test", "monitoring", "monitor_not_ready", {"action": ""}),
+])
+def test_covered_heartbeat_with_a_readable_marker_is_unreadable_and_sends_no_hid(serve, command, log_state, error,
+                                                                                  expected_data):
+    kvm = CoveredHeartbeatDfuKVM(FOUR)
+    kvm.log_state = log_state
+    srv = serve(kvm)
+
+    if command == "input":
+        resp = _send(srv, build_request("input", "in-cov", "DFU-01", {"items": [{"slot": 1, "sn": "SN1"}]}))
+    else:
+        resp = _send(srv, build_request("start_test", "st-cov", "DFU-01"))
+
+    assert resp["status"] == "error", resp
+    assert resp["error"] == error, resp
+    assert resp["data"] == expected_data
+    assert _hid(kvm) == []
+
+
+def test_kvm_dying_during_the_heartbeat_probe_is_kvm_connect_failed_and_sends_no_hid(serve):
+    kvm = DyingDuringProbeDfuKVM(FOUR)
+    kvm.log_state = "standby"
+    srv = serve(kvm)
+
+    resp = _send(srv, build_request("start_test", "st-die", "DFU-01"))
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "kvm_connect_failed", resp
     assert _hid(kvm) == []
 
 

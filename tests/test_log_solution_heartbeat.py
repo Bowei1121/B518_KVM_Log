@@ -170,7 +170,7 @@ class FakeClock:
 
 
 class FakeReader:
-    """Serves ``(snapshot, observation)`` for the probe. ``cells_at(t)`` gives the heartbeat cells at time t."""
+    """The probe's two callables. ``cells_at(t)`` gives the heartbeat cells at time t; they ride in the snapshot."""
 
     def __init__(self, clock, cells_at, sequence_step=True):
         self.clock = clock
@@ -178,21 +178,23 @@ class FakeReader:
         self.sequence = 0
         self.sequence_step = sequence_step
 
-    def __call__(self):
+    def latest(self):
         now = self.clock()
         if self.sequence_step:
             self.sequence += 1
-        cells = self.cells_at(now)
-        snapshot = FrameSnapshot(None, self.sequence, now, STREAM, None)
-        observation = FrameObservation(True, heartbeat=cells, capacity=4)
-        return snapshot, observation
+        return FrameSnapshot(self.cells_at(now), self.sequence, now, STREAM, None)
+
+    @staticmethod
+    def decode(snapshot):
+        return FrameObservation(True, heartbeat=snapshot.image, capacity=4)
 
 
 def test_probe_reports_stopped_within_the_budget_when_the_display_holds_still():
     clock = FakeClock()
     tracker = HeartbeatTracker()
+    reader = FakeReader(clock, lambda t: FROZEN_CELLS)
 
-    stopped = probe(tracker, FakeReader(clock, lambda t: FROZEN_CELLS), clock=clock, sleep=clock.sleep)
+    stopped = probe(tracker, reader.latest, reader.decode, clock=clock, sleep=clock.sleep)
 
     assert stopped is True
     assert clock.now - 100.0 <= PROBE_MAX_SEC
@@ -201,8 +203,9 @@ def test_probe_reports_stopped_within_the_budget_when_the_display_holds_still():
 def test_probe_lets_a_live_display_through_at_the_first_counted_change():
     clock = FakeClock()
     tracker = HeartbeatTracker()
+    reader = FakeReader(clock, healthy_cells)
 
-    stopped = probe(tracker, FakeReader(clock, healthy_cells), clock=clock, sleep=clock.sleep)
+    stopped = probe(tracker, reader.latest, reader.decode, clock=clock, sleep=clock.sleep)
 
     assert stopped is False
     assert clock.now - 100.0 < 2.0
@@ -211,7 +214,7 @@ def test_probe_lets_a_live_display_through_at_the_first_counted_change():
 def test_probe_without_any_frame_goes_on_as_not_stopped():
     clock = FakeClock()
 
-    stopped = probe(HeartbeatTracker(), lambda: (None, None), clock=clock, sleep=clock.sleep)
+    stopped = probe(HeartbeatTracker(), lambda: None, None, clock=clock, sleep=clock.sleep)
 
     assert stopped is False
 
@@ -221,7 +224,7 @@ def test_probe_with_no_new_frame_gives_up_at_the_budget_and_goes_on():
     reader = FakeReader(clock, lambda t: FROZEN_CELLS, sequence_step=False)
     reader.sequence = 9
 
-    stopped = probe(HeartbeatTracker(), reader, clock=clock, sleep=clock.sleep)
+    stopped = probe(HeartbeatTracker(), reader.latest, reader.decode, clock=clock, sleep=clock.sleep)
 
     assert stopped is False
     assert clock.now - 100.0 >= PROBE_MAX_SEC
@@ -274,3 +277,17 @@ def test_gate_without_a_heartbeat_tracker_is_unchanged():
     decision = gate.observe(_frame("standby"), 1, 10.0, now=10.0, stream_id=STREAM, pts=100.0)
 
     assert decision.kind == "waiting"
+
+
+def test_a_frozen_picture_restarts_the_heartbeat_run():
+    """Before a freeze two identical readings were counted; the first reading after it must not complete three."""
+    gate = RoundFrameGate("DFU-01", require_presentation_time=False, heartbeat=HeartbeatTracker())
+    for index, t in enumerate([10.0, 11.0]):
+        gate.observe(_frame("monitoring"), index + 1, t, now=t, stream_id=STREAM, pts=100.0 + index)
+
+    frozen = gate.stream.observe_no_frame(now=12.0)
+    assert gate.decide(frozen, None, None, None).kind == "frozen"
+
+    decision = gate.observe(_frame("monitoring"), 3, 13.0, now=13.0, stream_id=STREAM, pts=102.0)
+
+    assert decision.kind != "heartbeat_stopped"

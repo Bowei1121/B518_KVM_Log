@@ -180,9 +180,7 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = 
     With ``heartbeat``, the device's HeartbeatTracker judges the display: stopped is log_solution_heartbeat_stopped.
     """
     from frame_stream import FRESHNESS_PENDING
-    from log_solution_heartbeat import (
-        HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, Step, cells_of, unreadable_heartbeat,
-    )
+    from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, Step, cells_of
     from log_solution_reader import (
         CONFIRMATION_REQUIRED, ScreenKind, read_app_frame, reportable_active, screen_kind,
     )
@@ -203,7 +201,6 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = 
         step = heartbeat.observe(snapshot.stream_id, snapshot.sequence, snapshot.received_monotonic, cells_of(obs))
         if step is Step.STOPPED:
             return {"error": HEARTBEAT_STOPPED, "message": HEARTBEAT_STOPPED_MESSAGE}, None
-        obs = unreadable_heartbeat(obs)
     rows = tracker.observe(obs, snapshot.sequence, snapshot.received_monotonic)
     kind = screen_kind(obs)
     if kind is ScreenKind.UNKNOWN:
@@ -512,7 +509,11 @@ class TcpJsonServer:
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
             return "frame_frozen", verdict.message
-        return await self._heartbeat_refusal(ctx)
+        refusal = await self._heartbeat_refusal(ctx)
+        # The probe samples for up to 2.5 s: a KVM that died meanwhile is kvm_connect_failed, not a later error.
+        if not kvm.is_healthy():
+            return lost()
+        return refusal
 
     async def _heartbeat_refusal(self, ctx: CommandContext) -> Optional[Tuple[str, str]]:
         """Why a HID-sending command must not run because the Log Solution display stopped (issue #77).
@@ -521,13 +522,13 @@ class TcpJsonServer:
         PROBE_MAX_SEC on a worker thread; only three identical counted readings refuse.
         """
         from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE, probe
-        from log_solution_reader import read_app_frame
+        from log_solution_reader import read_snapshot
 
         tracker = self._slot(ctx.entry.device_id).heartbeat
         if tracker.changed_within(time.monotonic()):
             return None
         stopped = await asyncio.wrap_future(self._inspector.submit(
-            probe, tracker, lambda: read_app_frame(ctx.kvm)))
+            probe, tracker, ctx.kvm.latest_frame, read_snapshot))
         return (HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE) if stopped else None
 
     def _template_root(self) -> Any:

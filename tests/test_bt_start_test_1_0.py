@@ -59,11 +59,13 @@ class BtKvm(FakeKvm):
     def __init__(self, frame, log_state="monitoring"):
         super().__init__(frame)
         self.log_state = log_state
+        self._frame_seq = 0
 
     def latest_frame(self):
         now = time.monotonic()
+        self._frame_seq += 1
         app = render_log_solution(self.log_state, ["WAITING"] * 4, heartbeat=live_heartbeat(now))
-        return make_snapshot(beside(self.frame, app), sequence=1, received_monotonic=now,
+        return make_snapshot(beside(self.frame, app), sequence=self._frame_seq, received_monotonic=now,
                              stream_id="synthetic", pts=now)
 
 
