@@ -35,3 +35,15 @@ GitHub issues and PRs share numbers. Resolve an ambiguous number with `gh pr vie
 - Frontier: map order, open, unblocked and unassigned children.
 - Claim: assign the driving developer before work.
 - Resolve: comment the outcome, close the child and append a concise linked decision to the map.
+
+## 驗收勾選（2026-10-21 起）
+
+Issue 的驗收條件（`- [ ]` 清單）是其他 session、其他電腦判斷進度的唯一依據，必須和實際審查結果一致。
+
+- **誰勾**：審查 session（不是實作方）。每輪審查（含再審）結束、貼完 PR 審查 comment 後，到對應 issue 更新勾選。
+- **勾什麼**：只勾本輪**已實際驗證通過**的項目（讀過程式／跑過測試或 mutation）。未通過、需修正、未驗證的保持 `- [ ]`。再審發現先前通過的項目退步，要改回 `- [ ]`。
+- **使用者取消或改寫的條件**：保留原文，以 `~~刪除線~~` 標示並註明決定出處（comment 連結），再勾選。
+- **現場驗證項目**：開發階段無法驗證的保持不勾，註明對應 `docs/FIELD_VERIFICATION.md` 編號。
+- **每輪留 comment**：在 issue 留一則簡短 comment，寫明本輪結論（可合併／需修正）、勾了哪幾項、未勾項的原因，並附 PR 審查 comment 連結。
+- **編輯方式**：`gh issue view N -R Bowei1121/B518_KVM_Log --json body --jq .body` 取原文，只把對應行的 `- [ ]` 改為 `- [x]`（文字一字不改），寫入暫存 UTF-8 檔後 `gh issue edit N -R Bowei1121/B518_KVM_Log --body-file <file>`。
+- **合併時**：主 session merge 前確認 issue 驗收條件與最後一輪審查一致；有未勾項時，須在 issue 說明為何仍可合併（例如現場驗證、使用者同意延後）。

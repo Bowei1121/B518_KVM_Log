@@ -10,6 +10,8 @@
 
 Issues and specs live in GitHub Issues at `Bowei1121/B518_KVM_Log`. Before tracker work, read `docs/agents/issue-tracker.md`.
 
+審查（含再審）結束後，審查 session 必須依 `docs/agents/issue-tracker.md`「驗收勾選」把已驗證通過的驗收條件打勾、未通過的保持不勾，並在 issue 留下本輪結論 comment。
+
 ### Triage labels
 
 Use the five default triage role labels. Before triage or label changes, read `docs/agents/triage-labels.md`.
