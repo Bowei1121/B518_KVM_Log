@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from logging.handlers import TimedRotatingFileHandler
 import socket
 import subprocess
 import sys
@@ -89,7 +90,6 @@ def test_rotating_file_logging(tmp_path: Path):
     logger = setup_rotating_logging(
         log_file=log_file,
         log_level="DEBUG",
-        max_bytes=350,  # Small size to trigger fast rotation
         backup_count=3,
         console=False,
         logger_name="TestRotatingLogger",
@@ -110,9 +110,35 @@ def test_rotating_file_logging(tmp_path: Path):
     )
     assert pattern.search(content) is not None, f"Pattern not found in log content:\n{content}"
 
-    # Verify that rotation occurred and backup file exists
-    backup_file = tmp_path / "test_service.log.1"
-    assert backup_file.exists(), "Log rotation did not produce expected .1 backup file"
+    # Daily rotation: the active file rolls to a dated backup at local midnight, keeping 3 days.
+    handler = next(h for h in logger.handlers if isinstance(h, TimedRotatingFileHandler))
+    assert handler.when == "MIDNIGHT"
+    assert handler.backupCount == 3
+    handler.doRollover()
+    backups = sorted(tmp_path.glob("test_service.log.*"))
+    assert len(backups) == 1, f"Expected one dated backup after rollover, got {backups}"
+    assert re.fullmatch(r"test_service\.log\.\d{4}-\d{2}-\d{2}", backups[0].name)
+
+
+def test_daily_logs_keep_thirty_days_by_default(tmp_path: Path):
+    """Default retention is 30 daily files; rollover deletes the oldest ones beyond that."""
+    from core_daemon import LOG_RETENTION_DAYS
+
+    assert LOG_RETENTION_DAYS == 30
+    log_file = tmp_path / "test_retention.log"
+    logger = setup_rotating_logging(log_file=log_file, console=False, logger_name="TestRetentionLogger")
+    handler = next(h for h in logger.handlers if isinstance(h, TimedRotatingFileHandler))
+    assert handler.backupCount == LOG_RETENTION_DAYS
+
+    # 31 old daily files from 2000-01-01 .. 2000-01-31; one rollover adds today's file.
+    for day in range(1, 32):
+        (tmp_path / f"test_retention.log.2000-01-{day:02d}").write_text("old", encoding="utf-8")
+    handler.doRollover()
+
+    backups = sorted(tmp_path.glob("test_retention.log.*"))
+    assert len(backups) == LOG_RETENTION_DAYS
+    assert not (tmp_path / "test_retention.log.2000-01-01").exists()  # oldest pruned
+    assert (tmp_path / "test_retention.log.2000-01-31").exists()     # newest old file kept
 
 
 def test_start_status_and_graceful_stop_lifecycle(tmp_path: Path):

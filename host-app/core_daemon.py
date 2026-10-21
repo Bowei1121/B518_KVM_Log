@@ -10,7 +10,7 @@ import argparse
 import atexit
 import json
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 import os
 from pathlib import Path
 import signal
@@ -32,6 +32,8 @@ from core_protocol import build_request, dumps_request, read_reply  # noqa: E402
 _REPO_ROOT = _HOST_APP_DIR.parent
 _DEFAULT_LOG_FILE = _REPO_ROOT / "logs" / "core_service.log"
 _DEFAULT_PID_FILE = _REPO_ROOT / "run" / "core_service.pid"
+# One log file per day at local midnight; the newest 30 days are kept.
+LOG_RETENTION_DAYS = 30
 
 try:
     from tcp_server import TcpJsonServer
@@ -49,8 +51,7 @@ logger = logging.getLogger("CoreDaemon")
 def setup_rotating_logging(
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 5,
+    backup_count: int = LOG_RETENTION_DAYS,
     console: bool = True,
     logger_name: Optional[str] = None,
 ) -> logging.Logger:
@@ -59,8 +60,7 @@ def setup_rotating_logging(
     Args:
         log_file: File path for the rotating log file.
         log_level: Logging level string (e.g. 'DEBUG', 'INFO', 'WARNING', 'ERROR').
-        max_bytes: Maximum file size before rotation occurs.
-        backup_count: Number of rotated backup files to retain.
+        backup_count: Number of daily backup files to retain (days).
         console: If True, also stream formatted logs to sys.stdout.
         logger_name: Target logger name (None for root logger).
 
@@ -80,16 +80,16 @@ def setup_rotating_logging(
         log_path = Path(log_file).resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Avoid duplicate RotatingFileHandler on same file
+        # Avoid duplicate TimedRotatingFileHandler on same file
         existing_rfh = any(
-            isinstance(h, RotatingFileHandler)
+            isinstance(h, TimedRotatingFileHandler)
             and getattr(h, "baseFilename", None) == str(log_path)
             for h in target_logger.handlers
         )
         if not existing_rfh:
-            rfh = RotatingFileHandler(
+            rfh = TimedRotatingFileHandler(
                 filename=str(log_path),
-                maxBytes=max_bytes,
+                when="midnight",
                 backupCount=backup_count,
                 encoding="utf-8",
             )
@@ -99,7 +99,7 @@ def setup_rotating_logging(
 
     if console:
         existing_console = any(
-            isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+            isinstance(h, logging.StreamHandler) and not isinstance(h, TimedRotatingFileHandler)
             for h in target_logger.handlers
         )
         if not existing_console:
@@ -421,8 +421,7 @@ def start_core_daemon(
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 5,
+    backup_count: int = LOG_RETENTION_DAYS,
     pid_file: Optional[Union[str, Path]] = None,
     timeout: float = 10.0,
 ) -> Dict[str, Any]:
@@ -459,7 +458,6 @@ def start_core_daemon(
         "--port", str(port),
         "--log-file", str(effective_log_file),
         "--log-level", log_level,
-        "--max-bytes", str(max_bytes),
         "--backup-count", str(backup_count),
         "--pid-file", str(effective_pid_file),
     ]
@@ -517,8 +515,7 @@ def restart_core_daemon(
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 5,
+    backup_count: int = LOG_RETENTION_DAYS,
     pid_file: Optional[Union[str, Path]] = None,
     timeout: float = 10.0,
 ) -> Dict[str, Any]:
@@ -535,7 +532,6 @@ def restart_core_daemon(
         port=port,
         log_file=log_file,
         log_level=log_level,
-        max_bytes=max_bytes,
         backup_count=backup_count,
         pid_file=pid_file,
         timeout=timeout,
@@ -547,8 +543,7 @@ def run_service_foreground(
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
-    max_bytes: int = 10 * 1024 * 1024,
-    backup_count: int = 5,
+    backup_count: int = LOG_RETENTION_DAYS,
     pid_file: Optional[Union[str, Path]] = None,
     console: bool = True,
     devices_file: Optional[Union[str, Path]] = None,
@@ -561,7 +556,6 @@ def run_service_foreground(
     log = setup_rotating_logging(
         log_file=effective_log_file,
         log_level=log_level,
-        max_bytes=max_bytes,
         backup_count=backup_count,
         console=console,
     )
@@ -634,16 +628,10 @@ def parse_args() -> argparse.Namespace:
             help="Log level: DEBUG, INFO, WARNING, ERROR (default: INFO)",
         )
         p.add_argument(
-            "--max-bytes",
-            type=int,
-            default=10 * 1024 * 1024,
-            help="Max log bytes before rotation (default: 10485760)",
-        )
-        p.add_argument(
             "--backup-count",
             type=int,
-            default=5,
-            help="Rotating backup count (default: 5)",
+            default=LOG_RETENTION_DAYS,
+            help=f"Daily log files to keep (default: {LOG_RETENTION_DAYS})",
         )
         p.add_argument(
             "--pid-file",
@@ -704,7 +692,6 @@ def main() -> None:
             port=args.port,
             log_file=args.log_file,
             log_level=args.log_level,
-            max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
             devices_file=getattr(args, "devices_file", None),
@@ -715,7 +702,6 @@ def main() -> None:
             port=args.port,
             log_file=args.log_file,
             log_level=args.log_level,
-            max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
             timeout=args.timeout,
@@ -735,7 +721,6 @@ def main() -> None:
             port=args.port,
             log_file=args.log_file,
             log_level=args.log_level,
-            max_bytes=args.max_bytes,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
             timeout=args.timeout,

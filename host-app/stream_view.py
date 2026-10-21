@@ -16,6 +16,8 @@ import tkinter as tk
 import cv2
 from PIL import Image, ImageTk
 
+from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, pin_light_appearance
+
 # Tkinter keysym -> USB HID usage code
 _KEYSYM_HID = {}
 for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz"):
@@ -72,10 +74,12 @@ class StreamerWindow(tk.Toplevel):
 
         self.geometry("1280x760")
         self.resizable(True, True)
+        self.configure(bg=WINDOW_BG)
+        pin_light_appearance(self)
 
-        self.label = tk.Label(self, bg="black")
+        self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)
-        self.status = tk.Label(self, anchor="w",
+        self.status = tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG,
                                text="串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤)")
         self.status.pack(fill="x")
 

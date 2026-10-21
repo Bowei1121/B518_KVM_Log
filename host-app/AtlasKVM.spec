@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
+
 from PyInstaller.utils.hooks import collect_all
 
 datas = []
@@ -57,3 +59,11 @@ coll = COLLECT(
     upx_exclude=[],
     name='AtlasKVM',
 )
+
+# macOS: pin the app to light mode so Tk colours stay readable under Dark Mode (issue #105).
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='AtlasKVM.app',
+        info_plist={'NSRequiresAquaSystemAppearance': True},
+    )
