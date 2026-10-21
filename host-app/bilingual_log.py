@@ -26,10 +26,13 @@ class BilingualFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         en = record.getMessage()
         zh_template = getattr(record, "zh", None)
-        if zh_template is None:
-            zh = en
-        else:
-            zh = zh_template % record.args if record.args else zh_template
+        zh = en
+        if zh_template is not None:
+            try:
+                zh = zh_template % record.args if record.args else zh_template
+            except (TypeError, ValueError):
+                # A Chinese template that does not match its args must not drop the line; the English stays.
+                zh = en
         line = format_bilingual_line(_dt.datetime.fromtimestamp(record.created), en, zh)
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)

@@ -4,12 +4,14 @@
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
 import cv2
 from PIL import Image, ImageTk
 
+import ui_i18n
 from ui_i18n import bind, t
-from ui_widgets import WINDOW_BG, apply_light_ttk_style, pin_light_appearance
+from ui_widgets import WINDOW_BG, Tooltip, apply_light_ttk_style, pin_light_appearance
 
 
 class PatternCropper(tk.Toplevel):
@@ -27,6 +29,8 @@ class PatternCropper(tk.Toplevel):
         apply_light_ttk_style(self)
         self._build_controls(device, template_key)
         self.bind("<Escape>", lambda _event: self.destroy())
+        self.bind("<Destroy>", self._on_destroy, add="+")
+        ui_i18n.on_language_change(self._relabel)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.transient(parent)
         self.grab_set()
@@ -38,8 +42,12 @@ class PatternCropper(tk.Toplevel):
         toolbar.pack(fill="x")
         left = ttk.Frame(toolbar)
         left.pack(side="left")
-        bind(ttk.Button(left, command=self._choose_image), "pt_choose").pack(side="left", padx=(0, 6))
-        bind(ttk.Button(left, command=self._load_latest_capture), "pt_latest").pack(side="left")
+        choose = bind(ttk.Button(left, command=self._choose_image), "pt_choose")
+        choose.pack(side="left", padx=(0, 6))
+        Tooltip(choose, lambda: t("tip_pt_choose"))
+        latest = bind(ttk.Button(left, command=self._load_latest_capture), "pt_latest")
+        latest.pack(side="left")
+        Tooltip(latest, lambda: t("tip_pt_latest"))
         right = ttk.Frame(toolbar)
         right.pack(side="right")
         bind(ttk.Label(right), "pt_device").pack(side="left", padx=(0, 4))
@@ -48,27 +56,49 @@ class PatternCropper(tk.Toplevel):
                                        state="readonly", width=7)
         self.device_box.pack(side="left", padx=(0, 10))
         self.device_box.bind("<<ComboboxSelected>>", self._on_device_changed)
+        Tooltip(self.device_box, lambda: t("tip_pt_device"))
         bind(ttk.Label(right), "pt_type").pack(side="left", padx=(0, 4))
         self.key_var = tk.StringVar()
         self.key_box = ttk.Combobox(right, textvariable=self.key_var, state="readonly", width=20)
         self.key_box.pack(side="left")
         self.key_box.bind("<<ComboboxSelected>>", self._update_target)
+        Tooltip(self.key_box, lambda: t("tip_pt_type"))
         self._refresh_keys(template_key)
 
         output = ttk.Frame(self, padding=(8, 0, 8, 6))
         output.pack(fill="x")
         bind(ttk.Label(output), "pt_output").pack(side="left", padx=(0, 6))
         self.target_var = tk.StringVar()
-        ttk.Entry(output, textvariable=self.target_var, state="readonly").pack(side="left", fill="x", expand=True)
+        target_entry = ttk.Entry(output, textvariable=self.target_var, state="readonly")
+        target_entry.pack(side="left", fill="x", expand=True)
+        Tooltip(target_entry, lambda: t("tip_pt_output"))
         self._update_target()
         self.canvas_holder = ttk.Frame(self, padding=(8, 0, 8, 4))
         self.canvas_holder.pack(fill="both", expand=True)
-        self.hint_var = tk.StringVar(value=t("pt_hint_start"))
+        self._hint: Callable[[], str] = lambda: t("pt_hint_start")
+        self.hint_var = tk.StringVar(value=self._hint())
         ttk.Label(self, textvariable=self.hint_var, padding=(8, 2)).pack(anchor="w")
         footer = ttk.Frame(self, padding=8)
         footer.pack(fill="x")
-        bind(ttk.Button(footer, command=self.destroy), "pt_cancel").pack(side="right")
-        bind(ttk.Button(footer, command=self._save), "pt_save").pack(side="right", padx=(0, 6))
+        cancel = bind(ttk.Button(footer, command=self.destroy), "pt_cancel")
+        cancel.pack(side="right")
+        Tooltip(cancel, lambda: t("tip_pt_cancel"))
+        save = bind(ttk.Button(footer, command=self._save), "pt_save")
+        save.pack(side="right", padx=(0, 6))
+        Tooltip(save, lambda: t("tip_pt_save"))
+
+    def _set_hint(self, render: Callable[[], str]) -> None:
+        """Status line under the picture; kept as a render so a language switch re-words it."""
+        self._hint = render
+        self.hint_var.set(render())
+
+    def _relabel(self) -> None:
+        if self.winfo_exists():
+            self.hint_var.set(self._hint())
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is self:
+            ui_i18n.off_language_change(self._relabel)
 
     def _refresh_keys(self, preferred_key=None):
         options = self.catalog.selection_options(self.device_var.get())
@@ -104,7 +134,8 @@ class PatternCropper(tk.Toplevel):
             return
         self.img, self._selection, self._start, self._rect = image, None, None, None
         self._render_canvas()
-        self.hint_var.set(t("pt_loaded", name=Path(path).name))
+        name = Path(path).name
+        self._set_hint(lambda: t("pt_loaded", name=name))
 
     def _render_canvas(self):
         for child in self.canvas_holder.winfo_children():
@@ -141,7 +172,8 @@ class PatternCropper(tk.Toplevel):
         ix1, iy1 = int(min(x1, event.x) / self.scale), int(min(y1, event.y) / self.scale)
         ix2, iy2 = int(max(x1, event.x) / self.scale), int(max(y1, event.y) / self.scale)
         self._selection = (ix1, iy1, ix2, iy2)
-        self.hint_var.set(t("pt_selected", w=ix2 - ix1, h=iy2 - iy1))
+        width, height = ix2 - ix1, iy2 - iy1
+        self._set_hint(lambda: t("pt_selected", w=width, h=height))
 
     def _save(self):
         if self.img is None:
@@ -157,7 +189,7 @@ class PatternCropper(tk.Toplevel):
             overwrite = messagebox.askyesno(t("pt_overwrite_title"), t("pt_overwrite_msg", path=target),
                                             parent=self)
             if not overwrite:
-                self.hint_var.set(t("pt_overwrite_cancel"))
+                self._set_hint(lambda: t("pt_overwrite_cancel"))
                 return
         try:
             saved = self.catalog.save_crop(self.img, self._selection, device, key, overwrite=overwrite)
@@ -169,7 +201,7 @@ class PatternCropper(tk.Toplevel):
             self.canvas.delete(self._rect)
             self._rect = None
         message = t("pt_saved", path=saved)
-        self.hint_var.set(message + t("pt_more"))
+        self._set_hint(lambda: t("pt_saved", path=saved) + t("pt_more"))
         messagebox.showinfo(t("pt_saved_title"), message, parent=self)
         if self.on_saved:
             self.on_saved(str(saved))

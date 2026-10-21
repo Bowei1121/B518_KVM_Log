@@ -56,3 +56,11 @@ def test_exception_traceback_follows_the_line():
 
 def test_format_bilingual_line_falls_back_to_chinese_when_english_is_empty():
     assert format_bilingual_line(_WHEN, "", "中文") == "09:05:07 | 中文 | 中文"
+
+
+def test_mismatched_chinese_template_keeps_the_line_with_the_english_column():
+    # A Chinese template that does not fit its args must not drop the line (review of #109).
+    record = logging.LogRecord("t", logging.ERROR, __file__, 1, "bad %s", ("x",), None)
+    record.zh = "壞 %s %s"
+    line = BilingualFormatter().format(record)
+    assert line.endswith(" | bad x | bad x")

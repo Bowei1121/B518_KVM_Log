@@ -10,7 +10,7 @@ import os
 import socket
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -159,6 +159,12 @@ class ProbeResult:
     ok: bool
     latency_ms: Optional[float]
     message: str
+    key: str = ""  # message's STRINGS key, so the settings page can re-word it on a language switch
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def text(self) -> str:
+        """The message in the current language (falls back to the stored message)."""
+        return t(self.key, **self.kwargs) if self.key else self.message
 
 
 def probe_kvm(ip: str, timeout: float = 2.0, port: int = KVM_HTTP_PORT,
@@ -169,11 +175,12 @@ def probe_kvm(ip: str, timeout: float = 2.0, port: int = KVM_HTTP_PORT,
         with connect((ip, port), timeout=timeout):
             pass
     except socket.timeout:
-        return ProbeResult(False, None, t("ed_probe_timeout", seconds=timeout))
+        return ProbeResult(False, None, t("ed_probe_timeout", seconds=timeout),
+                           "ed_probe_timeout", {"seconds": timeout})
     except OSError as exc:
-        return ProbeResult(False, None, t("ed_probe_fail", error=exc))
+        return ProbeResult(False, None, t("ed_probe_fail", error=exc), "ed_probe_fail", {"error": exc})
     latency = round((time.monotonic() - started) * 1000, 1)
-    return ProbeResult(True, latency, t("ed_probe_ok", ms=latency))
+    return ProbeResult(True, latency, t("ed_probe_ok", ms=latency), "ed_probe_ok", {"ms": latency})
 
 
 def restart_refusal(stations: List[Dict[str, Any]]) -> Optional[str]:

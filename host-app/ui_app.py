@@ -370,6 +370,7 @@ class MatchResultsWindow(_BaseToplevel):
         )
         self.device_box.pack(side="left")
         self.device_box.bind("<<ComboboxSelected>>", lambda _event: self.load())
+        Tooltip(self.device_box, lambda: t("tip_match_device"))
         self.status_var = tk.StringVar()
         tk.Label(top, textvariable=self.status_var, bg=WINDOW_BG, fg=TEXT_FG).pack(side="left", padx=12)
 
@@ -388,6 +389,23 @@ class MatchResultsWindow(_BaseToplevel):
         )
         self.image_label.pack(fill="both", expand=True)
         self.load()
+        ui_i18n.on_language_change(self._relabel)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _relabel(self) -> None:
+        """Language switch: rebuild the status and the rows in the new language, keeping the chosen row."""
+        if not self.winfo_exists():
+            return
+        picked = self.listbox.curselection()
+        self.load()
+        if picked and picked[0] < len(self.records):
+            self.listbox.selection_clear(0, "end")
+            self.listbox.selection_set(picked[0])
+            self._select()
+
+    def _on_destroy(self, event: Any) -> None:
+        if event.widget is self:
+            ui_i18n.off_language_change(self._relabel)
 
     def load(self) -> None:
         self.summary = MatchDiagnostics.load(self.catalog.root, self.device_var.get())
@@ -603,6 +621,7 @@ class AtlasUI(_BaseTk):
             view_bottom, text=t("preview_none"), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_preview_info.pack(side="left", fill="x", expand=True)
+        bind(self.lbl_preview_info, "preview_none")
 
         self.btn_snapshot = tk.Button(
             view_bottom, text="📷", font=self.f_icon, bg=BUTTON_BG, fg=TEXT_FG,
@@ -687,6 +706,7 @@ class AtlasUI(_BaseTk):
             check_box, text=t("check_none"), font=self.f_bold, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_check_result.pack(anchor="w", pady=2)
+        bind(self.lbl_check_result, "check_none")
 
         # Pattern creation
         pat_box = tk.LabelFrame(ctrl_frame, font=self.f_label, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
@@ -699,10 +719,10 @@ class AtlasUI(_BaseTk):
         )
         self.btn_create_pattern.pack(fill="x", pady=2)
         bind(self.btn_create_pattern, "btn_pattern")
-        Tooltip(self.btn_create_pattern, lambda: t("tip_pattern"))
         if PatternCropper is None:
             self.btn_create_pattern.config(state="disabled")
-            Tooltip(self.btn_create_pattern, lambda: t("pattern_unavailable"))
+        Tooltip(self.btn_create_pattern,
+                lambda: t("pattern_unavailable") if PatternCropper is None else t("tip_pattern"))
 
         self.btn_match_results = tk.Button(
             pat_box, text=t("btn_match"), font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
@@ -948,14 +968,17 @@ class AtlasUI(_BaseTk):
         """Show a short message on the HMI, write the full detail to the Log, and make the label jump there."""
         mark = self._append_log(*detail, level=level)
         fg = ERROR_FG if level == "error" else WARN_FG
-        label.config(text=f"{t(brief_key)}{t('see_log')}", fg=fg, cursor="hand2")
+        bind(label, lambda: f"{t(brief_key)}{t('see_log')}")
+        label.config(fg=fg, cursor="hand2")
         label.bind("<Button-1>", lambda _event, m=mark: self._jump_to_log(m))
         return mark
 
     @staticmethod
-    def _set_info(label: tk.Label, text: str, fg: str) -> None:
-        """Plain (non-error) label text: clears any click-to-log binding left by an earlier error."""
-        label.config(text=text, fg=fg, cursor="")
+    def _set_info(label: tk.Label, text: Any, fg: str) -> None:
+        """Plain (non-error) label text. A callable is re-run on a language switch; clears any click-to-log binding."""
+        render = text if callable(text) else (lambda: text)
+        bind(label, render)
+        label.config(fg=fg, cursor="")
         label.unbind("<Button-1>")
 
     @staticmethod
@@ -1070,11 +1093,8 @@ class AtlasUI(_BaseTk):
                     pil_img = Image.open(io.BytesIO(img_bytes))
                     self._latest_pil_image = pil_img
                     self._render_image_on_canvas(pil_img)
-                    self._set_info(
-                        self.lbl_preview_info,
-                        t("preview_info", w=w, h=h, time=time.strftime("%H:%M:%S")),
-                        MUTED_FG,
-                    )
+                    stamp = time.strftime("%H:%M:%S")
+                    self._set_info(self.lbl_preview_info, lambda: t("preview_info", w=w, h=h, time=stamp), MUTED_FG)
                     self._log_key("log_snapshot_ok", w=w, h=h)
                 except Exception as exc:
                     self._report_error(self.lbl_preview_info, "err_decode", pair("log_snapshot_decode", error=str(exc)))
@@ -1143,7 +1163,8 @@ class AtlasUI(_BaseTk):
 
                         def update_ui(img=pil_img, info=(w, h, time.strftime("%H:%M:%S"))):
                             self._render_image_on_canvas(img)
-                            self._set_info(self.lbl_preview_info, t("preview_info", w=info[0], h=info[1], time=info[2]), MUTED_FG)
+                            self._set_info(self.lbl_preview_info,
+                                           lambda: t("preview_info", w=info[0], h=info[1], time=info[2]), MUTED_FG)
 
                         self._ui_queue.put(update_ui)
                     except Exception:
@@ -1180,6 +1201,8 @@ class AtlasUI(_BaseTk):
             title=t("stream_title", device=self.var_sel_device.get()),
             on_close=on_close,
         )
+        bind(self._streamer_window, lambda device=self.var_sel_device.get(): t("stream_title", device=device),
+             option="title")
         self._log_key("log_popout_open")
 
     # --------------------------------------------------------------------------
@@ -1198,7 +1221,7 @@ class AtlasUI(_BaseTk):
 
         self._log_key("log_inspect", device=device, timeout=timeout_sec)
         self.btn_run_check.config(state="disabled", text=t("btn_checking"))
-        self._set_info(self.lbl_check_result, t("check_running"), INFO_FG)
+        self._set_info(self.lbl_check_result, lambda: t("check_running"), INFO_FG)
 
         def worker() -> None:
             res = self.client.manual_check(
@@ -1215,7 +1238,7 @@ class AtlasUI(_BaseTk):
         if status == "ok":
             self._set_info(
                 self.lbl_check_result,
-                format_manual_check(res),
+                lambda: format_manual_check(res),
                 OK_FG if res.get("active") else MUTED_FG,
             )
             self._append_log(format_manual_check(res, "en"), format_manual_check(res, "zh"))

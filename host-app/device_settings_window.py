@@ -7,13 +7,14 @@ writes the local device list, so it works when Core Service is not running.
 import queue
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import tkinter as tk
 from tkinter import ttk
 
 import device_list_editor as editor
 from device_registry import default_registry_path
+import ui_i18n
 from ui_i18n import bind, t
 from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip, pin_light_appearance
 
@@ -36,12 +37,19 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._rows: List[Dict[str, Any]] = []  # each: vars, widgets, probe label, error label
         self._saved_snapshot: List[Dict[str, Any]] = []
         self._errors: Dict[Any, List[str]] = {}
+        self._status_state: Optional[tuple] = None  # (render, colour): the status line, re-worded on a language switch
         self._posted: "queue.Queue[Callable[[], None]]" = queue.Queue()
         self._dirty = False
 
         self._build()
         self._load_from_file()
         self.after(100, self._drain)
+        ui_i18n.on_language_change(self._relabel)
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_destroy(self, event: Any) -> None:
+        if event.widget is self:
+            ui_i18n.off_language_change(self._relabel)
 
     # ---------------------------------------------------------------- layout
     def _build(self) -> None:
@@ -96,9 +104,9 @@ class DeviceSettingsWindow(tk.Toplevel):
         if state.load_error:
             self._status(state.load_error, ERROR_COLOR)
         elif state.prefilled:
-            self._status(t("ds_prefilled"), OK_COLOR)
+            self._say("ds_prefilled", OK_COLOR)
         else:
-            self._status(t("ds_loaded", count=len(state.rows)), MUTED_FG)
+            self._say("ds_loaded", MUTED_FG, count=len(state.rows))
         self._show_errors({})
 
     def _clear_rows(self) -> None:
@@ -133,7 +141,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         vars_ = {"device": device, "station": station, "kvm_ip": ip, "channels": channels}
         # The probe is bound to this entry object, not to its position in self._rows.
         entry: Dict[str, Any] = {"selected": selected, "vars": vars_, "probe": probe_lbl, "error": error_lbl,
-                                 "widgets": []}
+                                 "widgets": [], "probe_state": None}
         probe_btn = bind(tk.Button(self.table, command=lambda: self._probe_row(entry), bg=BUTTON_BG, fg=TEXT_FG),
                          "ds_probe_btn")
 
@@ -175,18 +183,18 @@ class DeviceSettingsWindow(tk.Toplevel):
         keep = [entry for entry in self._rows if not entry["selected"].get()]
         dropped = [entry for entry in self._rows if entry["selected"].get()]
         if not dropped:
-            self._status(t("ds_nothing_selected"), MUTED_FG)
+            self._say("ds_nothing_selected", MUTED_FG)
             return
         rows = [{key: var.get() for key, var in entry["vars"].items()} for entry in keep]
         self._clear_rows()
         for row in rows:
             self._add_row_widgets(row)
         self._show_errors({})
-        self._status(t("ds_deleted", count=len(dropped)), MUTED_FG)
+        self._say("ds_deleted", MUTED_FG, count=len(dropped))
 
     def _restore(self) -> None:
         self._load_from_file()
-        self._status(t("ds_reverted"), MUTED_FG)
+        self._say("ds_reverted", MUTED_FG)
 
     # ------------------------------------------------------------ validation
     def _show_errors(self, errors: Dict[Any, List[str]]) -> None:
@@ -204,7 +212,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._show_errors(errors)
         if errors:
             count = len([k for k in errors if k != editor.FORM_ERROR])
-            self._status(t("ds_has_errors", count=count), ERROR_COLOR)
+            self._say("ds_has_errors", ERROR_COLOR, count=count)
             return
         try:
             backup = editor.save_rows(rows, self._path)
@@ -213,13 +221,16 @@ class DeviceSettingsWindow(tk.Toplevel):
             return
         self._saved_snapshot = self._snapshot()
         self._update_dirty()
-        note = t("ds_saved_backup", name=backup.name) if backup else t("ds_saved")
-        self._status(note, OK_COLOR)
+        if backup:
+            self._say("ds_saved_backup", OK_COLOR, name=backup.name)
+        else:
+            self._say("ds_saved", OK_COLOR)
 
     # -------------------------------------------------------------- probing
     def _probe_row(self, entry: Dict[str, Any]) -> None:
         ip = entry["vars"]["kvm_ip"].get().strip()
-        entry["probe"].config(text=t("ds_probing"), fg=MUTED_FG)
+        entry["probe_state"] = "probing"
+        self._paint_probe(entry)
 
         def worker() -> None:
             result = editor.probe_kvm(ip)
@@ -230,19 +241,28 @@ class DeviceSettingsWindow(tk.Toplevel):
     def _show_probe(self, entry: Dict[str, Any], result: Any) -> None:
         if not any(live is entry for live in self._rows):
             return  # the row was deleted or rebuilt while the probe ran; its widgets are gone
-        entry["probe"].config(text=result.message, fg=OK_COLOR if result.ok else ERROR_COLOR)
+        entry["probe_state"] = result
+        self._paint_probe(entry)
+
+    def _paint_probe(self, entry: Dict[str, Any]) -> None:
+        """Show a row's probe state in the current language; called again on every language switch."""
+        state = entry["probe_state"]
+        if state == "probing":
+            entry["probe"].config(text=t("ds_probing"), fg=MUTED_FG)
+        elif state is not None:
+            entry["probe"].config(text=state.text(), fg=OK_COLOR if state.ok else ERROR_COLOR)
 
     def _probe_all(self) -> None:
         for entry in list(self._rows):
             self._probe_row(entry)
-        self._status(t("ds_probe_started", count=len(self._rows)), MUTED_FG)
+        self._say("ds_probe_started", MUTED_FG, count=len(self._rows))
 
     # -------------------------------------------------------------- restart
     def _restart(self) -> None:
         if self.dirty:
-            self._status(t("ds_dirty"), ERROR_COLOR)
+            self._say("ds_dirty", ERROR_COLOR)
             return
-        self._status(t("ds_checking"), MUTED_FG)
+        self._say("ds_checking", MUTED_FG)
 
         def worker() -> None:
             try:
@@ -255,18 +275,41 @@ class DeviceSettingsWindow(tk.Toplevel):
                 self._post(lambda: self._status(refusal, ERROR_COLOR))
                 return
             if self._restart_core is None:
-                self._post(lambda: self._status(t("ds_no_restart"), ERROR_COLOR))
+                self._post(lambda: self._say("ds_no_restart", ERROR_COLOR))
                 return
-            self._post(lambda: self._status(t("ds_restarting"), MUTED_FG))
+            self._post(lambda: self._say("ds_restarting", MUTED_FG))
             result = self._restart_core()
             ok = bool(result.get("status") == "ok" or result.get("success"))
-            message = t("ds_restarted") if ok else str(result.get("message", t("err_restart")))
-            self._post(lambda: self._status(message, OK_COLOR if ok else ERROR_COLOR))
+            if ok:
+                self._post(lambda: self._say("ds_restarted", OK_COLOR))
+            else:
+                message = str(result.get("message", t("err_restart")))
+                self._post(lambda: self._status(message, ERROR_COLOR))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _status(self, text: str, color: str) -> None:
-        self.lbl_status.config(text=text, fg=color)
+    # ------------------------------------------------------- status & language
+    def _status(self, text: Union[str, Callable[[], str]], color: str) -> None:
+        """Set the status line. A callable is kept and re-run on a language switch; a plain string stays as it is."""
+        render = text if callable(text) else (lambda: text)
+        self._status_state = (render, color)
+        self.lbl_status.config(text=render(), fg=color)
+
+    def _say(self, key: str, color: str, **kwargs: Any) -> None:
+        self._status(lambda: t(key, **kwargs), color)
+
+    def _relabel(self) -> None:
+        """Language switch: re-word the status line, the row messages and the row errors."""
+        if not self.winfo_exists():
+            return
+        if self._errors:
+            # Validation messages are built in the current language; validate again to get them in the new one.
+            self._show_errors(editor.validate_rows(self._current_rows()))
+        for entry in self._rows:
+            self._paint_probe(entry)
+        if self._status_state is not None and not self._errors.get(editor.FORM_ERROR):
+            render, color = self._status_state
+            self.lbl_status.config(text=render(), fg=color)
 
     def _post(self, fn: Callable[[], None]) -> None:
         """Worker threads hand UI updates to the Tk thread through a queue."""

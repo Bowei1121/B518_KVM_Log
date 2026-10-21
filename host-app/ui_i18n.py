@@ -15,7 +15,7 @@ import os
 import sys
 import tkinter as tk
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 LANGUAGES = ("en", "zh")
 DEFAULT_LANGUAGE = "en"
@@ -31,6 +31,14 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "tip_settings": "Add, change or remove the machines to watch and their KVM addresses.",
         "tip_lang": "Switch between 中文 and English.",
         "tip_addr": "Address of the Core Service (host:port). Normally leave it as it is.",
+        "tip_match_device": "Which machine's last match results to show.",
+        "tip_pt_choose": "Pick a screenshot file from disk to cut the template from.",
+        "tip_pt_latest": "Use the picture you last took with the 📷 button.",
+        "tip_pt_device": "Which machine this template belongs to.",
+        "tip_pt_type": "Which step of the test this template recognises, for example the window.",
+        "tip_pt_output": "The file the template is saved to. It is set automatically.",
+        "tip_pt_cancel": "Close this window without saving.",
+        "tip_pt_save": "Save the boxed area as the template. Drag a box on the picture first.",
         "core_caption": "Service",
         "core_ok_tip": "Service connected. Running for {seconds} s; {clients} program(s) connected.",
         "core_busy": "Busy machines: {busy}",
@@ -248,6 +256,14 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "tip_settings": "新增、修改要監看的機台和它的 KVM 位址。",
         "tip_lang": "切換中文 / English。",
         "tip_addr": "背景服務的位址（主機:埠號），通常不用改。",
+        "tip_match_device": "要查看哪一台機台上一次的比對結果。",
+        "tip_pt_choose": "從電腦選一張截圖，用來裁出模板。",
+        "tip_pt_latest": "用上次按 📷 擷取的畫面。",
+        "tip_pt_device": "這個模板屬於哪一台機台。",
+        "tip_pt_type": "這個模板用來辨識測試的哪一步，例如視窗。",
+        "tip_pt_output": "模板會存到這個檔案，自動決定，不用改。",
+        "tip_pt_cancel": "不儲存，直接關閉視窗。",
+        "tip_pt_save": "把框選的範圍存成模板。請先在畫面上拖曳框選。",
         "core_caption": "服務",
         "core_ok_tip": "服務連線正常。已連線 {seconds} 秒，目前有 {clients} 個程式在用。",
         "core_busy": "忙碌機台：{busy}",
@@ -460,7 +476,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
 
 _current = DEFAULT_LANGUAGE
 _listeners: List[Callable[[], None]] = []
-_bound: List[Tuple[Any, str, str, Dict[str, Any]]] = []
+# (widget, option, render): render() gives the text in the current language; re-run on every switch.
+_bound: List[Tuple[Any, str, Callable[[], str]]] = []
 
 
 # ---------------------------------------------------------------- text lookup
@@ -515,17 +532,30 @@ def _alive(widget: Any) -> bool:
         return False
 
 
-def bind(widget: Any, key: str, option: str = "text", **kwargs: Any) -> Any:
-    """Show ``t(key)`` in ``widget`` now and whenever the language changes. ``option="title"`` sets a window title."""
-    _bound[:] = [entry for entry in _bound if _alive(entry[0])]
-    _bound.append((widget, option, key, kwargs))
+def bind(widget: Any, key_or_render: Union[str, Callable[[], str]], option: str = "text", **kwargs: Any) -> Any:
+    """Show a text in ``widget`` now and again whenever the language changes.
+
+    ``key_or_render`` is a ``STRINGS`` key (with ``kwargs``) or a callable that returns the text in the current
+    language. ``option="title"`` sets a window title. A later ``bind`` on the same widget and option replaces
+    the earlier one, so a label that shows a new message each time never keeps stale entries.
+    """
+    if callable(key_or_render):
+        render = key_or_render
+    else:
+        key = key_or_render
+
+        def render() -> str:
+            return t(key, **kwargs)
+
+    _bound[:] = [entry for entry in _bound if _alive(entry[0]) and not (entry[0] is widget and entry[1] == option)]
+    _bound.append((widget, option, render))
     _apply(_bound[-1])
     return widget
 
 
-def _apply(entry: Tuple[Any, str, str, Dict[str, Any]]) -> None:
-    widget, option, key, kwargs = entry
-    text = t(key, **kwargs)
+def _apply(entry: Tuple[Any, str, Callable[[], str]]) -> None:
+    widget, option, render = entry
+    text = render()
     if option == "title":
         widget.title(text)
     else:

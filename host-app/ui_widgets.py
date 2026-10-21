@@ -166,7 +166,7 @@ class StatusLight(tk.Canvas):
 class Tooltip:
     """Hover hint. ``text`` may be a callable so the hint always shows the latest value."""
 
-    DELAY_MS = 400
+    DELAY_MS = 500  # about half a second, as the #106 spec asks
 
     def __init__(self, widget: tk.Misc, text: Union[str, Callable[[], str]]) -> None:
         self.widget = widget
