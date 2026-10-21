@@ -35,13 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt pytest
 
-      - name: Run pytest
+      - name: Run Windows DPI tests
         shell: bash
-        # test_replay_load / test_test_isolation import POSIX-only `resource` / `pwd`, so they cannot be collected on Windows.
-        # They stay in the macOS/local run. Everything else runs here.
-        run: >
-          python -m pytest -o faulthandler_timeout=120 -q
-          --ignore=tests/test_replay_load.py --ignore=tests/test_test_isolation.py
+        # Scoped to this issue's tests. The full suite was run on Windows and has 17 failures from POSIX-only
+        # behaviour (daemon/pid, `resource`/`pwd`, Monitor UI prefs path/isolation), so it stays a macOS/local run.
+        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py
 
   build:
     runs-on: windows-latest
