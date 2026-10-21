@@ -360,6 +360,9 @@ class TcpJsonServer:
             # Reading statistics come from the slot's recorded readings. A device without a slot has none yet.
             slot = self._slots.get(str(dev_id))
             reading = slot.stats.report() if slot is not None else empty_report()
+            if not is_connected:
+                # The last frame size belongs to a picture that is gone: a disconnected device has no output size.
+                reading["frame_size"] = None
 
             stations_list.append({
                 "station": st_name,

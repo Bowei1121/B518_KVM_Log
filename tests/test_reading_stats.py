@@ -35,21 +35,6 @@ def test_nothing_recorded_reports_nulls_and_zero_samples():
     }
 
 
-@pytest.mark.parametrize("scale", [1.0, 2.0])
-def test_frame_size_scale_and_cell_pixels_follow_the_frame(scale):
-    frame = render_log_solution("monitoring", ["TESTING", "PASS"], scale=scale)
-    stats = ReadingStats()
-    stats.record(FrameObservation(True, MarkerState.MONITORING, 2, ("TESTING", "PASS"), scale=scale), frame, now=10.0)
-
-    report = stats.report(now=10.5)
-
-    assert report["frame_size"] == [frame.shape[1], frame.shape[0]]
-    assert report["picture_scale"] == pytest.approx(scale, abs=0.001)
-    assert report["cell_px"] == pytest.approx(scale * 10, abs=0.01)
-    assert report["last_reading"] == {"reason": "", "age_sec": 0.5}
-    assert report["readable_ratio"] == {"ratio": 1.0, "samples": 1}
-
-
 def test_unlocated_reading_has_no_picture_scale_but_gives_its_reason():
     stats = ReadingStats()
     stats.record(UNREADABLE, None, now=5.0)
@@ -83,6 +68,33 @@ def test_gate_records_one_reading_per_inspected_frame():
     gate.observe(frame, 1, 10.0, now=10.0, stream_id="s")
 
     assert stats.report(now=10.0)["readable_ratio"]["samples"] == 1
+
+
+@pytest.mark.parametrize("scale", [1.0, 2.0])
+def test_decoded_frame_gives_size_scale_and_cell_pixels_at_one_and_two_times(scale):
+    stats = ReadingStats()
+    frame = render_log_solution("monitoring", ["TESTING", "PASS"], scale=scale)
+
+    _inspect_round(FakeKVM(frame), ActivityTracker(), None, None, stats)
+
+    report = stats.report()
+    assert report["frame_size"] == [frame.shape[1], frame.shape[0]]
+    assert report["picture_scale"] == pytest.approx(scale, abs=0.05)
+    assert report["cell_px"] == pytest.approx(scale * 10, abs=0.5)
+    assert report["readable_ratio"]["samples"] == 1
+
+
+def test_disconnected_device_reports_no_frame_size_but_keeps_history():
+    import numpy as np
+
+    server = TcpJsonServer(device_registry=make_registry())
+    server._slot("DFU-01").stats.record(READABLE, np.zeros((220, 752, 3), dtype=np.uint8), now=0.0)
+
+    row = next(row for row in server._station_rows() if row["device"] == "DFU-01")
+
+    assert row["is_connected"] is False
+    assert row["frame_size"] is None
+    assert row["readable_ratio"]["samples"] == 1
 
 
 def test_inspect_round_records_its_one_read():

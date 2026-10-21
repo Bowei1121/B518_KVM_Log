@@ -360,7 +360,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `kvm_pool` | object | `active_connections`、`cached_ips` |
 | `freeze_guard` | object | 凍結檢查狀態 |
 | `stations` | array of object | 各設備的 `station`、`device`、`kvm_ip`、`status`（`BUSY`／`FROZEN`／`IDLE`／`DISCONNECTED`）等 |
-| `stations[].frame_size` | array or null | 最近一次讀取的影格 `[寬, 高]`（像素）。尚無讀取為 `null` |
+| `stations[].frame_size` | array or null | 最近一次讀取的影格 `[寬, 高]`（像素）。尚無讀取，或設備未連線（`is_connected` 為 `false`）時為 `null` |
 | `stations[].picture_scale` | number or null | 最近一次讀取換算的比例（Log Solution 1.3 基準單位→像素），四捨五入到 0.001。最近一次讀取未定位（無法換算）或尚無讀取為 `null` |
 | `stations[].cell_px` | number or null | 標記小格像素，`picture_scale` × 10，四捨五入到 0.001。`picture_scale` 為 `null` 時也為 `null` |
 | `stations[].last_reading` | object or null | 最近一次讀取：`reason`（可靠時為 `""`，否則為實際不可見原因，例如 `locators_missing_or_ambiguous`）、`age_sec`（距今秒數）。尚無讀取為 `null` |
