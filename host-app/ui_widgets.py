@@ -74,10 +74,12 @@ def pin_light_appearance(window: tk.Misc) -> None:
     """
     if sys.platform != "darwin":
         return
-    _set_aqua(window)
-    if not isinstance(window, tk.Tk):
-        # Toplevels are re-pinned on map. The root is not: a <Map> handler on the root segfaults Tk 9 at startup.
-        window.bind("<Map>", lambda _event: _set_aqua(window), add="+")
+    if isinstance(window, tk.Tk):
+        # Root: call once the caller has realised it. A <Map> handler on the root segfaults Tk 9 at startup.
+        _set_aqua(window)
+        return
+    # Toplevel: the appearance can only be set once it is mapped, so pin on every map.
+    window.bind("<Map>", lambda _event: _set_aqua(window), add="+")
 
 
 def is_dark_appearance(window: tk.Misc) -> bool:

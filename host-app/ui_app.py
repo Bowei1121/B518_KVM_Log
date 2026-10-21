@@ -116,6 +116,7 @@ logger = logging.getLogger("MonitorUI")
 
 PATTERN_UNAVAILABLE_HINT = "無法製作模板：缺少影像處理元件（OpenCV）。詳見日誌。"
 STATION_ORDER = ("DFU", "FCT", "BT")
+CARDS_PER_ROW = 3
 
 
 # ==============================================================================
@@ -423,6 +424,7 @@ class AtlasUI(_BaseTk):
         self.title("Atlas2-518 Lightweight Monitor Client")
         self.configure(bg=WINDOW_BG)
         apply_light_ttk_style(self)
+        self.update_idletasks()  # Tk needs the root realised before its appearance can be set
         pin_light_appearance(self)
 
         # Fonts
@@ -701,16 +703,26 @@ class AtlasUI(_BaseTk):
             w.destroy()
         self._station_widgets.clear()
 
-        # One grid row per station (DFU, FCT, BT, then any other), so 9 devices fit in a 3x3 block.
-        rows: Dict[str, int] = {name: i for i, name in enumerate(STATION_ORDER)}
-        next_col: Dict[str, int] = {}
+        # Each station gets its own block of rows (DFU, FCT, BT, then any other), three cards per row.
+        counts: Dict[str, int] = {}
+        for st in self._stations:
+            name = str(st.get("station", "UNKNOWN"))
+            counts[name] = counts.get(name, 0) + 1
+        ordered = sorted(counts, key=lambda n: (STATION_ORDER.index(n) if n in STATION_ORDER else len(STATION_ORDER), n))
+        block_start: Dict[str, int] = {}
+        next_row = 0
+        for name in ordered:
+            block_start[name] = next_row
+            next_row += (counts[name] + CARDS_PER_ROW - 1) // CARDS_PER_ROW
+        seen: Dict[str, int] = {}
         for st in self._stations:
             st_name = str(st.get("station", "UNKNOWN"))
             dev_id = str(st.get("device", ""))
             status = str(st.get("status", "DISCONNECTED")).upper()
-            row = rows.setdefault(st_name, len(rows))
-            col = next_col.get(st_name, 0)
-            next_col[st_name] = col + 1
+            index = seen.get(st_name, 0)
+            seen[st_name] = index + 1
+            row = block_start[st_name] + index // CARDS_PER_ROW
+            col = index % CARDS_PER_ROW
 
             card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4, bg=WINDOW_BG)
             card.grid(row=row, column=col, sticky="nsew", padx=4, pady=2)

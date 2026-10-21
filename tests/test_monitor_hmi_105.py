@@ -270,6 +270,18 @@ def test_nine_stations_each_get_a_visible_grid_cell(ui):
     assert max(col for _row, col in cells) == 2 and max(row for row, _col in cells) == 2
 
 
+def test_more_than_three_cards_for_one_station_wrap_to_the_next_row(ui):
+    stations = [{"device": f"DFU-{n:02d}", "station": "DFU", "status": "IDLE"} for n in range(1, 5)]
+    stations.append({"device": "FCT-01", "station": "FCT", "status": "IDLE"})
+    ui._update_status_ui({"status": "ok", "stations": stations})
+    cells = {dev: (int(w["card"].grid_info()["row"]), int(w["card"].grid_info()["column"]))
+             for dev, w in ui._station_widgets.items()}
+    assert len(set(cells.values())) == 5
+    assert cells["DFU-03"] == (0, 2)
+    assert cells["DFU-04"] == (1, 0)   # fourth DFU starts row 2 of the DFU block
+    assert cells["FCT-01"] == (2, 0)   # FCT block starts after the two DFU rows
+
+
 def test_restart_failure_is_short_on_the_settings_page_and_full_in_the_log(ui, monkeypatch):
     import core_daemon
 
@@ -289,19 +301,28 @@ def test_restart_failure_is_short_on_the_settings_page_and_full_in_the_log(ui, m
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS appearance control")
-def test_every_window_is_light_even_in_dark_mode(ui, tmp_path):
+def test_every_window_is_light_even_in_dark_mode(ui, tmp_path, monkeypatch):
+    import numpy as np
+    import cv2
+
     import device_settings_window
+    from pattern_tools import PatternCropper
+    from stream_view import StreamerWindow
     from template_catalog import TemplateCatalog
 
-    # stream_view needs Pillow and OpenCV; environments without them still check the other windows.
-    stream_view = pytest.importorskip("stream_view")
+    catalog = TemplateCatalog(tmp_path / "template")
+    image_path = tmp_path / "capture.png"
+    cv2.imwrite(str(image_path), np.zeros((120, 160, 3), dtype=np.uint8))
 
+    # PhotoImage without a master uses Tk's default root; the app's first root is AtlasUI, so match that here.
+    monkeypatch.setattr(tk, "_default_root", ui)
     windows = [
-        ui_app.MatchResultsWindow(ui, TemplateCatalog(tmp_path / "template"), "DFU"),
+        ui_app.MatchResultsWindow(ui, catalog, "DFU"),
         device_settings_window.DeviceSettingsWindow(
             ui, client=None, path=tmp_path / "devices.json", restart_core=lambda: {"status": "ok"}
         ),
-        stream_view.StreamerWindow(ui, frame_getter=lambda: None),
+        StreamerWindow(ui, frame_getter=lambda: None),
+        PatternCropper(ui, catalog, str(image_path), device="DFU", template_key="window"),
     ]
     try:
         ui.update_idletasks()  # maps the toplevels, as the mainloop would
