@@ -23,7 +23,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "log_solution_1_3"
 
 COLORS = {
     "PASS": (0, 239, 0), "FAIL": (0, 0, 255), "TESTING": (0, 255, 255),
-    "NOTEST": (240, 75, 240), "WAITING": (217, 217, 217),
+    "NOTEST": (241, 75, 240), "WAITING": (217, 217, 217),
     "COMPLETING": (255, 199, 130), "STOPPED": (191, 191, 191),
     "TIMEOUT": (0, 153, 255),
 }
