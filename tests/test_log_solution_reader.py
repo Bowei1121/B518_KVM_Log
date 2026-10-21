@@ -295,6 +295,52 @@ def test_shrunk_below_readable_cell_size_is_unreadable(scale):
     assert obs.reason == "locators_missing_or_ambiguous"
 
 
+def render_resampled(state, statuses, px_per_unit, heartbeat=0, origin=(12, 12)):
+    """Contract 1.3 drawn at 2 px per unit, then INTER_AREA-resampled: a scaled desktop or a 720p stream.
+
+    The resulting picture is blended at every edge, so the reader sees white holes that grow and
+    black rings that shrink by a pixel or two. ``origin`` shifts the app across pixel phases.
+    """
+    image = render_frame(state, statuses, scale=2, origin=origin, heartbeat=heartbeat)
+    factor = px_per_unit / 2.0
+    size = (round(image.shape[1] * factor), round(image.shape[0] * factor))
+    return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+
+
+@pytest.mark.parametrize("px_per_unit", [1.2, 4 / 3, 1.5, 0.75])
+def test_resampled_four_status_frame_reads_at_every_pixel_phase(px_per_unit):
+    statuses = ["TESTING", "PASS", "FAIL", "WAITING"]
+    for origin in range(6, 14):
+        obs = inspect_app_frame(render_resampled(MarkerState.MONITORING, statuses, px_per_unit,
+                                                 heartbeat=5, origin=(origin, origin)), 10, 10)
+
+        assert obs.reliable, (origin, obs.reason)
+        assert obs.state == MarkerState.MONITORING
+        assert obs.capacity == 4
+        assert obs.statuses == tuple(statuses)
+        assert obs.heartbeat == heartbeat_bits(5)
+
+
+@pytest.mark.parametrize("px_per_unit", [1.2, 4 / 3, 1.5, 0.75])
+def test_resampled_two_row_frame_reads_capacity_twenty_and_heartbeat(px_per_unit):
+    statuses = ["PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"] * 4
+    obs = inspect_app_frame(render_resampled(MarkerState.COMPLETE, statuses, px_per_unit, heartbeat=12), 10, 10)
+
+    assert obs.reliable, obs.reason
+    assert obs.state == MarkerState.COMPLETE
+    assert obs.capacity == 20
+    assert obs.statuses == tuple(statuses)
+    assert obs.heartbeat == heartbeat_bits(12)
+
+
+def test_resampled_below_locator_floor_stays_unreadable():
+    # 0.667 px per unit: the locator is 14.7 px, under the 0.70 scale floor. Unreadable, never misread.
+    obs = inspect_app_frame(render_resampled(MarkerState.MONITORING, ["PASS"] * 4, 2 / 3), 10, 10)
+
+    assert not obs.reliable
+    assert obs.reason == "locators_missing_or_ambiguous"
+
+
 @pytest.mark.parametrize("counter", range(16))
 def test_heartbeat_cells_report_all_sixteen_counter_states(counter):
     obs = inspect_app_frame(render_frame(MarkerState.STANDBY, ["WAITING"] * 4, heartbeat=counter), 10, 10)

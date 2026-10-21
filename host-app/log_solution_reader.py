@@ -140,13 +140,13 @@ def _locator_candidates(frame):
         while child >= 0:
             ix, iy, iw, ih = cv2.boundingRect(contours[child])
             expected_size = LOCATOR_INSET_SIZE * scale
-            if (abs(iw - expected_size) <= max(3, scale * 0.20)
-                    and abs(ih - expected_size) <= max(3, scale * 0.20)):
+            if (abs(iw - expected_size) <= max(4, scale * 0.35)
+                    and abs(ih - expected_size) <= max(4, scale * 0.35)):
                 for expected, target in ((LEFT_LOCATOR[2], left), (RIGHT_LOCATOR[2], right)):
                     offset = expected * scale
-                    if (abs((ix - x) - offset) <= max(2, scale * 0.20)
-                            and abs((iy - y) - offset) <= max(2, scale * 0.20)):
-                        target.append((x, y, scale))
+                    if (abs((ix - x) - offset) <= max(3, scale * 0.35)
+                            and abs((iy - y) - offset) <= max(3, scale * 0.35)):
+                        target.append((x, y, scale, ix + iw / 2.0, iy + ih / 2.0))
             child = hierarchy[child][0]
     return left, right
 
@@ -154,8 +154,8 @@ def _locator_candidates(frame):
 def _locate_app(frame):
     left, right = _locator_candidates(frame)
     pairs = []
-    for lx, ly, ls in left:
-        for rx, ry, rs in right:
+    for lx, ly, ls, lcx, lcy in left:
+        for rx, ry, rs, rcx, rcy in right:
             scale = (rx - lx) / float(LOCATOR_DISTANCE)
             expected_dx = LOCATOR_DISTANCE * scale
             tolerance = max(3.0, expected_dx * 0.035)
@@ -163,10 +163,15 @@ def _locate_app(frame):
                     and abs(ry - ly) <= max(3.0, scale * 0.12)
                     and abs(ls - rs) <= scale * 0.08
                     and abs(((ls + rs) / 2.0) - scale) <= scale * 0.08):
-                pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly),
-                              (lx - LEFT_LOCATOR[0] * scale + rx - RIGHT_LOCATOR[0] * scale) / 2.0,
-                              (ly - LEFT_LOCATOR[1] * scale + ry - RIGHT_LOCATOR[1] * scale) / 2.0,
-                              scale))
+                # Hole centres, not outer corners, anchor the origin: a dark desktop neighbour
+                # widens the outer box, while blur moves the hole centre by about a pixel at most.
+                hole_dx = RIGHT_LOCATOR[0] + 15 - (LEFT_LOCATOR[0] + 7)
+                hole_scale = (rcx - lcx) / float(hole_dx)
+                x = ((lcx - (LEFT_LOCATOR[0] + 7) * hole_scale)
+                     + (rcx - (RIGHT_LOCATOR[0] + 15) * hole_scale)) / 2.0
+                y = ((lcy - (LEFT_LOCATOR[1] + 7) * hole_scale)
+                     + (rcy - (RIGHT_LOCATOR[1] + 15) * hole_scale)) / 2.0
+                pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly), x, y, hole_scale))
     if not pairs:
         return None
     _, x, y, scale = min(pairs, key=lambda item: item[0])
