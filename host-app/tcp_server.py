@@ -73,6 +73,11 @@ except ImportError:
 
 logger = logging.getLogger("TcpJsonServer")
 
+
+def _flow_log(en, zh=None):
+    """流程回呼：英文是 Log 本文，中文放進 extra["zh"]（issue #106 雙語格式）。"""
+    logger.info(en, extra={"zh": en if zh is None else zh})
+
 try:
     from core_protocol import COMMON_FIELDS, ENVELOPE_KEYS, PROTOCOL_VERSION
 except ImportError:
@@ -443,7 +448,7 @@ class TcpJsonServer:
             elif isinstance(frame, str):
                 img_b64 = base64.b64encode(frame.encode("utf-8")).decode("ascii")
         except Exception as exc:
-            logger.warning("Failed to encode frame to base64: %s", exc)
+            logger.warning("Failed to encode frame to base64: %s", exc, extra={"zh": "影格轉 base64 失敗: %s"})
 
         return {
             "status": "ok",
@@ -483,10 +488,11 @@ class TcpJsonServer:
             return await asyncio.wait_for(asyncio.wrap_future(future), timeout=self.inspection_timeout_sec)
         except asyncio.TimeoutError:
             logger.debug("Inspection for %s exceeded %.3f s; reported as unknown", slot.device_id,
-                         self.inspection_timeout_sec)
+                         self.inspection_timeout_sec,
+                         extra={"zh": "%s 檢視逾時（超過 %.3f 秒），回報為未知"})
             return Reading.unknown("inspection_timeout")
         except Exception as exc:
-            logger.exception("Inspection error for %s", slot.device_id)
+            logger.exception("Inspection error for %s", slot.device_id, extra={"zh": "%s 檢視發生錯誤"})
             return Reading.failed("internal_error", f"inspection error: {exc}")
 
     @staticmethod
@@ -601,7 +607,7 @@ class TcpJsonServer:
 
         try:
             result = await ctx.operation(ctx.kvm, template_root=self._template_root(),
-                                         log=logger.info, diagnostics_key=ctx.entry.device_id)
+                                         log=_flow_log, diagnostics_key=ctx.entry.device_id)
         except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc)}
         return {"status": "ok", "data": result}
@@ -622,7 +628,7 @@ class TcpJsonServer:
             result = await run_monitor_start(
                 ctx.kvm, slot.gate, template_root=template_root,
                 confirm_sec=self.monitor_confirm_sec, start_timeout_sec=args,
-                log=logger.info, diagnostics_key=ctx.entry.device_id,
+                log=_flow_log, diagnostics_key=ctx.entry.device_id,
                 on_preparing=slot.round.note_start, on_shortcut=slot.round.note_start)
         except FlowError as exc:
             # monitor_not_started keeps the round-start request. Only a later taken or
@@ -642,7 +648,7 @@ class TcpJsonServer:
 
         try:
             result = await ctx.operation(ctx.kvm, ctx.entry.channels, args, template_root=self._template_root(),
-                                         log=logger.info, diagnostics_key=ctx.entry.device_id)
+                                         log=_flow_log, diagnostics_key=ctx.entry.device_id)
         except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
@@ -686,7 +692,8 @@ class TcpJsonServer:
                 writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
             )
             if is_client_gone:
-                logger.info("Client disconnected during check for device %s", entry.device_id)
+                logger.info("Client disconnected during check for device %s", entry.device_id,
+                        extra={"zh": "檢查期間用戶端已中斷，設備 %s"})
                 return {"status": "cancelled", "error": "client_disconnected"}
             if not self._is_running or (self._shutdown_event and self._shutdown_event.is_set()):
                 return {"status": "error", "error": "server_shutting_down"}
@@ -801,6 +808,7 @@ class TcpJsonServer:
                     device_id,
                     spec.name,
                     req_id,
+                    extra={"zh": "設備 %s 忙碌中，拒絕指令 '%s' (req_id=%s)"},
                 )
                 return {
                     "req_id": req_id,
@@ -820,7 +828,8 @@ class TcpJsonServer:
                 kvm_client = await self.kvm_pool.acquire_connection(kvm_ip)
                 leased_kvm_ip = kvm_ip
             except Exception as exc:
-                logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id)
+                logger.exception("Failed to establish KVM connection to '%s' (req_id=%s)", kvm_ip, req_id,
+                                 extra={"zh": "建立 KVM 連線失敗 '%s' (req_id=%s)"})
                 if device_id is not None and spec.takes_lock:
                     self.lock_manager.release(device_id)
                 err_resp = {
@@ -865,7 +874,7 @@ class TcpJsonServer:
                 resp["device"] = device_id
             return resp
         except Exception as exc:
-            logger.exception("Error executing command '%s'", spec.name)
+            logger.exception("Error executing command '%s'", spec.name, extra={"zh": "執行指令 '%s' 時發生錯誤"})
             err_resp = {
                 "req_id": req_id,
                 "status": "error",
@@ -968,7 +977,7 @@ class TcpJsonServer:
         """Handle individual client connection with newline-delimited stream."""
         self._active_writers.add(writer)
         peer = writer.get_extra_info("peername")
-        logger.info("Client connected: %s", peer)
+        logger.info("Client connected: %s", peer, extra={"zh": "用戶端已連線: %s"})
 
         try:
             while not reader.at_eof() and self._is_running:
@@ -986,7 +995,8 @@ class TcpJsonServer:
         except (ConnectionError, OSError):
             pass
         except Exception:
-            logger.exception("Unexpected error in client session with %s", peer)
+            logger.exception("Unexpected error in client session with %s", peer,
+                             extra={"zh": "與 %s 的用戶端工作階段發生未預期錯誤"})
         finally:
             self._active_writers.discard(writer)
             try:
@@ -994,7 +1004,7 @@ class TcpJsonServer:
                 await writer.wait_closed()
             except Exception:
                 pass
-            logger.info("Client disconnected: %s", peer)
+            logger.info("Client disconnected: %s", peer, extra={"zh": "用戶端已中斷: %s"})
 
     async def _run_server_async(self) -> None:
         """Async main loop for starting and running the server."""
@@ -1025,12 +1035,13 @@ class TcpJsonServer:
         await self.kvm_pool.start()
         self._start_event.set()
 
-        logger.info("TcpJsonServer listening on %s:%s", *self.server_address)
+        logger.info("TcpJsonServer listening on %s:%s", *self.server_address,
+                    extra={"zh": "TcpJsonServer 監聽於 %s:%s"})
 
         # Wait until shutdown signal
         await self._shutdown_event.wait()
 
-        logger.info("TcpJsonServer shutting down...")
+        logger.info("TcpJsonServer shutting down...", extra={"zh": "TcpJsonServer 關閉中..."})
         self._is_running = False
 
         # Close all active KVM connections in pool
@@ -1049,7 +1060,7 @@ class TcpJsonServer:
                 pass
         self._active_writers.clear()
 
-        logger.info("TcpJsonServer stopped cleanly.")
+        logger.info("TcpJsonServer stopped cleanly.", extra={"zh": "TcpJsonServer 已正常停止。"})
 
     def start(self) -> None:
         """Start the server in a background thread."""

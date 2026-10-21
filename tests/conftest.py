@@ -23,3 +23,16 @@ def isolated_user_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv(DEVICES_FILE_ENV, raising=False)
     return home
+
+
+@pytest.fixture(autouse=True)
+def monitor_ui_language_default():
+    """The Monitor UI language is process-wide: each test starts and ends on the English default (#106)."""
+    try:
+        import ui_i18n
+    except ImportError:  # no Tk in this interpreter: there is no language to reset
+        yield
+        return
+    ui_i18n.set_language(ui_i18n.DEFAULT_LANGUAGE)
+    yield
+    ui_i18n.set_language(ui_i18n.DEFAULT_LANGUAGE)

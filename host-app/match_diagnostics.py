@@ -7,6 +7,27 @@ from pathlib import Path
 import cv2
 
 
+def _bilingual_note(note):
+    """Store ``note`` as ``{"en", "zh"}``. A missing zh falls back to en; a plain string is kept in both."""
+    if note is None:
+        return {"en": "", "zh": ""}
+    if isinstance(note, dict):
+        en = note.get("en", "")
+        return {"en": en, "zh": note.get("zh") or en}
+    return {"en": note, "zh": note}
+
+
+def note_for_language(note, lang):
+    """The note text for ``lang`` (``"en"`` or ``"zh"``).
+
+    ``note`` is ``{"en": ..., "zh": ...}`` (an empty or missing language falls back to en) or a legacy plain
+    string, returned as-is.
+    """
+    if isinstance(note, dict):
+        return note.get(lang) or note.get("en", "")
+    return "" if note is None else note
+
+
 class MatchDiagnostics:
     """One-run recorder with a small interface for matching flow code."""
 
@@ -31,7 +52,7 @@ class MatchDiagnostics:
         with summary.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
-    def record(self, key, score, threshold, frame=None, box=None, note="", color=(0, 200, 255)):
+    def record(self, key, score, threshold, frame=None, box=None, note=None, color=(0, 200, 255)):
         matched = score is not None and box is not None and score >= threshold
         image_name = ""
         if frame is not None:
@@ -50,7 +71,7 @@ class MatchDiagnostics:
             "threshold": threshold,
             "matched": matched,
             "box": list(box) if box is not None else None,
-            "note": note,
+            "note": _bilingual_note(note),
             "image": image_name,
         })
 

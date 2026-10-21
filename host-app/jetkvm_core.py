@@ -197,7 +197,8 @@ class JetKVMClient:
                 f = await track.recv()
             except Exception as exc:
                 self._track_ended = True
-                logger.warning("KVM 影像軌道結束 (host=%s): %s", self.host, exc)
+                logger.warning("KVM video track ended (host=%s): %s", self.host, exc,
+                               extra={"zh": "KVM 影像軌道結束 (host=%s): %s"})
                 return
             decoded = f.to_ndarray(format="bgr24")
             presentation_time = None
@@ -216,7 +217,8 @@ class JetKVMClient:
     def _on_peer_state(self, state):
         self._peer_state = state
         if state in ("failed", "closed"):
-            logger.warning("KVM peer connection %s (host=%s)", state, self.host)
+            logger.warning("KVM peer connection %s (host=%s)", state, self.host,
+                           extra={"zh": "KVM 對等連線 %s (host=%s)"})
 
     def is_healthy(self) -> bool:
         """False only when the session is dead: the video track ended, or the peer connection failed or closed.

@@ -10,11 +10,12 @@ import os
 import socket
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from device_registry import default_registry_path, validate_device_data
+from ui_i18n import t
 
 B518_PLANNED_CHANNELS = 4
 B518_PLANNED_DEVICES = (
@@ -55,9 +56,9 @@ def load_state(path: Optional[Path] = None) -> ListState:
     try:
         data = json.loads(file_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        return ListState(rows=[], prefilled=False, load_error=f"無法讀取設備清單 {file_path}: {exc}")
+        return ListState(rows=[], prefilled=False, load_error=t("ed_read_fail", path=file_path, error=exc))
     if not isinstance(data, dict):
-        return ListState(rows=[], prefilled=False, load_error="設備清單必須是以設備 ID 為 key 的 JSON 物件")
+        return ListState(rows=[], prefilled=False, load_error=t("ed_not_object"))
     rows = []
     for device, raw in data.items():
         raw = raw if isinstance(raw, dict) else {}
@@ -73,16 +74,16 @@ def load_state(path: Optional[Path] = None) -> ListState:
 def validate_rows(rows: List[Dict[str, Any]]) -> Dict[Any, List[str]]:
     """Errors keyed by row index; FORM_ERROR for problems that belong to the whole list."""
     if not rows:
-        return {FORM_ERROR: ["設備清單不可為空"]}
+        return {FORM_ERROR: [t("ed_empty")]}
     errors: Dict[Any, List[str]] = {}
     first_row_of: Dict[str, int] = {}
     for index, row in enumerate(rows):
         device = str(row.get("device", "")).strip()
         if device == "":
-            errors.setdefault(index, []).append("設備 ID 不可為空")
+            errors.setdefault(index, []).append(t("ed_id_empty"))
             continue
         if device in first_row_of:
-            errors.setdefault(index, []).append(f"設備 ID 重複（與第 {first_row_of[device] + 1} 列相同）")
+            errors.setdefault(index, []).append(t("ed_id_dup", row=first_row_of[device] + 1))
             continue
         first_row_of[device] = index
 
@@ -122,7 +123,7 @@ def to_registry_json(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 class SaveRefused(Exception):
     def __init__(self, errors: Dict[Any, List[str]]) -> None:
-        super().__init__("設備清單有錯誤，未寫入檔案")
+        super().__init__(t("ed_refused"))
         self.errors = errors
 
 
@@ -158,6 +159,12 @@ class ProbeResult:
     ok: bool
     latency_ms: Optional[float]
     message: str
+    key: str = ""  # message's STRINGS key, so the settings page can re-word it on a language switch
+    kwargs: Dict[str, Any] = field(default_factory=dict)
+
+    def text(self) -> str:
+        """The message in the current language (falls back to the stored message)."""
+        return t(self.key, **self.kwargs) if self.key else self.message
 
 
 def probe_kvm(ip: str, timeout: float = 2.0, port: int = KVM_HTTP_PORT,
@@ -168,11 +175,12 @@ def probe_kvm(ip: str, timeout: float = 2.0, port: int = KVM_HTTP_PORT,
         with connect((ip, port), timeout=timeout):
             pass
     except socket.timeout:
-        return ProbeResult(False, None, f"逾時（{timeout:g} 秒）")
+        return ProbeResult(False, None, t("ed_probe_timeout", seconds=timeout),
+                           "ed_probe_timeout", {"seconds": timeout})
     except OSError as exc:
-        return ProbeResult(False, None, f"無法連線: {exc}")
+        return ProbeResult(False, None, t("ed_probe_fail", error=exc), "ed_probe_fail", {"error": exc})
     latency = round((time.monotonic() - started) * 1000, 1)
-    return ProbeResult(True, latency, f"連線成功 {latency} ms")
+    return ProbeResult(True, latency, t("ed_probe_ok", ms=latency), "ed_probe_ok", {"ms": latency})
 
 
 def restart_refusal(stations: List[Dict[str, Any]]) -> Optional[str]:
@@ -180,4 +188,4 @@ def restart_refusal(stations: List[Dict[str, Any]]) -> Optional[str]:
     busy = [str(st.get("device", "")) for st in stations if st.get("is_busy")]
     if not busy:
         return None
-    return "以下設備正在執行動作，不能重啟 Core: " + "、".join(busy)
+    return t("ed_restart_busy", names=t("sep_list").join(busy))

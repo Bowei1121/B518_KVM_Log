@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import re
 from logging.handlers import TimedRotatingFileHandler
@@ -23,6 +24,7 @@ for p in (str(_HOST_APP_DIR), str(_TOOLS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from bilingual_log import BilingualFormatter  # noqa: E402
 from core_daemon import (
     find_pids_on_port,
     force_kill_core_service,
@@ -85,7 +87,7 @@ def test_headless_import_and_no_tkinter_dependency():
 
 
 def test_rotating_file_logging(tmp_path: Path):
-    """Verify rotating log files record timestamps, levels, PIDs and rotate properly."""
+    """Verify rotating log files record bilingual lines and rotate properly."""
     log_file = tmp_path / "test_service.log"
     logger = setup_rotating_logging(
         log_file=log_file,
@@ -102,10 +104,11 @@ def test_rotating_file_logging(tmp_path: Path):
     assert log_file.exists()
     content = log_file.read_text(encoding="utf-8")
 
-    # Verify log format: timestamp, log level, logger name, PID
-    # e.g.: 2026-10-06 17:40:00 [INFO] [TestRotatingLogger] [PID:12345]: Test log entry ...
+    # Verify the bilingual line: HH:MM:SS | EN | 中文 (no date; the file is already one per day).
+    # Without a zh template the Chinese column repeats the English text.
     pattern = re.compile(
-        r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[(INFO|DEBUG|WARNING|ERROR)\] \[TestRotatingLogger\] \[PID:\d+\]: Test log entry",
+        r"^\d{2}:\d{2}:\d{2} \| Test log entry iteration number \d+ - long message payload padding \| "
+        r"Test log entry iteration number \d+ - long message payload padding$",
         re.MULTILINE,
     )
     assert pattern.search(content) is not None, f"Pattern not found in log content:\n{content}"
@@ -475,3 +478,22 @@ def test_send_tcp_command_half_line_then_disconnect():
     with pytest.raises(ConnectionError):
         send_tcp_command("ping", host="127.0.0.1", port=port, timeout=2.0)
     thread.join(timeout=2)
+
+
+def test_rotating_logging_installs_bilingual_formatter(tmp_path: Path):
+    """Both the file and the console handler render the bilingual ``HH:MM:SS | EN | 中文`` line."""
+    logger = setup_rotating_logging(
+        log_file=tmp_path / "bilingual.log",
+        console=True,
+        logger_name="TestBilingualFormatterHandlers",
+    )
+    try:
+        handlers = [h for h in logger.handlers]
+        assert any(isinstance(h, TimedRotatingFileHandler) for h in handlers)
+        assert any(isinstance(h, logging.StreamHandler) and not isinstance(h, TimedRotatingFileHandler)
+                   for h in handlers)
+        assert all(isinstance(h.formatter, BilingualFormatter) for h in handlers)
+    finally:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
