@@ -37,7 +37,11 @@ jobs:
 
       - name: Run pytest
         shell: bash
-        run: python -m pytest -o faulthandler_timeout=120 -q
+        # test_replay_load / test_test_isolation import POSIX-only `resource` / `pwd`, so they cannot be collected on Windows.
+        # They stay in the macOS/local run. Everything else runs here.
+        run: >
+          python -m pytest -o faulthandler_timeout=120 -q
+          --ignore=tests/test_replay_load.py --ignore=tests/test_test_isolation.py
 
   build:
     runs-on: windows-latest
