@@ -13,3 +13,6 @@ logs/
 *.log
 *.pid
 run/
+
+# issue #115: generated per CI build (tools/write_build_info.py)
+host-app/_build_info.py

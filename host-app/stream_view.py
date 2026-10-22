@@ -17,7 +17,7 @@ import cv2
 from PIL import Image, ImageTk
 
 from ui_i18n import bind
-from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, pin_light_appearance
+from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, apply_window_icon, pin_light_appearance
 
 # Tkinter keysym -> USB HID usage code
 _KEYSYM_HID = {}
@@ -77,6 +77,7 @@ class StreamerWindow(tk.Toplevel):
         self.resizable(True, True)
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
+        apply_window_icon(self)
 
         self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)

@@ -3,7 +3,7 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = []
+datas = [('assets', 'assets')]  # logo and bridge icon, read via app_info.asset_path (issue #115)
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('rapidocr_onnxruntime')
@@ -49,6 +49,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Windows exe icon (issue #115). macOS takes its icon from the .app bundle.
+    icon='assets/bridge.ico' if sys.platform.startswith('win') else None,
 )
 coll = COLLECT(
     exe,
