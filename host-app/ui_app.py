@@ -656,8 +656,9 @@ class AtlasUI(_BaseTk):
         bind(view_frame, "view_title")
         view_frame.grid(row=0, column=0, sticky="nsew")
 
+        preview_w, preview_h = self._preview_size()
         self.canvas_preview = tk.Canvas(
-            view_frame, bg=PREVIEW_BG, width=400, height=225, highlightthickness=0
+            view_frame, bg=PREVIEW_BG, width=preview_w, height=preview_h, highlightthickness=0
         )
         self.canvas_preview.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -811,23 +812,26 @@ class AtlasUI(_BaseTk):
         except Exception:  # missing file, unreadable PNG, or Tk refusing it: the text logo takes over
             return None
 
-    def _fit_window(self) -> None:
-        """Open at 85% of the screen height and as wide as the content needs, in both languages (issue #115).
+    def _preview_size(self) -> Tuple[int, int]:
+        """Live-view size in pixels: 480×270 at 100% DPI, growing with the DPI so it never becomes a small box (#115)."""
+        factor = (self._tk_scaling or (4 / 3)) / (4 / 3)
+        return round(480 * factor), round(270 * factor)
 
-        Both languages are measured so a switch to the longer text never cuts a label or button. The
-        minimum size is the same measure, so the window cannot be dragged smaller than its content.
+    def _fit_window(self) -> None:
+        """Open at max(content, 50% of screen width) and max(content, 85% of screen height) (issue #115 decision).
+
+        Both languages are measured so a switch to the longer text never cuts a label or button. The content
+        measure is also the minimum size, so the window cannot be dragged smaller than its content.
         """
         self._dash_measuring = True
         self._size_dashboard()
         width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
         self._dash_measuring = False
         self._size_dashboard()
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        width = min(width, screen_w)
-        height = min(height, screen_h)
         self.minsize(width, height)
-        self.geometry(f"{width}x{max(height, int(screen_h * 0.85))}")
+        open_w = max(width, int(self.winfo_screenwidth() * 0.5))
+        open_h = max(height, int(self.winfo_screenheight() * 0.85))
+        self.geometry(f"{open_w}x{open_h}")
 
     def _size_dashboard(self) -> None:
         """Dashboard box height: its content, up to the cap; the full cap while the window size is being measured."""

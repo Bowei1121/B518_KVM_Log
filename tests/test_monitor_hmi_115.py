@@ -154,6 +154,10 @@ def test_no_fixed_button_widths_so_labels_never_get_cut():
 
 
 # ---------------------------------------------------------------- Tk behaviour
+#
+# Supported matrix, decided by the user on 2026-10-22 (issue #115 comment): the ATE station is 1920×1080; the field
+# laptop is 2880×1800. Each case replaces the screen size and the Tk scaling, so the CI runner's real 1024×768
+# screen does not decide the result. Tk's scaling is points-to-pixels: DPI/72 = 4/3, 5/3, 2.0, 8/3 for 100/125/150/200%.
 
 try:
     # Kept alive on purpose: destroying a Tk root before AtlasUI() segfaults Tk 9 (repo .venv).
@@ -164,6 +168,17 @@ except tk.TclError:
 
 import ui_app  # noqa: E402
 
+SUPPORTED = [
+    ((1920, 1080), 4 / 3),
+    ((1920, 1080), 5 / 3),
+    ((2880, 1800), 4 / 3),
+    ((2880, 1800), 5 / 3),
+    ((2880, 1800), 2.0),
+    ((2880, 1800), 8 / 3),
+]
+SUPPORTED_IDS = [f"{w}x{h}@{round(scale * 75)}%" for (w, h), scale in SUPPORTED]
+FIELD_LAPTOP = ((2880, 1800), 4 / 3)
+
 
 def _walk(widget):
     yield widget
@@ -171,11 +186,17 @@ def _walk(widget):
         yield from _walk(child)
 
 
-def _fake_scaling(monkeypatch, scale):
-    """Stand in for the Windows DPI call: set the Tk scaling the way a 100/125/150/200% screen would."""
+def _simulate(monkeypatch, screen, scale):
+    """Stand in for the real screen and the Windows DPI call: this screen size and this Tk scaling."""
+    width, height = screen
+    monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenwidth", lambda self: width)
+    monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenheight", lambda self: height)
+
     def apply(root):
+        root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
         root.tk.call("tk", "scaling", scale)
         return scale
+
     monkeypatch.setattr(ui_app, "apply_windows_tk_scaling", apply)
 
 
@@ -185,8 +206,8 @@ def make_ui(monkeypatch):
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
 
-    def build(scale=1.0):
-        _fake_scaling(monkeypatch, scale)
+    def build(screen=FIELD_LAPTOP[0], scale=FIELD_LAPTOP[1]):
+        _simulate(monkeypatch, screen, scale)
         app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
         created.append(app)
         app.update_idletasks()  # layout and mapping without the full event loop (see the note in the fixture)
@@ -203,6 +224,20 @@ def make_ui(monkeypatch):
     # Tk objects freed on a worker thread abort the process (macOS): collect here, on the main thread.
     created.clear()
     gc.collect()
+
+
+def _spy_geometry(monkeypatch):
+    """Record the size each window asked for. Tk clamps winfo_* to the real screen, so this is the only honest number."""
+    requested = []
+    original = ui_app.AtlasUI.geometry
+
+    def spy(self, *args):
+        if args:
+            requested.append(args[0])
+        return original(self, *args)
+
+    monkeypatch.setattr(ui_app.AtlasUI, "geometry", spy)
+    return requested
 
 
 def _log_lines_visible(app):
@@ -222,64 +257,68 @@ def _truncated(window):
     return cut
 
 
-# Tk scaling is points-to-pixels: Windows 100/125/150/200% = DPI/72 = 1.333 / 1.667 / 2.0 / 2.667.
-WINDOWS_SCALINGS = [4 / 3, 5 / 3, 2.0, 8 / 3]
+def _context(app, screen, scale, lang):
+    """What the failure message must show: the simulated screen, and the real one Tk reports (issue #115 decision)."""
+    real = (app.tk.call("winfo", "screenwidth", "."), app.tk.call("winfo", "screenheight", "."))
+    return (f"lang={lang} simulated_screen={screen} real_screen={real} scale={scale:.3f} "
+            f"window={app.winfo_width()}x{app.winfo_height()} "
+            f"required={app.winfo_reqwidth()}x{app.winfo_reqheight()}")
 
 
-@pytest.mark.parametrize("scale", WINDOWS_SCALINGS)
-def test_log_is_visible_with_six_lines_at_every_scaling(make_ui, monkeypatch, scale):
-    app = make_ui(scale)
-    assert _log_lines_visible(app) >= 6, scale
-    assert app.log_text.winfo_ismapped()
+@pytest.mark.parametrize(("screen", "scale"), SUPPORTED, ids=SUPPORTED_IDS)
+def test_log_is_visible_with_six_lines_in_every_supported_setting(make_ui, screen, scale):
+    app = make_ui(screen, scale)
+    assert _log_lines_visible(app) >= 6, _context(app, screen, scale, "en")
 
 
-@pytest.mark.parametrize("scale", WINDOWS_SCALINGS)
-def test_nothing_is_cut_off_in_either_language(make_ui, scale):
-    app = make_ui(scale)
+@pytest.mark.parametrize(("screen", "scale"), SUPPORTED, ids=SUPPORTED_IDS)
+def test_nothing_is_cut_off_in_either_language(make_ui, screen, scale):
+    app = make_ui(screen, scale)
     for lang in ("en", "zh"):
         ui_i18n.set_language(lang)
         app.update_idletasks()
-        screen = (app.winfo_screenwidth(), app.winfo_screenheight())
-        size = (app.winfo_width(), app.winfo_reqwidth(), app.winfo_height(), app.winfo_reqheight())
-        assert _truncated(app) == [], (scale, lang, "screen", screen, "width/req", size[:2], "height/req", size[2:])
-        assert app.winfo_width() >= app.winfo_reqwidth(), (scale, lang, "screen", screen, size)
-        assert app.winfo_height() >= app.winfo_reqheight(), (scale, lang, "screen", screen, size)
+        cut = _truncated(app)
+        assert cut == [], (_context(app, screen, scale, lang), cut)
+        # the content must fit the supported screen itself, not only the window Tk was given
+        assert app.winfo_reqwidth() <= screen[0], _context(app, screen, scale, lang)
+        assert app.winfo_reqheight() <= screen[1], _context(app, screen, scale, lang)
+        assert app.winfo_width() >= app.winfo_reqwidth(), _context(app, screen, scale, lang)
+        assert app.winfo_height() >= app.winfo_reqheight(), _context(app, screen, scale, lang)
     ui_i18n.set_language("en")
 
 
 def test_log_keeps_six_lines_even_when_the_window_is_shrunk_to_its_minimum(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     min_w, min_h = app.minsize()
     app.geometry(f"{min_w}x{min_h}")
     app.update_idletasks()
     assert _log_lines_visible(app) >= 6
 
 
-def test_window_opens_at_85_percent_of_a_tall_screen(make_ui, monkeypatch):
-    # The real opening height is 85% of the screen; a fake 2000 px screen makes that visible (1700).
-    monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenheight", lambda self: 2000)
-    requested = []  # the real screen is shorter and Tk clamps the window, so spy on the size that was asked for
-    original = ui_app.AtlasUI.geometry
-
-    def spy(self, *args):
-        if args:
-            requested.append(args[0])
-        return original(self, *args)
-
-    monkeypatch.setattr(ui_app.AtlasUI, "geometry", spy)
-    make_ui(1.0)
-    assert requested[-1].split("+")[0].split("x")[1] == "1700"
+def test_window_opens_at_85_percent_height_and_half_width(make_ui, monkeypatch):
+    requested = _spy_geometry(monkeypatch)
+    app = make_ui((2880, 1800), 4 / 3)
+    width, height = (int(v) for v in requested[-1].split("+")[0].split("x"))
+    assert height == max(app.minsize()[1], 1530)  # 85% of 1800, or the content if that is taller
+    assert width == max(app.minsize()[0], 1440)  # 50% of 2880, or the content if that is wider
 
 
-def test_window_opens_at_85_percent_of_screen_height_and_content_width(make_ui):
-    app = make_ui(1.0)
-    screen_h = app.winfo_screenheight()
-    assert app.winfo_height() >= min(int(screen_h * 0.85), screen_h)  # never shorter than 85% of the screen
-    assert app.minsize()[0] == min(app.winfo_reqwidth(), app.winfo_screenwidth())
+def test_window_is_never_narrower_than_its_content(make_ui, monkeypatch):
+    requested = _spy_geometry(monkeypatch)
+    app = make_ui((2880, 1800), 8 / 3)
+    width, height = (int(v) for v in requested[-1].split("+")[0].split("x"))
+    assert width == max(app.minsize()[0], 1440)
+    assert height == max(app.minsize()[1], 1530)
+
+
+def test_live_preview_scales_with_dpi_and_never_shrinks_to_a_small_box(make_ui):
+    assert make_ui((2880, 1800), 4 / 3).canvas_preview.winfo_reqwidth() == 480
+    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqwidth() == 960
+    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqheight() == 540
 
 
 def test_top_row_is_logo_left_then_lang_and_gear_right(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     header = app.btn_lang.master
     assert app.lbl_logo.master is header and app.btn_device_settings.master is header
     assert app.lbl_logo.winfo_x() < app.btn_lang.winfo_x() < app.btn_device_settings.winfo_x()
@@ -290,7 +329,7 @@ def test_top_row_is_logo_left_then_lang_and_gear_right(make_ui):
 
 
 def test_connection_row_keeps_refresh_and_lamp_and_has_no_gear(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     row = app.btn_connect.master
     assert app.light_core.master is row
     assert app.btn_device_settings.master is not row
@@ -298,7 +337,7 @@ def test_connection_row_keeps_refresh_and_lamp_and_has_no_gear(make_ui):
 
 
 def test_logo_tooltip_names_the_app_version_and_build(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     assert app._logo_tip.current_text() == app_info.about_text()
     assert "v0.1.00" in app._logo_tip.current_text()
     assert "build dev" in app._logo_tip.current_text()
@@ -306,37 +345,31 @@ def test_logo_tooltip_names_the_app_version_and_build(make_ui):
 
 def test_logo_is_scaled_to_the_dpi_and_falls_back_to_text(make_ui, monkeypatch):
     monkeypatch.setattr(ui_app.AtlasUI, "winfo_fpixels", lambda self, _n: 144.0)  # 150% screen
-    app = make_ui(1.0)
+    app = make_ui()
     assert app._logo_image.width() == round(137 * 1.5)
     assert app._logo_image.height() == round(35 * 1.5)
 
     monkeypatch.setattr(ui_app, "asset_path", lambda _name: ROOT / "no-such-logo.png")
-    fallback = make_ui(1.0)
+    fallback = make_ui()
     assert fallback._logo_image is None
     assert str(fallback.lbl_logo.cget("text")) == "FOXLINK"
 
 
 def test_log_opens_with_version_and_build_line(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     first = app.log_text.get("1.0", "1.end")
     assert "ATE - LabVIEW Bridge Monitor v0.1.00" in first
     assert app_info.build_label() in first
 
 
 def test_log_wraps_long_lines_instead_of_scrolling_sideways(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     assert str(app.log_text.cget("wrap")) == "word"
     assert not any(w.winfo_class() == "Scrollbar" and str(w.cget("orient")) == "horizontal" for w in _walk(app))
 
 
-def test_button_text_is_not_cut_in_the_live_view_row(make_ui):
-    app = make_ui(1.0)
-    for button in (app.btn_live_stream, app.btn_streamer_window, app.btn_snapshot):
-        assert button.winfo_reqwidth() <= button.winfo_width() or not button.winfo_ismapped()
-
-
 def test_empty_dashboard_says_what_to_do_in_both_languages(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     # Not connected yet: the hint explains why the list is blank.
     assert app._stations == []
     assert app.lbl_empty_hint.cget("text").startswith("Not connected")
@@ -349,42 +382,44 @@ def test_empty_dashboard_says_what_to_do_in_both_languages(make_ui):
 
 
 def test_empty_hint_goes_away_once_machines_are_shown(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     app._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "IDLE"}]})
     assert app.lbl_empty_hint is None
     app._update_status_ui({"status": "ok", "stations": []})
     assert app.lbl_empty_hint is not None
 
 
-def test_nine_machines_keep_six_log_lines_and_every_light_at_200_percent(make_ui):
+@pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 5 / 3)],
+                         ids=["2880x1800@200%", "1920x1080@125%"])
+def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale):
     # The B518 list is nine machines. Before the cap, they pushed the Log out of the window (issue #115 review).
-    app = make_ui(8 / 3)
+    app = make_ui(screen, scale)
     stations = [{"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
                 for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)]
     app._update_status_ui({"status": "ok", "stations": stations})
     app.update_idletasks()
-    assert _log_lines_visible(app) >= 6
+    assert _log_lines_visible(app) >= 6, _context(app, screen, scale, "en")
     assert int(app._dash_canvas.cget("height")) <= app._dash_cap
     lights = [w for w in _walk(app.stations_container) if isinstance(w, ui_app.StatusLight)]
-    assert len(lights) == 9  # the connection lamp is outside the dashboard
+    assert len(lights) == 9
     assert all(light.winfo_ismapped() for light in lights)
 
 
 def test_window_icon_images_are_kept_on_the_root(make_ui):
-    app = make_ui(1.0)
+    app = make_ui()
     images = getattr(app, "_atlas_icon_images")
     assert [img.width() for img in images] == [16, 32, 48]
 
 
 def test_runtime_self_test_passes_from_source(make_ui):
-    make_ui(1.0)  # a Tk root must exist for the image checks inside the self-test
+    make_ui()  # a Tk root must exist for the image checks inside the self-test
     assert ui_app.runtime_self_test() == []
 
 
 def test_device_settings_is_wide_enough_or_scrolls_sideways(make_ui, tmp_path):
     import device_settings_window
 
-    app = make_ui(1.0)
+    app = make_ui()
     settings = device_settings_window.DeviceSettingsWindow(app, client=None, path=tmp_path / "devices.json")
     try:
         settings.update_idletasks()
@@ -402,7 +437,7 @@ def test_device_settings_is_wide_enough_or_scrolls_sideways(make_ui, tmp_path):
 def test_device_settings_has_a_test_button_that_is_not_cut_in_either_language(make_ui, tmp_path):
     import device_settings_window
 
-    app = make_ui(1.0)
+    app = make_ui()
     settings = device_settings_window.DeviceSettingsWindow(app, client=None, path=tmp_path / "devices.json")
     try:
         settings._add_row()
