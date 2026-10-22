@@ -357,11 +357,12 @@ def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):
     app = make_ui((1920, 1080), 4 / 3)
     settings = device_settings_window.DeviceSettingsWindow(app, client=None, path=tmp_path / "devices.json")
     try:
-        settings.geometry("420x400")
+        settings.geometry("200x400")  # narrower than any table, so there is always something to scroll sideways
         for _ in range(30):
             settings._add_row()
         settings.update_idletasks()
         canvas = next(w for w in iter_widgets(settings) if w.winfo_class() == "Canvas")
+        assert settings.table.winfo_reqwidth() > canvas.winfo_width(), "premise: the table is wider than the canvas"
         assert canvas.xview()[1] < 1.0, "the table must be wider than its window, or there is nothing to scroll sideways"
         top = canvas.yview()[0]
         _wheel(canvas, -120)
