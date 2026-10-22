@@ -239,9 +239,11 @@ def test_nothing_is_cut_off_in_either_language(make_ui, scale):
     for lang in ("en", "zh"):
         ui_i18n.set_language(lang)
         app.update_idletasks()
-        assert _truncated(app) == [], (scale, lang)
-        assert app.winfo_width() >= app.winfo_reqwidth()
-        assert app.winfo_height() >= app.winfo_reqheight()
+        screen = (app.winfo_screenwidth(), app.winfo_screenheight())
+        size = (app.winfo_width(), app.winfo_reqwidth(), app.winfo_height(), app.winfo_reqheight())
+        assert _truncated(app) == [], (scale, lang, "screen", screen, "width/req", size[:2], "height/req", size[2:])
+        assert app.winfo_width() >= app.winfo_reqwidth(), (scale, lang, "screen", screen, size)
+        assert app.winfo_height() >= app.winfo_reqheight(), (scale, lang, "screen", screen, size)
     ui_i18n.set_language("en")
 
 

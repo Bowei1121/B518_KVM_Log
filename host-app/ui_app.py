@@ -603,7 +603,7 @@ class AtlasUI(_BaseTk):
         vscroll = tk.Scrollbar(txt_wrap, orient="vertical", bg=WINDOW_BG)
         self.log_text = tk.Text(
             txt_wrap,
-            height=8,
+            height=6,
             font=self.f_mono,
             bg=LOG_BG,
             fg=LOG_FG,
@@ -629,7 +629,7 @@ class AtlasUI(_BaseTk):
         # Machines scroll inside a box capped at 28% of the screen height, so nine machines cannot push the Log
         # out of view (issue #115 review). The cap is part of the measured minimum size, so it never shrinks the middle pane.
         self._dash_measuring = False
-        self._dash_cap = max(120, int(self.winfo_screenheight() * 0.28))
+        self._dash_cap = max(120, int(self.winfo_screenheight() * 0.22))
         dash_scroll = ttk.Scrollbar(dash_frame, orient="vertical")
         dash_scroll.pack(side="right", fill="y")
         self._dash_canvas = tk.Canvas(dash_frame, bg=WINDOW_BG, highlightthickness=0, yscrollcommand=dash_scroll.set)
@@ -657,17 +657,20 @@ class AtlasUI(_BaseTk):
         view_frame.grid(row=0, column=0, sticky="nsew")
 
         self.canvas_preview = tk.Canvas(
-            view_frame, bg=PREVIEW_BG, width=480, height=270, highlightthickness=0
+            view_frame, bg=PREVIEW_BG, width=400, height=225, highlightthickness=0
         )
         self.canvas_preview.pack(fill="both", expand=True, padx=4, pady=4)
 
-        view_bottom = tk.Frame(view_frame, bg=WINDOW_BG)
-        view_bottom.pack(fill="x", pady=(4, 0))
-
+        # Two rows (issue #115 review): the status line on its own, the buttons below it, so neither row needs
+        # the full width of the live view at once.
+        view_status = tk.Frame(view_frame, bg=WINDOW_BG)
+        view_status.pack(fill="x", pady=(4, 0))
         self.lbl_preview_info = tk.Label(
-            view_bottom, text=t("preview_none"), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
+            view_status, text=t("preview_none"), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_preview_info.pack(side="left", fill="x", expand=True)
+        view_bottom = tk.Frame(view_frame, bg=WINDOW_BG)
+        view_bottom.pack(fill="x", pady=(2, 0))
         bind(self.lbl_preview_info, "preview_none")
 
         self.btn_snapshot = tk.Button(
@@ -830,7 +833,9 @@ class AtlasUI(_BaseTk):
         """Dashboard box height: its content, up to the cap; the full cap while the window size is being measured."""
         inner = self.stations_container
         height = self._dash_cap if self._dash_measuring else min(inner.winfo_reqheight(), self._dash_cap)
-        self._dash_canvas.configure(height=height, scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
+        # The canvas asks for the content's width too, so the window measure includes it and nothing is cut.
+        self._dash_canvas.configure(width=inner.winfo_reqwidth(), height=height,
+                                    scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
@@ -916,9 +921,10 @@ class AtlasUI(_BaseTk):
             return
         hint = tk.Label(
             self.stations_container, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
+            wraplength=int(self.winfo_screenwidth() * 0.6),
         )
         bind(hint, lambda: t(self._empty_hint_key()))
-        hint.pack(fill="x", pady=8)
+        hint.pack(fill="x", pady=8)  # wraplength: 60% of the screen, so a long sentence wraps instead of being cut
         self.lbl_empty_hint = hint
 
     def _station_of(self, device: str) -> str:
