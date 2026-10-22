@@ -128,6 +128,58 @@ def measure_all_languages(window: tk.Misc, languages: Tuple[str, ...], get_langu
     return width, height
 
 
+def iter_widgets(widget: tk.Misc):
+    """``widget`` and every widget below it, parents first."""
+    yield widget
+    for child in widget.winfo_children():
+        yield from iter_widgets(child)
+
+
+def _width_is_free(widget: tk.Misc) -> bool:
+    """A text Label or Button whose width nothing has fixed yet. Images and text variables keep their own size."""
+    if widget.winfo_class() not in ("Label", "Button"):
+        return False
+    if int(str(widget.cget("width")) or 0) != 0:
+        return False
+    return not (str(widget.cget("image")) or str(widget.cget("textvariable")))
+
+
+def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: Callable[[], str],
+                    set_language: Callable[[str], None]) -> None:
+    """Give every free text Label and Button the width of its longest text over ``languages`` (issue #117).
+
+    After this, a language switch changes the words but never a widget's size or position. The width is stored in
+    characters, and ``wraplength`` wraps a message that is longer than that (for example one that appears later),
+    so nothing is cut. Widgets already given a width are left alone, so calling this again is harmless.
+    """
+    widgets = [w for w in iter_widgets(window) if _width_is_free(w)]
+    if not widgets:
+        return
+    longest = {id(w): 0 for w in widgets}
+    original = get_language()
+    try:
+        for lang in languages:
+            set_language(lang)
+            window.update_idletasks()
+            for w in widgets:
+                try:
+                    longest[id(w)] = max(longest[id(w)], w.winfo_reqwidth())
+                except tk.TclError:  # destroyed by this language's own re-render
+                    pass
+    finally:
+        set_language(original)
+    for w in widgets:
+        if longest[id(w)] == 0:  # no text yet (an error line filled in later): nothing to keep still
+            continue
+        try:
+            zero = int(w.tk.call("font", "measure", w.cget("font"), "0")) or 1  # Tk counts width in "0" widths
+            chars = max(1, -(-longest[id(w)] // zero))
+            w.configure(width=chars, wraplength=chars * zero)  # wrap at the fixed width, so a longer text never clips
+        except tk.TclError:
+            continue
+    window.update_idletasks()
+
+
 def is_dark_appearance(window: tk.Misc) -> bool:
     """macOS: True when Tk reports the window as dark. Always False elsewhere."""
     if sys.platform != "darwin":

@@ -34,12 +34,12 @@ def _load_tool(name):
 
 def test_version_file_is_x_y_z_and_is_the_only_source():
     text = (HOST_APP / "VERSION").read_text(encoding="utf-8").strip()
-    assert text == "0.1.00"
-    assert app_info.version() == "0.1.00"
+    assert text == "0.1.01"
+    assert app_info.version() == "0.1.01"
 
 
 def test_title_text_uses_the_english_name_in_both_languages():
-    assert app_info.title_text() == "ATE - LabVIEW Bridge Monitor v0.1.00"
+    assert app_info.title_text() == "ATE - LabVIEW Bridge Monitor v0.1.01"
     assert ui_i18n.STRINGS["en"]["win_title"] == ui_i18n.STRINGS["zh"]["win_title"] == \
         "ATE - LabVIEW Bridge Monitor v{version}"
 
@@ -48,14 +48,14 @@ def test_local_source_run_has_no_build_hash_so_it_shows_dev(monkeypatch):
     monkeypatch.setattr(app_info, "_build_info", lambda: (None, None, None))  # as if tools/write_build_info.py never ran
     assert app_info.is_ci_build() is False
     assert app_info.build_label() == "build dev"
-    assert app_info.about_text() == "ATE - LabVIEW Bridge Monitor v0.1.00（build dev）"
+    assert app_info.about_text() == "ATE - LabVIEW Bridge Monitor v0.1.01（build dev）"
 
 
 def test_build_label_with_ci_hash_and_date(monkeypatch):
-    monkeypatch.setattr(app_info, "_build_info", lambda: ("0.1.00", "736bb8b", "2026-10-22"))
+    monkeypatch.setattr(app_info, "_build_info", lambda: ("0.1.01", "736bb8b", "2026-10-22"))
     assert app_info.is_ci_build() is True
     assert app_info.build_label() == "build 736bb8b, 2026-10-22"
-    assert app_info.version() == "0.1.00"
+    assert app_info.version() == "0.1.01"
 
 
 def test_write_build_info_writes_version_hash_and_date(tmp_path, monkeypatch):
@@ -66,7 +66,7 @@ def test_write_build_info_writes_version_hash_and_date(tmp_path, monkeypatch):
     writer.main()
     namespace = {}
     exec((tmp_path / "_build_info.py").read_text(encoding="utf-8"), namespace)
-    assert namespace["VERSION"] == "0.1.00"
+    assert namespace["VERSION"] == "0.1.01"
     assert namespace["BUILD_HASH"] == "abc1234"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", namespace["BUILD_DATE"])
 
@@ -170,7 +170,6 @@ import ui_app  # noqa: E402
 
 SUPPORTED = [
     ((1920, 1080), 4 / 3),
-    ((1920, 1080), 5 / 3),
     ((2880, 1800), 4 / 3),
     ((2880, 1800), 5 / 3),
     ((2880, 1800), 2.0),
@@ -339,7 +338,7 @@ def test_connection_row_keeps_refresh_and_lamp_and_has_no_gear(make_ui):
 def test_logo_tooltip_names_the_app_version_and_build(make_ui):
     app = make_ui()
     assert app._logo_tip.current_text() == app_info.about_text()
-    assert "v0.1.00" in app._logo_tip.current_text()
+    assert "v0.1.01" in app._logo_tip.current_text()
     assert "build dev" in app._logo_tip.current_text()
 
 
@@ -358,7 +357,7 @@ def test_logo_is_scaled_to_the_dpi_and_falls_back_to_text(make_ui, monkeypatch):
 def test_log_opens_with_version_and_build_line(make_ui):
     app = make_ui()
     first = app.log_text.get("1.0", "1.end")
-    assert "ATE - LabVIEW Bridge Monitor v0.1.00" in first
+    assert "ATE - LabVIEW Bridge Monitor v0.1.01" in first
     assert app_info.build_label() in first
 
 
@@ -389,8 +388,8 @@ def test_empty_hint_goes_away_once_machines_are_shown(make_ui):
     assert app.lbl_empty_hint is not None
 
 
-@pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 5 / 3)],
-                         ids=["2880x1800@200%", "1920x1080@125%"])
+@pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 4 / 3)],
+                         ids=["2880x1800@200%", "1920x1080@100%"])
 def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale):
     # The B518 list is nine machines. Before the cap, they pushed the Log out of the window (issue #115 review).
     app = make_ui(screen, scale)

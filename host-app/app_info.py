@@ -51,7 +51,7 @@ def is_ci_build() -> bool:
 
 
 def version() -> str:
-    """Version shown in the title and the Log, e.g. ``0.1.00``."""
+    """Version shown in the title and the Log, e.g. ``0.1.01``."""
     version_from_build, _hash, _date = _build_info()
     return version_from_build or _read_version_file()
 

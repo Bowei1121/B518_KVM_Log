@@ -17,9 +17,11 @@ from device_registry import default_registry_path
 import ui_i18n
 from ui_i18n import bind, t
 from ui_widgets import (BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip,
-                        apply_window_icon, measure_all_languages, pin_light_appearance)
+                        apply_window_icon, fix_text_widths, measure_all_languages, pin_light_appearance)
+import wheel_scroll
 
 STATIONS = ("DFU", "FCT", "BT")
+DS_FONT = ("Arial", 10)  # the head lines and the table headers use this font
 ERROR_COLOR = ERROR_FG
 OK_COLOR = OK_FG
 
@@ -28,6 +30,8 @@ class DeviceSettingsWindow(tk.Toplevel):
     def __init__(self, parent: Any, client: Any, path: Optional[Path] = None,
                  restart_core: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
         super().__init__(parent)
+        wheel_scroll.install(self)
+        self._head_px = 820  # the head lines' width in pixels; set from the window width in _fit_size (#117)
         bind(self, "ds_title", option="title")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
@@ -55,21 +59,54 @@ class DeviceSettingsWindow(tk.Toplevel):
 
     # ---------------------------------------------------------------- layout
     def _fit_size(self) -> None:
-        """Wide enough for every column in both languages, within the screen; the table scrolls if it still is not (#115)."""
+        """Wide enough for every column in both languages, within the screen; the table scrolls if it still is not (#115).
+
+        Label widths are fixed first (#117), so a language switch never changes the window or any label's place.
+        """
+        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
         table_w, _table_h = measure_all_languages(self.table, ui_i18n.LANGUAGES, ui_i18n.current_language,
                                                   ui_i18n.set_language)
         wanted = table_w + self._scroll_bar.winfo_reqwidth() + 40  # table + vertical scrollbar + frame padding
+        wanted = max(wanted, self._bar.winfo_reqwidth() + 20)  # the button row must not be cut either (#117)
         width = min(max(880, wanted), self.winfo_screenwidth())
+        self._size_head_labels(width)
         self.geometry(f"{width}x520")
+
+    def _size_head_labels(self, window_px: int) -> None:
+        """The path and status lines take the window's width, in characters, so they wrap inside it (#117).
+
+        Their width is fixed here, so a language switch changes their words but not their size.
+        """
+        self._head_px = max(200, window_px - 40)
+        zero = int(self.tk.call("font", "measure", DS_FONT, "0")) or 1
+        chars = max(1, self._head_px // zero)
+        for label in (self.lbl_path, self.lbl_status):
+            label.configure(width=chars, wraplength=chars * zero)
+        self.lbl_path.configure(text=self._path_text())
+
+    def _path_text(self) -> str:
+        """The path line. A path too long for the window loses its front part, marked with "…", so the file name stays.
+
+        The whole path is in the tooltip (#117). The path never breaks in the middle of a name.
+        """
+        path = str(self._path)
+        for cut in range(len(path) + 1):
+            shown = path if cut == 0 else "…" + path[cut:]
+            if int(self.tk.call("font", "measure", DS_FONT, t("ds_path", path=shown))) <= self._head_px:
+                return t("ds_path", path=shown)
+        return t("ds_path", path="…")
 
     def _build(self) -> None:
         head = tk.Frame(self, padx=10, pady=6, bg=WINDOW_BG)
         head.pack(fill="x")
-        bind(tk.Label(head, font=("Arial", 10), bg=WINDOW_BG, fg=TEXT_FG, wraplength=840, justify="left"),
-             "ds_path", path=str(self._path)).pack(anchor="w")
-        self.lbl_status = tk.Label(head, text="", font=("Arial", 10), anchor="w", justify="left", wraplength=840,
+        self.lbl_path = bind(tk.Label(head, font=DS_FONT, bg=WINDOW_BG, fg=TEXT_FG, justify="left", anchor="w"),
+                             self._path_text)
+        self.lbl_path.pack(anchor="w")
+        Tooltip(self.lbl_path, str(self._path))  # the whole path, as the line above may be shortened
+        self.lbl_status = tk.Label(head, text="", font=DS_FONT, anchor="w", justify="left",
                                    bg=WINDOW_BG, fg=TEXT_FG)
         self.lbl_status.pack(fill="x", pady=(4, 0))
+        head.bind("<Configure>", lambda e: self._size_head_labels(e.width))
 
         # Both scrollbars: a wide table (the Test button sits at the far right) can always be scrolled to (#115).
         table_frame = tk.Frame(self, padx=10, bg=WINDOW_BG)
@@ -81,6 +118,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         self.table.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.table, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        wheel_scroll.register(canvas)
         canvas.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
@@ -95,6 +133,7 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         bar = tk.Frame(self, padx=10, pady=8, bg=WINDOW_BG)
         bar.pack(fill="x")
+        self._bar = bar
         buttons = (
             ("ds_add", "tip_ds_add", self._add_row),
             ("ds_delete", "tip_ds_delete", self._delete_selected),
@@ -177,6 +216,7 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         entry["widgets"] = [check, e_device, combo, e_ip, e_channels, probe_btn, probe_lbl, error_lbl]
         self._rows.append(entry)
+        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)  # the row's Test button (#117)
         for var in vars_.values():
             var.trace_add("write", lambda *_a: self._update_dirty())
         self._update_dirty()

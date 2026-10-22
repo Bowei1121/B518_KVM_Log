@@ -142,7 +142,7 @@ def _find_button(ui, text):
 
 
 def test_starts_in_english_with_a_plain_title(ui):
-    assert ui.title() == "ATE - LabVIEW Bridge Monitor v0.1.00"  # issue #115: version from host-app/VERSION
+    assert ui.title() == "ATE - LabVIEW Bridge Monitor v0.1.01"  # issue #115: version from host-app/VERSION
     assert ui_i18n.current_language() == "en"
     assert str(ui.btn_run_check.cget("text")) == "🩺 Check picture"
     assert str(ui.btn_create_pattern.cget("text")) == "✂ Make template"

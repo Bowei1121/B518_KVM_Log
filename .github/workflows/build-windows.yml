@@ -40,7 +40,7 @@ jobs:
         # Scoped on purpose. The full suite has 17 Windows-only failures (daemon/pid, Monitor UI prefs,
         # UI client cancel), tracked in #111. Until that is closed, only the Windows-relevant modules run here;
         # the full suite stays a macOS/local run.
-        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py
+        run: python -m pytest -o faulthandler_timeout=120 -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py
 
   build:
     runs-on: windows-latest

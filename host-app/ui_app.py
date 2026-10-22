@@ -82,9 +82,12 @@ from ui_widgets import (
     Tooltip,
     apply_light_ttk_style,
     apply_window_icon,
+    fix_text_widths,
     measure_all_languages,
     pin_light_appearance,
 )
+import wheel_scroll
+from window_placement import frame_size, open_geometry, placed_area, usable_client_size
 
 _PATTERN_IMPORT_ERROR: Optional[BaseException] = None
 try:
@@ -342,6 +345,7 @@ class MatchResultsWindow(_BaseToplevel):
         if not _TK_OK:
             raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__(parent)
+        wheel_scroll.install(self)
         self.catalog = catalog
         bind(self, "match_title", option="title")
         self.geometry("980x700")
@@ -378,12 +382,14 @@ class MatchResultsWindow(_BaseToplevel):
         self.listbox = tk.Listbox(left, font=("Arial", 11), exportselection=False, bg=PANEL_BG, fg=TEXT_FG)
         self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self._select)
+        wheel_scroll.register(self.listbox)
         Tooltip(self.listbox, lambda: t("match_tip_list"))
         self.image_label = tk.Label(
             right, text=t("match_pick"), anchor="center", bg=WINDOW_BG, fg=TEXT_FG
         )
         self.image_label.pack(fill="both", expand=True)
         self.load()
+        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)  # #117
         ui_i18n.on_language_change(self._relabel)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
@@ -460,6 +466,7 @@ class AtlasUI(_BaseTk):
             raise RuntimeError("Tkinter is not available in current environment.")
         super().__init__()
         self._tk_scaling = apply_windows_tk_scaling(self)
+        wheel_scroll.install(self)  # one app-wide wheel handler (#117)
         ui_i18n.set_language(ui_i18n.load_saved_language())
         bind(self, "win_title", option="title", version=version())
         apply_window_icon(self)
@@ -616,6 +623,7 @@ class AtlasUI(_BaseTk):
         vscroll.config(command=self.log_text.yview)
         self.log_text.grid(row=0, column=0, sticky="nsew")
         vscroll.grid(row=0, column=1, sticky="ns")
+        wheel_scroll.register(self.log_text)
         txt_wrap.rowconfigure(0, weight=1)
         txt_wrap.columnconfigure(0, weight=1)
 
@@ -635,6 +643,7 @@ class AtlasUI(_BaseTk):
         self._dash_canvas = tk.Canvas(dash_frame, bg=WINDOW_BG, highlightthickness=0, yscrollcommand=dash_scroll.set)
         dash_scroll.configure(command=self._dash_canvas.yview)
         self._dash_canvas.pack(side="left", fill="x", expand=True)
+        wheel_scroll.register(self._dash_canvas)
         self.stations_container = tk.Frame(self._dash_canvas, bg=WINDOW_BG)
         dash_window = self._dash_canvas.create_window((0, 0), window=self.stations_container, anchor="nw")
         self._dash_canvas.bind("<Configure>", lambda e: self._dash_canvas.itemconfigure(dash_window, width=e.width))
@@ -812,26 +821,53 @@ class AtlasUI(_BaseTk):
         except Exception:  # missing file, unreadable PNG, or Tk refusing it: the text logo takes over
             return None
 
-    def _preview_size(self) -> Tuple[int, int]:
-        """Live-view size in pixels: 480×270 at 100% DPI, growing with the DPI so it never becomes a small box (#115)."""
-        factor = (self._tk_scaling or (4 / 3)) / (4 / 3)
+    def _preview_size(self, shrink: float = 1.0) -> Tuple[int, int]:
+        """Live-view size in pixels: 480×270 at 100% DPI, growing with the DPI so it never becomes a small box (#115).
+
+        ``shrink`` is the share of that size kept when the usable screen height is too small (#117).
+        """
+        factor = (self._tk_scaling or (4 / 3)) / (4 / 3) * shrink
         return round(480 * factor), round(270 * factor)
 
     def _fit_window(self) -> None:
-        """Open at max(content, 50% of screen width) and max(content, 85% of screen height) (issue #115 decision).
+        """Open flush with the top and right of the usable screen, never taller than it (issue #117).
 
-        Both languages are measured so a switch to the longer text never cuts a label or button. The content
-        measure is also the minimum size, so the window cannot be dragged smaller than its content.
+        Both languages are measured, and the label and button widths are already fixed to the longer of the two,
+        so a language switch never changes the window size. When the content is taller than the usable height, the
+        live preview shrinks in steps (down to half) first. The Log keeps its lines either way.
         """
+        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
+        area = placed_area(self)
+        frame = frame_size()
+        max_w, max_h = usable_client_size(area, frame)
+        width, height = self._fit_preview_to(max_h)
+        self.minsize(min(width, max_w), min(height, max_h))
+        geometry = open_geometry(area, frame, (self.winfo_screenwidth(), self.winfo_screenheight()), (width, height))
+        self.geometry(geometry)
+        self._append_log(
+            f"Window: work area {area.width}x{area.height} at {area.x},{area.y}; "
+            f"frame L{frame.left} R{frame.right} T{frame.top} B{frame.bottom}; opened {geometry}",
+            f"視窗：工作區 {area.width}x{area.height}（位置 {area.x},{area.y}），"
+            f"外框 左{frame.left} 右{frame.right} 上{frame.top} 下{frame.bottom}，開啟 {geometry}",
+        )
+
+    def _fit_preview_to(self, max_h: int) -> Tuple[int, int]:
+        """Measure the content at the full live-view size, then at smaller steps, until it fits ``max_h`` (#117)."""
+        width = height = 0
         self._dash_measuring = True
-        self._size_dashboard()
-        width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
-        self._dash_measuring = False
-        self._size_dashboard()
-        self.minsize(width, height)
-        open_w = max(width, int(self.winfo_screenwidth() * 0.5))
-        open_h = max(height, int(self.winfo_screenheight() * 0.85))
-        self.geometry(f"{open_w}x{open_h}")
+        try:
+            for shrink in (1.0, 0.85, 0.7, 0.6, 0.5):
+                preview_w, preview_h = self._preview_size(shrink)
+                self.canvas_preview.configure(width=preview_w, height=preview_h)
+                self._size_dashboard()
+                width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language,
+                                                      ui_i18n.set_language)
+                if height <= max_h:
+                    break
+        finally:
+            self._dash_measuring = False
+            self._size_dashboard()
+        return width, height
 
     def _size_dashboard(self) -> None:
         """Dashboard box height: its content, up to the cap; the full cap while the window size is being measured."""
@@ -913,6 +949,8 @@ class AtlasUI(_BaseTk):
                 "state": state,
             }
         self._render_empty_hint()
+        # Machines are rendered after startup too: fix their label widths now, so a language switch keeps the layout (#117).
+        fix_text_widths(self.stations_container, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
 
     def _empty_hint_key(self) -> str:
         """Why the dashboard is empty: not connected (nothing to show yet) or connected with no machines."""
