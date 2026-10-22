@@ -71,3 +71,17 @@
 - **#77 未勾的一項**：還缺「心跳被遮時 check 點 Dock」的 socket 測試，以及 App 實際擷取的 replay 素材。
 - **Log Solution 端**：HANDOFF 第 13～14 節要同步回 Log Solution 主文件。
 - **本機啟動**：`~/Documents/template/devices.json` 不存在，Core 會拒絕啟動，可用 Monitor UI 的設定頁建立。主資料夾 checkout 停在舊的 `8f4e9d7`，需要更新到最新 main。
+
+## HMI 改善系列（2026-10-21～22）
+
+使用者檢視 Monitor UI 後提出 9 點，經 grilling Q1–Q21 定案，拆 3 張依序做（皆改 `ui_app.py`，不可並行），Haiku 實作、Opus 審查。
+
+| 票 | 內容 | PR | 審查輪數 |
+| --- | --- | --- | --- |
+| #105 | 強制淺色（含 Mac `NSRequiresAquaSystemAppearance`）、機台 4 色燈號（FROZEN 閃爍）、服務單燈、Log 錯紅警橘、模板按鈕合併、短錯誤訊息＋點擊捲到 Log、畫面／Core Log 每日一檔留 30 天 | #108 | 3 |
+| #106 | 中英雙語（預設英文、🌐 即時切換、偏好存 `%APPDATA%`／`~/Library/Application Support`）、圖示按鈕（純圖示放大、不用 VS16）、白話 tooltip、Log 檔每行 `HH:MM:SS \| EN \| 中文`、`summary.json` `note` 中英物件 | #109 | 2 |
+| #107 | Windows DPI awareness（shcore→user32 fallback、tk scaling）、GitHub Actions Windows 打包＋import smoke test＋frozen exe `--self-test` | #110 | 2 |
+
+- 決策：Log 不做「自動互補色」，根因是 Log 只寫死 fg 未設 bg，強制淺色即解；匹配結果圖上維持英文（`cv2.putText` 不支援中文）。
+- 測試環境教訓：`.venv` 缺 Pillow 會讓外觀測試 skip、掩蓋深色模式缺陷（#108 第 2 輪才抓到）→ 審查要求 0 skipped。背景 pytest 須加 `faulthandler_timeout`，孤兒 pytest 會佔 port 讓 `test_monitor_start.py` 卡死。Tk 測試異常結束會讓 macOS 跳「重新打開 Python 視窗」提示（`defaults write org.python.python ApplePersistenceIgnoreState -bool YES` 可關）。
+- 2026-10-22 Windows 11 實機（FIELD_VERIFICATION H1）：DPI、emoji、淺色、雙語通過；版面問題（預設視窗過小擠掉 Log、服務燈號被切、按鈕字截斷、設備設定視窗欄位被切、勾選框高 DPI 變形）待開票修正。
