@@ -239,11 +239,11 @@ def test_small_usable_height_shrinks_the_preview_and_keeps_the_log(make_ui, monk
 
 
 def test_enlarging_the_window_enlarges_the_live_view(make_ui):
+    # Checked on the packing rules, not on the size Tk reports: on Windows an unshown window does not lay out its
+    # children until it is shown, so a size read here can lag the geometry change (CI, review R2-3 follow-up).
     app = make_ui((1920, 1080), 4 / 3)
-    before = app.canvas_preview.winfo_width()
-    app.geometry(f"{app.winfo_width() + 300}x{app.winfo_height() + 150}")
-    app.update_idletasks()
-    assert app.canvas_preview.winfo_width() > before
+    info = app.canvas_preview.pack_info()
+    assert info["fill"] == "both" and int(info["expand"]) == 1
 
 
 def test_full_preview_is_kept_when_the_usable_height_is_enough(make_ui):
@@ -361,7 +361,7 @@ def test_machine_list_scrolls_with_the_wheel(make_ui):
     assert app._dash_canvas.yview()[0] > top
 
 
-def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):
+def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path, monkeypatch):
     app = make_ui((1920, 1080), 4 / 3)
     settings = device_settings_window.DeviceSettingsWindow(app, client=None, path=tmp_path / "devices.json")
     try:
@@ -370,14 +370,16 @@ def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):
             settings._add_row()
         settings.update_idletasks()
         canvas = next(w for w in iter_widgets(settings) if w.winfo_class() == "Canvas")
-        assert settings.table.winfo_reqwidth() > canvas.winfo_width(), "premise: the table is wider than the canvas"
-        assert canvas.xview()[1] < 1.0, "the table must be wider than its window, or there is nothing to scroll sideways"
-        top = canvas.yview()[0]
+        # Routing, checked by spying on the scroll calls: whether the table is wider than the window depends on the
+        # platform's layout timing, so the test does not depend on it (CI, review R2-2).
+        calls = []
+        monkeypatch.setattr(canvas, "yview_scroll", lambda n, what: calls.append(("y", n)))
+        monkeypatch.setattr(canvas, "xview_scroll", lambda n, what: calls.append(("x", n)))
         _wheel(canvas, -120)
-        assert canvas.yview()[0] > top
-        left = canvas.xview()[0]
+        assert calls == [("y", 1)]
+        calls.clear()
         _wheel(canvas, -120, state=wheel_scroll.SHIFT_MASK)  # Shift + wheel: sideways
-        assert canvas.xview()[0] > left
+        assert calls == [("x", 1)]
     finally:
         settings.destroy()
 
