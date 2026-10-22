@@ -320,10 +320,14 @@ def test_window_is_never_narrower_than_its_content(make_ui, monkeypatch):
     assert height == max(app.minsize()[1], 1530)
 
 
-def test_live_preview_scales_with_dpi_and_never_shrinks_to_a_small_box(make_ui):
+def test_live_preview_scales_with_dpi_and_never_shrinks_below_its_floor(make_ui):
+    # Issue #117 decision: when the usable height is short, the live view may shrink to PREVIEW_MIN_SHARE (70%) of its
+    # DPI size and no further, so at 200% the floor is 672×378. The bound is the shared constant, not a looser number.
     assert make_ui((2880, 1800), 4 / 3).canvas_preview.winfo_reqwidth() == 480
-    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqwidth() == 960
-    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqheight() == 540
+    preview = make_ui((2880, 1800), 8 / 3).canvas_preview
+    width, height = preview.winfo_reqwidth(), preview.winfo_reqheight()
+    assert round(960 * ui_app.PREVIEW_MIN_SHARE) <= width <= 960
+    assert abs(height - width * 9 / 16) <= 2
 
 
 def test_top_row_is_logo_left_then_lang_and_gear_right(make_ui):

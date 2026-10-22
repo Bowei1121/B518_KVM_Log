@@ -238,6 +238,14 @@ def test_small_usable_height_shrinks_the_preview_and_keeps_the_log(make_ui, monk
     assert _log_lines_visible(app) >= 6
 
 
+def test_enlarging_the_window_enlarges_the_live_view(make_ui):
+    app = make_ui((1920, 1080), 4 / 3)
+    before = app.canvas_preview.winfo_width()
+    app.geometry(f"{app.winfo_width() + 300}x{app.winfo_height() + 150}")
+    app.update_idletasks()
+    assert app.canvas_preview.winfo_width() > before
+
+
 def test_full_preview_is_kept_when_the_usable_height_is_enough(make_ui):
     app = make_ui((1920, 1080), 4 / 3)
     assert int(app.canvas_preview.cget("height")) == 270
@@ -442,3 +450,40 @@ def test_long_run_time_result_wraps_instead_of_being_cut(make_ui):
     line = int(app.tk.call("font", "metrics", label.cget("font"), "-linespace"))
     assert label.winfo_reqheight() >= 2 * line, "the long result was cut to one line"
     assert str(label.cget("wraplength")) != "0"
+
+
+def _cut_texts(window):
+    """Labels whose measured text does not fit: a fixed-width label must hold its text in one line, and a wrapping one
+    must be tall enough for every line (review R2-1). Measured with font metrics, not the widget's own request."""
+    cut = []
+    for widget in iter_widgets(window):
+        if widget.winfo_class() not in ("Label", "TLabel") or not widget.winfo_ismapped():
+            continue
+        text = str(widget.cget("text"))
+        if not text:
+            continue
+        font = widget.cget("font") or "TkDefaultFont"
+        wrap = int(str(widget.cget("wraplength")) or 0)
+        if wrap:  # a wrapping label is cut when its lines (Tk's own request) need more height than it was given
+            if widget.winfo_height() < widget.winfo_reqheight():
+                cut.append((str(widget), text))
+        else:
+            if int(widget.tk.call("font", "measure", font, text)) > widget.winfo_width():
+                cut.append((str(widget), text))
+    return cut
+
+
+def test_long_dynamic_texts_with_nine_machines_are_never_cut(make_ui):
+    # Review R2-1 part 3: a long run-time result, a long snapshot line and nine machines at once.
+    app = make_ui((1920, 1080), 4 / 3)
+    stations = [{"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
+                for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)]
+    app._update_status_ui({"status": "ok", "stations": stations})
+    app.lbl_check_result.config(text="Result: " + "channel 1 and channel 2 are still testing; " * 6)
+    app.lbl_preview_info.config(text="Snapshot 1920x1080 at 12:34:56 from DFU-01, " * 3)
+    app.update_idletasks()
+    assert _cut_texts(app) == []
+    app.on_toggle_language()
+    app.update_idletasks()
+    assert _cut_texts(app) == []
+    ui_i18n.set_language("en")

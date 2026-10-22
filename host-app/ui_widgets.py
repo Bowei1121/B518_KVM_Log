@@ -204,6 +204,16 @@ def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: C
     window.update_idletasks()
 
 
+def reserve_text_width(widget: tk.Misc, chars: int) -> None:
+    """Give a Label that shows run-time text a fixed width of ``chars`` and wrap at it (#117 review R2-1).
+
+    The width is reserved up front, so a long result or snapshot line wraps inside it instead of squeezing the layout.
+    """
+    font = _font_of(widget)
+    zero = int(widget.tk.call("font", "measure", font, "0")) or 1
+    widget.configure(width=chars, wraplength=chars * zero)
+
+
 def fix_width_to_texts(widget: tk.Misc, texts) -> None:
     """Fix one text Label/Button to the widest of ``texts`` (one per language), without switching languages.
 

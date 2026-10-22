@@ -84,10 +84,15 @@ from ui_widgets import (
     apply_window_icon,
     fix_text_widths,
     measure_all_languages,
+    reserve_text_width,
     pin_light_appearance,
 )
 import wheel_scroll
 from window_placement import frame_size, open_geometry, placed_area, usable_client_size
+
+# Smallest live view, as a share of its DPI size, when the usable height is short (user decision, issue #117 comment
+# 6342904432): 70%, so 200% gives 672×378. Shared with tests/test_monitor_hmi_115.py; do not loosen it elsewhere.
+PREVIEW_MIN_SHARE = 0.7
 
 _PATTERN_IMPORT_ERROR: Optional[BaseException] = None
 try:
@@ -679,6 +684,7 @@ class AtlasUI(_BaseTk):
             view_status, text=t("preview_none"), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_preview_info.pack(side="left", fill="x", expand=True)
+        reserve_text_width(self.lbl_preview_info, 34)  # run-time snapshot line: wraps, does not squeeze (R2-1)
         view_bottom = tk.Frame(view_frame, bg=WINDOW_BG)
         view_bottom.pack(fill="x", pady=(2, 0))
         bind(self.lbl_preview_info, "preview_none")
@@ -766,6 +772,7 @@ class AtlasUI(_BaseTk):
             check_box, text=t("check_none"), font=self.f_bold, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_check_result.pack(anchor="w", pady=2)
+        reserve_text_width(self.lbl_check_result, 34)  # run-time result: wraps, does not squeeze (R2-1)
         bind(self.lbl_check_result, "check_none")
 
         # Pattern creation
@@ -856,7 +863,7 @@ class AtlasUI(_BaseTk):
         width = height = 0
         self._dash_measuring = True
         try:
-            for shrink in (1.0, 0.85, 0.7, 0.6, 0.5):
+            for shrink in (1.0, 0.85, PREVIEW_MIN_SHARE):
                 preview_w, preview_h = self._preview_size(shrink)
                 self.canvas_preview.configure(width=preview_w, height=preview_h)
                 self._size_dashboard()
