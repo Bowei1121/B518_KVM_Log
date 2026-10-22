@@ -372,14 +372,18 @@ def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path, 
         canvas = next(w for w in iter_widgets(settings) if w.winfo_class() == "Canvas")
         # Routing, checked by spying on the scroll calls: whether the table is wider than the window depends on the
         # platform's layout timing, so the test does not depend on it (CI, review R2-2).
+        # An unshown Toplevel is not hit-tested on Windows, so the pointer lookup is replaced here; the lookup itself is
+        # checked by the Log test, which runs on the shown main window. This checks the routing after it.
         calls = []
         monkeypatch.setattr(canvas, "yview_scroll", lambda n, what: calls.append(("y", n)))
         monkeypatch.setattr(canvas, "xview_scroll", lambda n, what: calls.append(("x", n)))
-        _wheel(canvas, -120)
+        monkeypatch.setattr(wheel_scroll, "target_under", lambda root, x, y: canvas)
+        event = types.SimpleNamespace(x_root=0, y_root=0, state=0)
+        wheel_scroll._scroll(settings, event, -120)
         assert calls == [("y", 1)]
         calls.clear()
-        _wheel(canvas, -120, state=wheel_scroll.SHIFT_MASK)  # Shift + wheel: sideways
-        assert calls == [("x", 1)]
+        wheel_scroll._scroll(settings, types.SimpleNamespace(x_root=0, y_root=0, state=wheel_scroll.SHIFT_MASK), -120)
+        assert calls == [("x", 1)]  # Shift + wheel: sideways
     finally:
         settings.destroy()
 
