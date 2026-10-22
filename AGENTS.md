@@ -4,6 +4,7 @@
 
 每次執行修改完程式之後，都要自動提交到 git repo 與 remote repo。
 換日後的第一次對話需要將之前的對話摘要與討論結果存在一份專案摘要，方便未來查閱與減少 token 使用。
+每次大任務（例如一整輪架構評估、一個 spec 的所有子票）結束後，依 `docs/retros/TEMPLATE.md` 寫一份復盤紀錄到 `docs/retros/<日期>-<任務>.md`（Notion 可直接貼上的 Markdown），提交後把檔案交給使用者，方便日後復盤。
 
 ## Agent skills
 
