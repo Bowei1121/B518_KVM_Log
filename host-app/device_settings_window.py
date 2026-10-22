@@ -117,7 +117,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         # Both scrollbars: a wide table (the Test button sits at the far right) can always be scrolled to (#115).
         table_frame = tk.Frame(self, padx=10, bg=WINDOW_BG)
         table_frame.pack(fill="both", expand=True)
-        canvas = tk.Canvas(table_frame, highlightthickness=0, bg=WINDOW_BG)
+        canvas = tk.Canvas(table_frame, highlightthickness=0, bg=WINDOW_BG, width=400, height=240)  # explicit: Tk's default canvas is ~10 cm × 8 cm and inflates the window request (#117 CI)
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=canvas.yview)
         scroll_x = ttk.Scrollbar(table_frame, orient="horizontal", command=canvas.xview)
         self.table = tk.Frame(canvas, bg=WINDOW_BG)
