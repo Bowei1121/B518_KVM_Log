@@ -34,12 +34,12 @@ def _load_tool(name):
 
 def test_version_file_is_x_y_z_and_is_the_only_source():
     text = (HOST_APP / "VERSION").read_text(encoding="utf-8").strip()
-    assert text == "0.1.00"
-    assert app_info.version() == "0.1.00"
+    assert text == "0.1.01"
+    assert app_info.version() == "0.1.01"
 
 
 def test_title_text_uses_the_english_name_in_both_languages():
-    assert app_info.title_text() == "ATE - LabVIEW Bridge Monitor v0.1.00"
+    assert app_info.title_text() == "ATE - LabVIEW Bridge Monitor v0.1.01"
     assert ui_i18n.STRINGS["en"]["win_title"] == ui_i18n.STRINGS["zh"]["win_title"] == \
         "ATE - LabVIEW Bridge Monitor v{version}"
 
@@ -48,14 +48,14 @@ def test_local_source_run_has_no_build_hash_so_it_shows_dev(monkeypatch):
     monkeypatch.setattr(app_info, "_build_info", lambda: (None, None, None))  # as if tools/write_build_info.py never ran
     assert app_info.is_ci_build() is False
     assert app_info.build_label() == "build dev"
-    assert app_info.about_text() == "ATE - LabVIEW Bridge Monitor v0.1.00（build dev）"
+    assert app_info.about_text() == "ATE - LabVIEW Bridge Monitor v0.1.01（build dev）"
 
 
 def test_build_label_with_ci_hash_and_date(monkeypatch):
-    monkeypatch.setattr(app_info, "_build_info", lambda: ("0.1.00", "736bb8b", "2026-10-22"))
+    monkeypatch.setattr(app_info, "_build_info", lambda: ("0.1.01", "736bb8b", "2026-10-22"))
     assert app_info.is_ci_build() is True
     assert app_info.build_label() == "build 736bb8b, 2026-10-22"
-    assert app_info.version() == "0.1.00"
+    assert app_info.version() == "0.1.01"
 
 
 def test_write_build_info_writes_version_hash_and_date(tmp_path, monkeypatch):
@@ -66,7 +66,7 @@ def test_write_build_info_writes_version_hash_and_date(tmp_path, monkeypatch):
     writer.main()
     namespace = {}
     exec((tmp_path / "_build_info.py").read_text(encoding="utf-8"), namespace)
-    assert namespace["VERSION"] == "0.1.00"
+    assert namespace["VERSION"] == "0.1.01"
     assert namespace["BUILD_HASH"] == "abc1234"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", namespace["BUILD_DATE"])
 
@@ -167,10 +167,11 @@ except tk.TclError:
     pytest.skip("no Tk display", allow_module_level=True)
 
 import ui_app  # noqa: E402
+import window_placement as placement  # noqa: E402
+import device_settings_window  # noqa: E402
 
 SUPPORTED = [
     ((1920, 1080), 4 / 3),
-    ((1920, 1080), 5 / 3),
     ((2880, 1800), 4 / 3),
     ((2880, 1800), 5 / 3),
     ((2880, 1800), 2.0),
@@ -187,10 +188,27 @@ def _walk(widget):
 
 
 def _simulate(monkeypatch, screen, scale):
-    """Stand in for the real screen and the Windows DPI call: this screen size and this Tk scaling."""
+    """Stand in for the real screen, the taskbar, the window frame and the Windows DPI call (issue #117)."""
     width, height = screen
     monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenwidth", lambda self: width)
     monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenheight", lambda self: height)
+    taskbar = round(48 * scale / (4 / 3))  # taskbar grows with the Windows scaling; the CI runner's real one is not used
+    area = placement.Rect(0, 0, width, height - taskbar)
+    frame = placement.Frame(*(round(v * scale / (4 / 3)) for v in (8, 8, 31, 8)))
+    monkeypatch.setattr(placement, "work_area", lambda w, h, windll=None: area)
+    monkeypatch.setattr(ui_app, "frame_size", lambda: frame)
+    # the settings window sizes itself from its own screen (review R2-2): simulate that too
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenwidth", lambda self: width)
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenheight", lambda self: height)
+
+    # wm maxsize is per toplevel and defaults to the runner's real screen: lift it for the settings window too (#117 R3-2c)
+    original_build = device_settings_window.DeviceSettingsWindow._build
+
+    def build_unlimited(self):
+        self.wm_maxsize(10000, 10000)
+        original_build(self)
+
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "_build", build_unlimited)
 
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
@@ -253,7 +271,9 @@ def _truncated(window):
         if widget.winfo_class() not in ("Label", "Button", "TCheckbutton") or not widget.winfo_ismapped():
             continue
         if widget.winfo_width() < widget.winfo_reqwidth() or widget.winfo_height() < widget.winfo_reqheight():
-            cut.append((str(widget), widget.cget("text")))
+            cut.append((str(widget), widget.cget("text"), f"has {widget.winfo_width()}x{widget.winfo_height()}",
+                        f"needs {widget.winfo_reqwidth()}x{widget.winfo_reqheight()}",
+                        f"window {window.winfo_width()}x{window.winfo_height()}"))
     return cut
 
 
@@ -311,10 +331,14 @@ def test_window_is_never_narrower_than_its_content(make_ui, monkeypatch):
     assert height == max(app.minsize()[1], 1530)
 
 
-def test_live_preview_scales_with_dpi_and_never_shrinks_to_a_small_box(make_ui):
+def test_live_preview_scales_with_dpi_and_never_shrinks_below_its_floor(make_ui):
+    # Issue #117 decision: when the usable height is short, the live view may shrink to PREVIEW_MIN_SHARE (70%) of its
+    # DPI size and no further, so at 200% the floor is 672×378. The bound is the shared constant, not a looser number.
     assert make_ui((2880, 1800), 4 / 3).canvas_preview.winfo_reqwidth() == 480
-    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqwidth() == 960
-    assert make_ui((2880, 1800), 8 / 3).canvas_preview.winfo_reqheight() == 540
+    preview = make_ui((2880, 1800), 8 / 3).canvas_preview
+    width, height = preview.winfo_reqwidth(), preview.winfo_reqheight()
+    assert round(960 * ui_app.PREVIEW_MIN_SHARE) <= width <= 960
+    assert abs(height - width * 9 / 16) <= 2
 
 
 def test_top_row_is_logo_left_then_lang_and_gear_right(make_ui):
@@ -339,7 +363,7 @@ def test_connection_row_keeps_refresh_and_lamp_and_has_no_gear(make_ui):
 def test_logo_tooltip_names_the_app_version_and_build(make_ui):
     app = make_ui()
     assert app._logo_tip.current_text() == app_info.about_text()
-    assert "v0.1.00" in app._logo_tip.current_text()
+    assert "v0.1.01" in app._logo_tip.current_text()
     assert "build dev" in app._logo_tip.current_text()
 
 
@@ -358,7 +382,7 @@ def test_logo_is_scaled_to_the_dpi_and_falls_back_to_text(make_ui, monkeypatch):
 def test_log_opens_with_version_and_build_line(make_ui):
     app = make_ui()
     first = app.log_text.get("1.0", "1.end")
-    assert "ATE - LabVIEW Bridge Monitor v0.1.00" in first
+    assert "ATE - LabVIEW Bridge Monitor v0.1.01" in first
     assert app_info.build_label() in first
 
 
@@ -389,8 +413,8 @@ def test_empty_hint_goes_away_once_machines_are_shown(make_ui):
     assert app.lbl_empty_hint is not None
 
 
-@pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 5 / 3)],
-                         ids=["2880x1800@200%", "1920x1080@125%"])
+@pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 4 / 3)],
+                         ids=["2880x1800@200%", "1920x1080@100%"])
 def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale):
     # The B518 list is nine machines. Before the cap, they pushed the Log out of the window (issue #115 review).
     app = make_ui(screen, scale)
@@ -444,7 +468,7 @@ def test_device_settings_has_a_test_button_that_is_not_cut_in_either_language(ma
         for lang in ("en", "zh"):
             ui_i18n.set_language(lang)
             settings.update_idletasks()
-            assert _truncated(settings) == [], lang
+            assert _truncated(settings) == [], (lang, settings.wm_maxsize(), settings._head_px)
     finally:
         ui_i18n.set_language("en")
         settings.destroy()

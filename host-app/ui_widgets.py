@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from app_info import asset_path
+from ui_i18n import bind
 
 # ---- Palette (light only) ---------------------------------------------------------
 WINDOW_BG = "#f0f0f0"
@@ -126,6 +127,200 @@ def measure_all_languages(window: tk.Misc, languages: Tuple[str, ...], get_langu
         set_language(original)
     window.update_idletasks()
     return width, height
+
+
+FIXED_WIDTH_MARGIN = 1.25  # widths are fixed with this much room over the widest measured text (#117)
+
+
+def iter_widgets(widget: tk.Misc):
+    """``widget`` and every widget below it, parents first."""
+    yield widget
+    for child in widget.winfo_children():
+        yield from iter_widgets(child)
+
+
+def _width_is_free(widget: tk.Misc) -> bool:
+    """A text Label or Button whose width nothing has fixed yet. Images and text variables keep their own size."""
+    if widget.winfo_class() not in ("Label", "Button", "TLabel", "TButton"):  # tk and ttk (PatternCropper is ttk)
+        return False
+    if int(str(widget.cget("width")) or 0) != 0:
+        return False
+    return not (str(widget.cget("image")) or str(widget.cget("textvariable")))
+
+
+def _font_of(widget: tk.Misc):
+    """The font a tk or ttk widget draws its text with. ttk widgets take it from their style, not an option."""
+    font = ""
+    try:
+        font = str(widget.cget("font"))  # ttk.Label has the option, but it is empty unless the style sets it
+    except tk.TclError:  # ttk.Button has no font option at all
+        pass
+    if font:
+        return font
+    if not widget.winfo_class().startswith("T"):  # a tk widget with no font: the default one
+        return "TkDefaultFont"
+    style = str(widget.cget("style") or widget.winfo_class())
+    return str(widget.tk.call("ttk::style", "lookup", style, "-font")) or "TkDefaultFont"
+
+
+def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: Callable[[], str],
+                    set_language: Callable[[str], None]) -> None:
+    """Give every free text Label and Button the width of its longest text over ``languages`` (issue #117).
+
+    After this, a language switch changes the words but never a widget's size or position. The width is stored in
+    characters, and ``wraplength`` wraps a message that is longer than that (for example one that appears later),
+    so nothing is cut. Widgets already given a width are left alone, so calling this again is harmless.
+    """
+    widgets = [w for w in iter_widgets(window) if _width_is_free(w)]
+    if not widgets:
+        return
+    longest = {id(w): 0 for w in widgets}
+    original = get_language()
+    try:
+        for lang in languages:
+            set_language(lang)
+            window.update_idletasks()
+            for w in widgets:
+                try:
+                    longest[id(w)] = max(longest[id(w)], w.winfo_reqwidth())
+                except tk.TclError:  # destroyed by this language's own re-render
+                    pass
+    finally:
+        set_language(original)
+    for w in widgets:
+        if longest[id(w)] == 0:  # no text yet (an error line filled in later): nothing to keep still
+            continue
+        try:
+            zero = int(w.tk.call("font", "measure", _font_of(w), "0")) or 1  # Tk counts width in "0" widths
+            # Windows draws some text wider than Tk measured it (fallback glyphs such as ✂); without a margin the
+            # text wraps there, the row grows and the window cut it (CI, #117). The margin keeps one line.
+            chars = max(1, -(-int(longest[id(w)] * FIXED_WIDTH_MARGIN) // zero))
+            if w.winfo_class() in ("Label", "TLabel"):
+                # A Label shows run-time text too (a check result): wrap it rather than cut it (review R2-1)
+                w.configure(width=chars, wraplength=chars * zero)
+            else:
+                w.configure(width=chars)  # a Button has fixed text: no wrap, so its row keeps its height
+        except tk.TclError:
+            continue
+    window.update_idletasks()
+
+
+def fit_label_to_pixels(label: tk.Misc, px: int, wrap: bool = True) -> None:
+    """Give a Label a fixed width of at most ``px`` pixels, whatever unit the platform counts its ``width`` in.
+
+    Tk counts ``width`` in characters, but the pixels per character differ from a "0" on Windows (CI, #117 R3-2c). So
+    the width is set from a guess and then corrected from the width Tk really asks for. ``wrap`` also wraps at it.
+    """
+    zero = int(label.tk.call("font", "measure", _font_of(label), "0")) or 1
+    label.configure(wraplength=0)
+    chars = max(1, px // zero)
+    for _ in range(3):
+        label.configure(width=chars)
+        label.update_idletasks()
+        asked = label.winfo_reqwidth()
+        if asked <= px or chars == 1:
+            break
+        chars = max(1, int(chars * px / asked))
+    inner = max(1, label.winfo_reqwidth() - 2 * (label.winfo_pixels(label.cget("padx")) + label.winfo_pixels(label.cget("bd"))
+                                                  + label.winfo_pixels(label.cget("highlightthickness"))))
+    if wrap:
+        label.configure(wraplength=inner)
+
+
+def reserve_text_width(widget: tk.Misc, chars: int, lines: int = 1) -> None:
+    """Give a Label that shows run-time text a fixed box of ``chars`` x ``lines`` (#117 review R2-1, R3-1).
+
+    The box never changes with the text or the language, so a long result cannot push other widgets around. A text
+    that needs more lines is cut with "…" by ``bind_clamped``; the whole text is in the Log and the hover hint.
+    """
+    font = _font_of(widget)
+    zero = int(widget.tk.call("font", "measure", font, "0")) or 1
+    widget.configure(height=lines)
+    fit_label_to_pixels(widget, chars * zero)
+    widget._clamp_lines = lines  # type: ignore[attr-defined]
+    widget._full_text = ""  # type: ignore[attr-defined]
+
+
+def clamp_text(widget: tk.Misc, text: str, lines: int) -> str:
+    """``text`` shortened with "…" so that it wraps into at most ``lines`` lines of the widget's wrap width.
+
+    The wrap is simulated with Tk's own font measure at 95% of the width, so the real wrap (Windows draws some text
+    wider than Tk measures it) never needs more lines than this counts.
+    """
+    wrap = int(str(widget.cget("wraplength")) or 0)
+    if wrap <= 0:
+        return text
+    font = _font_of(widget)
+    limit = wrap * 0.95
+
+    def measure(chunk: str) -> int:
+        return int(widget.tk.call("font", "measure", font, chunk))
+
+    rows: List[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for word in paragraph.split(" "):
+            candidate = word if not current else current + " " + word
+            if measure(candidate) <= limit:
+                current = candidate
+                continue
+            if current:
+                rows.append(current)
+                current = ""
+            while word and measure(word) > limit:  # a word longer than a row (a path, or Chinese text) breaks anywhere
+                cut = len(word)
+                while cut > 1 and measure(word[:cut]) > limit:
+                    cut -= 1
+                rows.append(word[:cut])
+                word = word[cut:]
+            current = word
+        rows.append(current)
+    if len(rows) <= lines:
+        return text
+    last = rows[lines - 1]
+    while last and measure(last + "…") > limit:
+        last = last[:-1]
+    return "\n".join(rows[:lines - 1] + [last.rstrip() + "…"])
+
+
+def bind_clamped(widget: tk.Misc, render: Callable[[], str]) -> None:
+    """``bind`` for a label made by ``reserve_text_width``: shows ``render()`` cut to the label's lines.
+
+    The whole text is kept for the hover hint (``full_text``) and the cut is redone on every language switch, so the
+    box stays the same size in either language.
+    """
+    lines = getattr(widget, "_clamp_lines", 0)
+    if not lines:
+        bind(widget, render)
+        return
+
+    def shown() -> str:
+        full = render()
+        text = clamp_text(widget, full, lines)
+        widget._full_text = full if text != full else ""  # type: ignore[attr-defined]
+        return text
+
+    bind(widget, shown)
+
+
+def full_text(widget: tk.Misc) -> str:
+    """The whole text of a cut label ("" when nothing was cut), for its hover hint."""
+    return getattr(widget, "_full_text", "")
+
+
+def fix_width_to_texts(widget: tk.Misc, texts) -> None:
+    """Fix one text Label/Button to the widest of ``texts`` (one per language), without switching languages.
+
+    For widgets created while the window is already open (a settings row): switching the whole UI for each new
+    row was the slow part (#117 review). Same margin and rule as ``fix_text_widths``.
+    """
+    if not _width_is_free(widget):
+        return
+    font = _font_of(widget)
+    px = max(int(widget.tk.call("font", "measure", font, text)) for text in texts)
+    zero = int(widget.tk.call("font", "measure", font, "0")) or 1
+    chars = max(1, -(-int((px + 24) * FIXED_WIDTH_MARGIN) // zero))  # +24: the button's own padding and border
+    widget.configure(width=chars)
 
 
 def is_dark_appearance(window: tk.Misc) -> bool:

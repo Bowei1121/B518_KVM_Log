@@ -126,10 +126,7 @@ def test_atlasui_applies_tk_scaling_to_its_own_root(monkeypatch):
     monkeypatch.setattr(ui_app, "apply_windows_tk_scaling", lambda root: seen.append(root) or real(root))
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
-    try:
-        app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
-    except tk.TclError:
-        pytest.skip("no Tk display")
+    app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)  # no skip: a Tk failure on Windows must show (#117 review)
     try:
         assert seen == [app]
     finally:
@@ -139,14 +136,17 @@ def test_atlasui_applies_tk_scaling_to_its_own_root(monkeypatch):
 
 def test_windows_startup_writes_the_dpi_path_to_the_log(monkeypatch):
     tk = pytest.importorskip("tkinter")
-    monkeypatch.setattr(sys, "platform", "win32")  # the Log line is Windows-only; Tk itself runs fine on macOS
+    # Do not fake sys.platform: Tk's own startup then breaks on Windows (tcl_findLibrary). The DPI scaling is faked
+    # instead; the log line only needs a scaling value (#117 review: no skip, and no platform spoof).
+    def fake_scaling(root):
+        root.tk.call("tk", "scaling", 4 / 3)
+        return 4 / 3
+
+    monkeypatch.setattr(ui_app, "apply_windows_tk_scaling", fake_scaling)
     monkeypatch.setattr(ui_app, "_DPI_AWARENESS_MODE", "user32")
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
-    try:
-        app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
-    except tk.TclError:
-        pytest.skip("no Tk display")
+    app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
     try:
         log = app.log_text.get("1.0", "end")
         assert "Windows DPI: user32, tk scaling" in log
