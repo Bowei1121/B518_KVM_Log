@@ -17,7 +17,8 @@ from device_registry import default_registry_path
 import ui_i18n
 from ui_i18n import bind, t
 from ui_widgets import (BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip,
-                        apply_window_icon, fix_text_widths, measure_all_languages, pin_light_appearance)
+                        apply_window_icon, fix_text_widths, fix_width_to_texts, measure_all_languages,
+                        pin_light_appearance)
 import wheel_scroll
 
 STATIONS = ("DFU", "FCT", "BT")
@@ -70,7 +71,10 @@ class DeviceSettingsWindow(tk.Toplevel):
         wanted = max(wanted, self._bar.winfo_reqwidth() + 20)  # the button row must not be cut either (#117)
         width = min(max(880, wanted), self.winfo_screenwidth())
         self._size_head_labels(width)
-        self.geometry(f"{width}x520")
+        self.update_idletasks()
+        # 520 px is the minimum; wrapped messages make the page taller and must not push the buttons out of the window (#117)
+        height = min(max(520, self.winfo_reqheight()), self.winfo_screenheight())
+        self.geometry(f"{width}x{height}")
 
     def _size_head_labels(self, window_px: int) -> None:
         """The path and status lines take the window's width, in characters, so they wrap inside it (#117).
@@ -80,8 +84,9 @@ class DeviceSettingsWindow(tk.Toplevel):
         self._head_px = max(200, window_px - 40)
         zero = int(self.tk.call("font", "measure", DS_FONT, "0")) or 1
         chars = max(1, self._head_px // zero)
-        for label in (self.lbl_path, self.lbl_status):
-            label.configure(width=chars, wraplength=chars * zero)
+        # The path has no spaces, so it must never wrap (Tk would break it inside a name): width only, no wraplength.
+        self.lbl_path.configure(width=chars, wraplength=0)
+        self.lbl_status.configure(width=chars, wraplength=chars * zero)  # messages have spaces: wrapping is fine
         self.lbl_path.configure(text=self._path_text())
 
     def _path_text(self) -> str:
@@ -92,7 +97,8 @@ class DeviceSettingsWindow(tk.Toplevel):
         path = str(self._path)
         for cut in range(len(path) + 1):
             shown = path if cut == 0 else "…" + path[cut:]
-            if int(self.tk.call("font", "measure", DS_FONT, t("ds_path", path=shown))) <= self._head_px:
+            # 90% of the width: Windows draws some text wider than Tk measures, and the path must not wrap
+            if int(self.tk.call("font", "measure", DS_FONT, t("ds_path", path=shown))) <= self._head_px * 0.9:
                 return t("ds_path", path=shown)
         return t("ds_path", path="…")
 
@@ -216,7 +222,8 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         entry["widgets"] = [check, e_device, combo, e_ip, e_channels, probe_btn, probe_lbl, error_lbl]
         self._rows.append(entry)
-        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)  # the row's Test button (#117)
+        # Only this row's Test button: its text is measured in both languages, without switching the whole UI (#117)
+        fix_width_to_texts(probe_btn, [t("ds_probe_btn", lang=lang) for lang in ui_i18n.LANGUAGES])
         for var in vars_.values():
             var.trace_add("write", lambda *_a: self._update_dirty())
         self._update_dirty()

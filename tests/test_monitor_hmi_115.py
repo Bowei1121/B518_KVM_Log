@@ -167,6 +167,7 @@ except tk.TclError:
     pytest.skip("no Tk display", allow_module_level=True)
 
 import ui_app  # noqa: E402
+import window_placement as placement  # noqa: E402
 
 SUPPORTED = [
     ((1920, 1080), 4 / 3),
@@ -186,10 +187,15 @@ def _walk(widget):
 
 
 def _simulate(monkeypatch, screen, scale):
-    """Stand in for the real screen and the Windows DPI call: this screen size and this Tk scaling."""
+    """Stand in for the real screen, the taskbar, the window frame and the Windows DPI call (issue #117)."""
     width, height = screen
     monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenwidth", lambda self: width)
     monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenheight", lambda self: height)
+    taskbar = round(48 * scale / (4 / 3))  # taskbar grows with the Windows scaling; the CI runner's real one is not used
+    area = placement.Rect(0, 0, width, height - taskbar)
+    frame = placement.Frame(*(round(v * scale / (4 / 3)) for v in (8, 8, 31, 8)))
+    monkeypatch.setattr(placement, "work_area", lambda w, h, windll=None: area)
+    monkeypatch.setattr(ui_app, "frame_size", lambda: frame)
 
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window

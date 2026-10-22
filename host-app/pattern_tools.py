@@ -11,7 +11,8 @@ from PIL import Image, ImageTk
 
 import ui_i18n
 from ui_i18n import bind, t
-from ui_widgets import WINDOW_BG, Tooltip, apply_light_ttk_style, apply_window_icon, pin_light_appearance
+from ui_widgets import (WINDOW_BG, Tooltip, apply_light_ttk_style, apply_window_icon, fix_text_widths,
+                        pin_light_appearance)
 
 
 class PatternCropper(tk.Toplevel):
@@ -29,6 +30,7 @@ class PatternCropper(tk.Toplevel):
         apply_window_icon(self)
         apply_light_ttk_style(self)
         self._build_controls(device, template_key)
+        fix_text_widths(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)  # no resize on 🌐 (#117)
         self.bind("<Escape>", lambda _event: self.destroy())
         self.bind("<Destroy>", self._on_destroy, add="+")
         ui_i18n.on_language_change(self._relabel)

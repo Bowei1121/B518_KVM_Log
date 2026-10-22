@@ -126,10 +126,7 @@ def test_atlasui_applies_tk_scaling_to_its_own_root(monkeypatch):
     monkeypatch.setattr(ui_app, "apply_windows_tk_scaling", lambda root: seen.append(root) or real(root))
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
-    try:
-        app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
-    except tk.TclError:
-        pytest.skip("no Tk display")
+    app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)  # no skip: a Tk failure on Windows must show (#117 review)
     try:
         assert seen == [app]
     finally:
@@ -143,10 +140,7 @@ def test_windows_startup_writes_the_dpi_path_to_the_log(monkeypatch):
     monkeypatch.setattr(ui_app, "_DPI_AWARENESS_MODE", "user32")
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
-    try:
-        app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
-    except tk.TclError:
-        pytest.skip("no Tk display")
+    app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)  # no skip: a Tk failure on Windows must show (#117 review)
     try:
         log = app.log_text.get("1.0", "end")
         assert "Windows DPI: user32, tk scaling" in log

@@ -58,11 +58,13 @@ def test_work_area_falls_back_to_the_whole_screen_when_the_call_fails():
     assert placement.work_area(1920, 1080, windll=dll) == placement.Rect(0, 0, 1920, 1080)
 
 
-def test_work_area_is_the_whole_screen_off_windows():
+def test_work_area_is_the_whole_screen_off_windows(monkeypatch):
+    monkeypatch.setattr(placement, "_windows_dll", lambda: None)  # as on macOS and Linux, whatever the host is
     assert placement.work_area(1440, 900) == placement.Rect(0, 0, 1440, 900)
 
 
-def test_frame_is_zero_off_windows_and_from_metrics_on_windows():
+def test_frame_is_zero_off_windows_and_from_metrics_on_windows(monkeypatch):
+    monkeypatch.setattr(placement, "_windows_dll", lambda: None)
     assert placement.frame_size() == placement.NO_FRAME
     metrics = {placement.SM_CXFRAME: 8, placement.SM_CYFRAME: 8, placement.SM_CYCAPTION: 23,
                placement.SM_CXPADDEDBORDER: 4}
@@ -405,3 +407,22 @@ def test_linux_button_4_and_5_are_bound_and_scroll_the_log(make_ui):
     assert app.log_text.yview()[0] > top
     wheel_scroll._scroll(app, event, 120)  # Button-4 is "up"
     assert app.log_text.yview()[0] == pytest.approx(top, abs=1e-6)
+
+
+def test_pattern_cropper_keeps_its_size_and_places_across_a_language_switch(make_ui):
+    # The cropper is all ttk widgets; before the fix its window grew and shrank with the language (#117 review).
+    from pattern_tools import PatternCropper
+
+    app = make_ui((1920, 1080), 4 / 3)
+    cropper = PatternCropper(app, app._templates)
+    try:
+        ui_i18n.set_language("en")
+        before = _layout(cropper)
+        ui_i18n.set_language("zh")
+        after = _layout(cropper)
+        ui_i18n.set_language("en")
+        moved = {k: (before[k], after.get(k)) for k in before if before[k] != after.get(k)}
+        assert moved == {}, f"cropper changed after the language switch: {moved}"
+    finally:
+        ui_i18n.set_language("en")
+        cropper.destroy()
