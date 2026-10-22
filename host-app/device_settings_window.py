@@ -124,6 +124,7 @@ class DeviceSettingsWindow(tk.Toplevel):
         self.table.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.table, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        self._table_canvas = canvas
         wheel_scroll.register(canvas)
         canvas.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
@@ -170,6 +171,12 @@ class DeviceSettingsWindow(tk.Toplevel):
         else:
             self._say("ds_loaded", MUTED_FG, count=len(state.rows))
         self._show_errors({})
+
+    def _refresh_scroll_region(self) -> None:
+        """Set the table's scroll region now, not on a <Configure> event: some platforms deliver none before the window
+        is shown, and then the sideways scroll has nothing to move (#117 CI)."""
+        self.update_idletasks()
+        self._table_canvas.configure(scrollregion=self._table_canvas.bbox("all"))
 
     def _clear_rows(self) -> None:
         for entry in self._rows:
@@ -222,6 +229,7 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         entry["widgets"] = [check, e_device, combo, e_ip, e_channels, probe_btn, probe_lbl, error_lbl]
         self._rows.append(entry)
+        self._refresh_scroll_region()
         # Only this row's Test button: its text is measured in both languages, without switching the whole UI (#117)
         fix_width_to_texts(probe_btn, [t("ds_probe_btn", lang=lang) for lang in ui_i18n.LANGUAGES])
         for var in vars_.values():
