@@ -155,6 +155,9 @@ def _simulate(monkeypatch, screen, scale):
     frame = _frame(scale)
     monkeypatch.setattr(placement, "work_area", lambda w, h, windll=None: area)
     monkeypatch.setattr(ui_app, "frame_size", lambda: frame)
+    # the settings window sizes itself from its own screen (review R2-2): simulate that too
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenwidth", lambda self: width)
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenheight", lambda self: height)
 
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
@@ -359,6 +362,7 @@ def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):
             settings._add_row()
         settings.update_idletasks()
         canvas = next(w for w in iter_widgets(settings) if w.winfo_class() == "Canvas")
+        assert canvas.xview()[1] < 1.0, "the table must be wider than its window, or there is nothing to scroll sideways"
         top = canvas.yview()[0]
         _wheel(canvas, -120)
         assert canvas.yview()[0] > top
@@ -426,3 +430,14 @@ def test_pattern_cropper_keeps_its_size_and_places_across_a_language_switch(make
     finally:
         ui_i18n.set_language("en")
         cropper.destroy()
+
+
+def test_long_run_time_result_wraps_instead_of_being_cut(make_ui):
+    # Review R2-1: a result that is longer than the text fixed at start-up must wrap, not disappear (#117).
+    app = make_ui((1920, 1080), 4 / 3)
+    label = app.lbl_check_result
+    label.config(text="Result: " + "channel 1 and channel 2 are still testing; " * 6)
+    app.update_idletasks()
+    line = int(app.tk.call("font", "metrics", label.cget("font"), "-linespace"))
+    assert label.winfo_reqheight() >= 2 * line, "the long result was cut to one line"
+    assert str(label.cget("wraplength")) != "0"

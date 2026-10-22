@@ -194,7 +194,11 @@ def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: C
             # Windows draws some text wider than Tk measured it (fallback glyphs such as ✂); without a margin the
             # text wraps there, the row grows and the window cut it (CI, #117). The margin keeps one line.
             chars = max(1, -(-int(longest[id(w)] * FIXED_WIDTH_MARGIN) // zero))
-            w.configure(width=chars)  # no wraplength: a wrapped line makes the row taller and the window cut its neighbours
+            if w.winfo_class() in ("Label", "TLabel"):
+                # A Label shows run-time text too (a check result): wrap it rather than cut it (review R2-1)
+                w.configure(width=chars, wraplength=chars * zero)
+            else:
+                w.configure(width=chars)  # a Button has fixed text: no wrap, so its row keeps its height
         except tk.TclError:
             continue
     window.update_idletasks()

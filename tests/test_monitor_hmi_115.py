@@ -168,6 +168,7 @@ except tk.TclError:
 
 import ui_app  # noqa: E402
 import window_placement as placement  # noqa: E402
+import device_settings_window  # noqa: E402
 
 SUPPORTED = [
     ((1920, 1080), 4 / 3),
@@ -196,6 +197,9 @@ def _simulate(monkeypatch, screen, scale):
     frame = placement.Frame(*(round(v * scale / (4 / 3)) for v in (8, 8, 31, 8)))
     monkeypatch.setattr(placement, "work_area", lambda w, h, windll=None: area)
     monkeypatch.setattr(ui_app, "frame_size", lambda: frame)
+    # the settings window sizes itself from its own screen (review R2-2): simulate that too
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenwidth", lambda self: width)
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenheight", lambda self: height)
 
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
