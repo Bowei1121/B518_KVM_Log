@@ -201,6 +201,15 @@ def _simulate(monkeypatch, screen, scale):
     monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenwidth", lambda self: width)
     monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenheight", lambda self: height)
 
+    # wm maxsize is per toplevel and defaults to the runner's real screen: lift it for the settings window too (#117 R3-2c)
+    original_build = device_settings_window.DeviceSettingsWindow._build
+
+    def build_unlimited(self):
+        self.wm_maxsize(10000, 10000)
+        original_build(self)
+
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "_build", build_unlimited)
+
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
         root.tk.call("tk", "scaling", scale)
@@ -262,7 +271,9 @@ def _truncated(window):
         if widget.winfo_class() not in ("Label", "Button", "TCheckbutton") or not widget.winfo_ismapped():
             continue
         if widget.winfo_width() < widget.winfo_reqwidth() or widget.winfo_height() < widget.winfo_reqheight():
-            cut.append((str(widget), widget.cget("text")))
+            cut.append((str(widget), widget.cget("text"), f"has {widget.winfo_width()}x{widget.winfo_height()}",
+                        f"needs {widget.winfo_reqwidth()}x{widget.winfo_reqheight()}",
+                        f"window {window.winfo_width()}x{window.winfo_height()}"))
     return cut
 
 
@@ -457,7 +468,7 @@ def test_device_settings_has_a_test_button_that_is_not_cut_in_either_language(ma
         for lang in ("en", "zh"):
             ui_i18n.set_language(lang)
             settings.update_idletasks()
-            assert _truncated(settings) == [], lang
+            assert _truncated(settings) == [], (lang, settings.wm_maxsize(), settings._head_px)
     finally:
         ui_i18n.set_language("en")
         settings.destroy()

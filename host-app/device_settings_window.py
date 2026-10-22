@@ -69,12 +69,17 @@ class DeviceSettingsWindow(tk.Toplevel):
                                                   ui_i18n.set_language)
         wanted = table_w + self._scroll_bar.winfo_reqwidth() + 40  # table + vertical scrollbar + frame padding
         wanted = max(wanted, self._bar.winfo_reqwidth() + 20)  # the button row must not be cut either (#117)
-        width = min(max(880, wanted), self.winfo_screenwidth())
+        # wm maxsize is per toplevel and defaults to the physical screen: the window cannot be wider than it (#117 R3-2c)
+        width = min(max(880, wanted), self.winfo_screenwidth(), self.wm_maxsize()[0])
         self._size_head_labels(width)
         self.update_idletasks()
         # 520 px is the minimum; wrapped messages make the page taller and must not push the buttons out of the window (#117)
-        height = min(max(520, self.winfo_reqheight()), self.winfo_screenheight())
+        height = min(max(520, self.winfo_reqheight()), self.winfo_screenheight(), self.wm_maxsize()[1])
         self.geometry(f"{width}x{height}")
+        self.update()  # let the window manager apply it, then size the lines to the width the window really has
+        actual = self.winfo_width()  # 1 until the window is laid out: then the computed width stands
+        if actual > 1 and actual != width:
+            self._size_head_labels(actual)
 
     def _size_head_labels(self, window_px: int) -> None:
         """The path and status lines take the window's width, in characters, so they wrap inside it (#117).

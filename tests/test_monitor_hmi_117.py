@@ -134,6 +134,7 @@ except tk.TclError:
 
 import ui_app  # noqa: E402
 import device_settings_window  # noqa: E402
+import ui_widgets  # noqa: E402
 from ui_widgets import iter_widgets  # noqa: E402
 
 SUPPORTED = [
@@ -158,6 +159,15 @@ def _simulate(monkeypatch, screen, scale):
     # the settings window sizes itself from its own screen (review R2-2): simulate that too
     monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenwidth", lambda self: width)
     monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "winfo_screenheight", lambda self: height)
+
+    # wm maxsize is per toplevel and defaults to the runner's real 1024x768 screen: lift it for the settings window too
+    original_build = device_settings_window.DeviceSettingsWindow._build
+
+    def build_unlimited(self):
+        self.wm_maxsize(10000, 10000)
+        original_build(self)
+
+    monkeypatch.setattr(device_settings_window.DeviceSettingsWindow, "_build", build_unlimited)
 
     def apply(root):
         root.wm_maxsize(10000, 10000)  # the runner's real 1024×768 must not cap the window
@@ -239,11 +249,12 @@ def test_small_usable_height_shrinks_the_preview_and_keeps_the_log(make_ui, monk
 
 
 def test_enlarging_the_window_enlarges_the_live_view(make_ui):
-    # Checked on the packing rules, not on the size Tk reports: on Windows an unshown window does not lay out its
-    # children until it is shown, so a size read here can lag the geometry change (CI, review R2-3 follow-up).
     app = make_ui((1920, 1080), 4 / 3)
-    info = app.canvas_preview.pack_info()
-    assert info["fill"] == "both" and int(info["expand"]) == 1
+    app.update()  # geometry() is applied by the window manager: update_idletasks() alone leaves the old size on Windows
+    before = app.canvas_preview.winfo_width()
+    app.geometry(f"{app.winfo_width() + 300}x{app.winfo_height() + 150}")
+    app.update()
+    assert app.canvas_preview.winfo_width() > before, f"{before} -> {app.canvas_preview.winfo_width()}, maxsize {app.wm_maxsize()}"
 
 
 def test_full_preview_is_kept_when_the_usable_height_is_enough(make_ui):
@@ -361,29 +372,25 @@ def test_machine_list_scrolls_with_the_wheel(make_ui):
     assert app._dash_canvas.yview()[0] > top
 
 
-def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path, monkeypatch):
+def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):
     app = make_ui((1920, 1080), 4 / 3)
     settings = device_settings_window.DeviceSettingsWindow(app, client=None, path=tmp_path / "devices.json")
     try:
         settings.geometry("200x400")  # narrower than any table, so there is always something to scroll sideways
         for _ in range(30):
             settings._add_row()
-        settings.update_idletasks()
+        settings.update()  # the window manager applies geometry() here; update_idletasks() would not on Windows
         canvas = next(w for w in iter_widgets(settings) if w.winfo_class() == "Canvas")
-        # Routing, checked by spying on the scroll calls: whether the table is wider than the window depends on the
-        # platform's layout timing, so the test does not depend on it (CI, review R2-2).
-        # An unshown Toplevel is not hit-tested on Windows, so the pointer lookup is replaced here; the lookup itself is
-        # checked by the Log test, which runs on the shown main window. This checks the routing after it.
-        calls = []
-        monkeypatch.setattr(canvas, "yview_scroll", lambda n, what: calls.append(("y", n)))
-        monkeypatch.setattr(canvas, "xview_scroll", lambda n, what: calls.append(("x", n)))
-        monkeypatch.setattr(wheel_scroll, "target_under", lambda root, x, y: canvas)
-        event = types.SimpleNamespace(x_root=0, y_root=0, state=0)
-        wheel_scroll._scroll(settings, event, -120)
-        assert calls == [("y", 1)]
-        calls.clear()
-        wheel_scroll._scroll(settings, types.SimpleNamespace(x_root=0, y_root=0, state=wheel_scroll.SHIFT_MASK), -120)
-        assert calls == [("x", 1)]  # Shift + wheel: sideways
+        info = (f"canvas {canvas.winfo_width()}px, table {settings.table.winfo_reqwidth()}px, window "
+                f"{settings.winfo_width()}px, maxsize {settings.wm_maxsize()}")
+        assert settings.table.winfo_reqwidth() > canvas.winfo_width(), "premise: the table is wider than the canvas; " + info
+        assert canvas.xview()[1] < 1.0, "the table must be wider than its window, or there is nothing to scroll sideways; " + info
+        top = canvas.yview()[0]
+        _wheel(canvas, -120)
+        assert canvas.yview()[0] > top
+        left = canvas.xview()[0]
+        _wheel(canvas, -120, state=wheel_scroll.SHIFT_MASK)  # Shift + wheel: sideways
+        assert canvas.xview()[0] > left, info
     finally:
         settings.destroy()
 
@@ -447,49 +454,98 @@ def test_pattern_cropper_keeps_its_size_and_places_across_a_language_switch(make
         cropper.destroy()
 
 
-def test_long_run_time_result_wraps_instead_of_being_cut(make_ui):
-    # Review R2-1: a result that is longer than the text fixed at start-up must wrap, not disappear (#117).
+LONG_RESULT = "Result: " + "channel 1 and channel 2 are still testing; " * 6
+LONG_RESULT_ZH = "診斷結果：" + "通道 1 與通道 2 仍在測試中；" * 8
+LONG_SNAPSHOT = "Snapshot 1920x1080 at 12:34:56 from DFU-01, " * 3
+
+
+def _show_long_results(app):
+    """The longest run-time texts, set the way the app sets them (cut to the fixed lines, whole text in the hint)."""
+    app._set_info(app.lbl_check_result, lambda: LONG_RESULT if ui_i18n.current_language() == "en" else LONG_RESULT_ZH,
+                  ui_app.MUTED_FG)
+    app._set_info(app.lbl_preview_info, lambda: LONG_SNAPSHOT, ui_app.MUTED_FG)
+    app.update_idletasks()
+
+
+def test_long_run_time_result_is_cut_to_three_lines_and_the_whole_text_is_in_the_hint(make_ui):
+    # Review R3-1: the result box has a fixed height; what does not fit is cut with "…" (the whole text is in the Log).
     app = make_ui((1920, 1080), 4 / 3)
     label = app.lbl_check_result
-    label.config(text="Result: " + "channel 1 and channel 2 are still testing; " * 6)
-    app.update_idletasks()
+    height_before = label.winfo_reqheight()
+    _show_long_results(app)
     line = int(app.tk.call("font", "metrics", label.cget("font"), "-linespace"))
-    assert label.winfo_reqheight() >= 2 * line, "the long result was cut to one line"
-    assert str(label.cget("wraplength")) != "0"
+    assert label.winfo_reqheight() == height_before, "the box changed size with its text"
+    assert label.winfo_reqheight() <= 3 * line + 2 * int(label.cget("pady") or 0) + 6
+    assert str(label.cget("text")).endswith("…") and label.cget("text") != LONG_RESULT
+    assert ui_widgets.full_text(label) == LONG_RESULT  # the hover hint shows everything
+    assert str(app.lbl_preview_info.cget("text")).endswith("…")
+    assert ui_widgets.full_text(app.lbl_preview_info) == LONG_SNAPSHOT
+    assert "\n" not in str(app.lbl_preview_info.cget("text"))  # the snapshot line is one line
+
+
+def test_a_short_result_is_shown_whole(make_ui):
+    app = make_ui((1920, 1080), 4 / 3)
+    app._set_info(app.lbl_check_result, lambda: "OK", ui_app.OK_FG)
+    assert app.lbl_check_result.cget("text") == "OK" and ui_widgets.full_text(app.lbl_check_result) == ""
 
 
 def _cut_texts(window):
-    """Labels whose measured text does not fit: a fixed-width label must hold its text in one line, and a wrapping one
-    must be tall enough for every line (review R2-1). Measured with font metrics, not the widget's own request."""
+    """Labels and Buttons whose measured text does not fit what they were given (review R2-1, R3-1).
+
+    A one-line widget is cut when its text is wider than the widget; a wrapping one when its lines need more height
+    than it has. Measured with font metrics, not the widget's own request, which always agrees with itself.
+    """
     cut = []
     for widget in iter_widgets(window):
-        if widget.winfo_class() not in ("Label", "TLabel") or not widget.winfo_ismapped():
+        if widget.winfo_class() not in ("Label", "TLabel", "Button", "TButton") or not widget.winfo_ismapped():
             continue
         text = str(widget.cget("text"))
         if not text:
             continue
-        font = widget.cget("font") or "TkDefaultFont"
-        wrap = int(str(widget.cget("wraplength")) or 0)
-        if wrap:  # a wrapping label is cut when its lines (Tk's own request) need more height than it was given
+        font = ui_widgets._font_of(widget)
+        wrap = int(str(widget.cget("wraplength")) or 0) if widget.winfo_class() in ("Label", "TLabel") else 0
+        if wrap:
             if widget.winfo_height() < widget.winfo_reqheight():
-                cut.append((str(widget), text))
+                cut.append((str(widget), text, widget.winfo_height(), widget.winfo_reqheight()))
         else:
-            if int(widget.tk.call("font", "measure", font, text)) > widget.winfo_width():
-                cut.append((str(widget), text))
+            width = max(int(widget.tk.call("font", "measure", font, row)) for row in text.split("\n"))
+            if width > widget.winfo_width():
+                cut.append((str(widget), text, width, widget.winfo_width()))
     return cut
 
 
 def test_long_dynamic_texts_with_nine_machines_are_never_cut(make_ui):
-    # Review R2-1 part 3: a long run-time result, a long snapshot line and nine machines at once.
+    # Review R2-1 part 3 / R3-2a: a long run-time result, a long snapshot line and nine machines at once.
     app = make_ui((1920, 1080), 4 / 3)
     stations = [{"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
                 for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)]
     app._update_status_ui({"status": "ok", "stations": stations})
-    app.lbl_check_result.config(text="Result: " + "channel 1 and channel 2 are still testing; " * 6)
-    app.lbl_preview_info.config(text="Snapshot 1920x1080 at 12:34:56 from DFU-01, " * 3)
-    app.update_idletasks()
+    _show_long_results(app)
+    app.update()
     assert _cut_texts(app) == []
     app.on_toggle_language()
-    app.update_idletasks()
+    app.update()
     assert _cut_texts(app) == []
     ui_i18n.set_language("en")
+
+
+@pytest.mark.parametrize(("screen", "scale"), SUPPORTED, ids=SUPPORTED_IDS)
+def test_long_results_keep_every_widget_in_place_across_a_language_switch(make_ui, monkeypatch, screen, scale):
+    # Review R3-1: the same long result in the other language must not move or resize anything on the main window.
+    monkeypatch.setattr(ui_i18n, "save_language", lambda lang: True)
+    app = make_ui(screen, scale)
+    stations = [{"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
+                for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)]
+    app._update_status_ui({"status": "ok", "stations": stations})
+    ui_i18n.set_language("en")
+    _show_long_results(app)
+    app.update()
+    before = _layout(app)
+    assert _cut_texts(app) == []
+    app.on_toggle_language()
+    app.update()
+    after = _layout(app)
+    moved = {k: (before[k], after.get(k)) for k in before if before[k] != after.get(k)}
+    ui_i18n.set_language("en")
+    assert moved == {}, f"{len(moved)} widgets moved after the language switch: {moved}"
+    assert _cut_texts(app) == []

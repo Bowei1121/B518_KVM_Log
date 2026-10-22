@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from app_info import asset_path
+from ui_i18n import bind
 
 # ---- Palette (light only) ---------------------------------------------------------
 WINDOW_BG = "#f0f0f0"
@@ -204,14 +205,84 @@ def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: C
     window.update_idletasks()
 
 
-def reserve_text_width(widget: tk.Misc, chars: int) -> None:
-    """Give a Label that shows run-time text a fixed width of ``chars`` and wrap at it (#117 review R2-1).
+def reserve_text_width(widget: tk.Misc, chars: int, lines: int = 1) -> None:
+    """Give a Label that shows run-time text a fixed box of ``chars`` x ``lines`` (#117 review R2-1, R3-1).
 
-    The width is reserved up front, so a long result or snapshot line wraps inside it instead of squeezing the layout.
+    The box never changes with the text or the language, so a long result cannot push other widgets around. A text
+    that needs more lines is cut with "…" by ``bind_clamped``; the whole text is in the Log and the hover hint.
     """
     font = _font_of(widget)
     zero = int(widget.tk.call("font", "measure", font, "0")) or 1
-    widget.configure(width=chars, wraplength=chars * zero)
+    widget.configure(width=chars, height=lines, wraplength=chars * zero)
+    widget._clamp_lines = lines  # type: ignore[attr-defined]
+    widget._full_text = ""  # type: ignore[attr-defined]
+
+
+def clamp_text(widget: tk.Misc, text: str, lines: int) -> str:
+    """``text`` shortened with "…" so that it wraps into at most ``lines`` lines of the widget's wrap width.
+
+    The wrap is simulated with Tk's own font measure at 95% of the width, so the real wrap (Windows draws some text
+    wider than Tk measures it) never needs more lines than this counts.
+    """
+    wrap = int(str(widget.cget("wraplength")) or 0)
+    if wrap <= 0:
+        return text
+    font = _font_of(widget)
+    limit = wrap * 0.95
+
+    def measure(chunk: str) -> int:
+        return int(widget.tk.call("font", "measure", font, chunk))
+
+    rows: List[str] = []
+    for paragraph in text.split("\n"):
+        current = ""
+        for word in paragraph.split(" "):
+            candidate = word if not current else current + " " + word
+            if measure(candidate) <= limit:
+                current = candidate
+                continue
+            if current:
+                rows.append(current)
+                current = ""
+            while word and measure(word) > limit:  # a word longer than a row (a path, or Chinese text) breaks anywhere
+                cut = len(word)
+                while cut > 1 and measure(word[:cut]) > limit:
+                    cut -= 1
+                rows.append(word[:cut])
+                word = word[cut:]
+            current = word
+        rows.append(current)
+    if len(rows) <= lines:
+        return text
+    last = rows[lines - 1]
+    while last and measure(last + "…") > limit:
+        last = last[:-1]
+    return "\n".join(rows[:lines - 1] + [last.rstrip() + "…"])
+
+
+def bind_clamped(widget: tk.Misc, render: Callable[[], str]) -> None:
+    """``bind`` for a label made by ``reserve_text_width``: shows ``render()`` cut to the label's lines.
+
+    The whole text is kept for the hover hint (``full_text``) and the cut is redone on every language switch, so the
+    box stays the same size in either language.
+    """
+    lines = getattr(widget, "_clamp_lines", 0)
+    if not lines:
+        bind(widget, render)
+        return
+
+    def shown() -> str:
+        full = render()
+        text = clamp_text(widget, full, lines)
+        widget._full_text = full if text != full else ""  # type: ignore[attr-defined]
+        return text
+
+    bind(widget, shown)
+
+
+def full_text(widget: tk.Misc) -> str:
+    """The whole text of a cut label ("" when nothing was cut), for its hover hint."""
+    return getattr(widget, "_full_text", "")
 
 
 def fix_width_to_texts(widget: tk.Misc, texts) -> None:

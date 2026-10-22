@@ -84,6 +84,8 @@ from ui_widgets import (
     apply_window_icon,
     fix_text_widths,
     measure_all_languages,
+    bind_clamped,
+    full_text,
     reserve_text_width,
     pin_light_appearance,
 )
@@ -684,7 +686,8 @@ class AtlasUI(_BaseTk):
             view_status, text=t("preview_none"), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_preview_info.pack(side="left", fill="x", expand=True)
-        reserve_text_width(self.lbl_preview_info, 34)  # run-time snapshot line: wraps, does not squeeze (R2-1)
+        reserve_text_width(self.lbl_preview_info, 34, lines=1)  # run-time snapshot line: one fixed line, cut with … (R3-1)
+        Tooltip(self.lbl_preview_info, lambda: full_text(self.lbl_preview_info))
         view_bottom = tk.Frame(view_frame, bg=WINDOW_BG)
         view_bottom.pack(fill="x", pady=(2, 0))
         bind(self.lbl_preview_info, "preview_none")
@@ -772,7 +775,8 @@ class AtlasUI(_BaseTk):
             check_box, text=t("check_none"), font=self.f_bold, fg=MUTED_FG, bg=WINDOW_BG, anchor="w"
         )
         self.lbl_check_result.pack(anchor="w", pady=2)
-        reserve_text_width(self.lbl_check_result, 34)  # run-time result: wraps, does not squeeze (R2-1)
+        reserve_text_width(self.lbl_check_result, 34, lines=3)  # run-time result: three fixed lines, cut with … (R3-1)
+        Tooltip(self.lbl_check_result, lambda: full_text(self.lbl_check_result))
         bind(self.lbl_check_result, "check_none")
 
         # Pattern creation
@@ -1105,7 +1109,7 @@ class AtlasUI(_BaseTk):
         """Show a short message on the HMI, write the full detail to the Log, and make the label jump there."""
         mark = self._append_log(*detail, level=level)
         fg = ERROR_FG if level == "error" else WARN_FG
-        bind(label, lambda: f"{t(brief_key)}{t('see_log')}")
+        bind_clamped(label, lambda: f"{t(brief_key)}{t('see_log')}")
         label.config(fg=fg, cursor="hand2")
         label.bind("<Button-1>", lambda _event, m=mark: self._jump_to_log(m))
         return mark
@@ -1114,7 +1118,7 @@ class AtlasUI(_BaseTk):
     def _set_info(label: tk.Label, text: Any, fg: str) -> None:
         """Plain (non-error) label text. A callable is re-run on a language switch; clears any click-to-log binding."""
         render = text if callable(text) else (lambda: text)
-        bind(label, render)
+        bind_clamped(label, render)
         label.config(fg=fg, cursor="")
         label.unbind("<Button-1>")
 
