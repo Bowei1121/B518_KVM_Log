@@ -475,7 +475,7 @@ def test_long_run_time_result_is_cut_to_three_lines_and_the_whole_text_is_in_the
     _show_long_results(app)
     line = int(app.tk.call("font", "metrics", label.cget("font"), "-linespace"))
     assert label.winfo_reqheight() == height_before, "the box changed size with its text"
-    assert label.winfo_reqheight() <= 3 * line + 2 * int(label.cget("pady") or 0) + 6
+    assert label.winfo_reqheight() <= 3 * line + 6
     assert str(label.cget("text")).endswith("…") and label.cget("text") != LONG_RESULT
     assert ui_widgets.full_text(label) == LONG_RESULT  # the hover hint shows everything
     assert str(app.lbl_preview_info.cget("text")).endswith("…")

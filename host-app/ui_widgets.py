@@ -205,6 +205,28 @@ def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: C
     window.update_idletasks()
 
 
+def fit_label_to_pixels(label: tk.Misc, px: int, wrap: bool = True) -> None:
+    """Give a Label a fixed width of at most ``px`` pixels, whatever unit the platform counts its ``width`` in.
+
+    Tk counts ``width`` in characters, but the pixels per character differ from a "0" on Windows (CI, #117 R3-2c). So
+    the width is set from a guess and then corrected from the width Tk really asks for. ``wrap`` also wraps at it.
+    """
+    zero = int(label.tk.call("font", "measure", _font_of(label), "0")) or 1
+    label.configure(wraplength=0)
+    chars = max(1, px // zero)
+    for _ in range(3):
+        label.configure(width=chars)
+        label.update_idletasks()
+        asked = label.winfo_reqwidth()
+        if asked <= px or chars == 1:
+            break
+        chars = max(1, int(chars * px / asked))
+    inner = max(1, label.winfo_reqwidth() - 2 * (label.winfo_pixels(label.cget("padx")) + label.winfo_pixels(label.cget("bd"))
+                                                  + label.winfo_pixels(label.cget("highlightthickness"))))
+    if wrap:
+        label.configure(wraplength=inner)
+
+
 def reserve_text_width(widget: tk.Misc, chars: int, lines: int = 1) -> None:
     """Give a Label that shows run-time text a fixed box of ``chars`` x ``lines`` (#117 review R2-1, R3-1).
 
@@ -213,7 +235,8 @@ def reserve_text_width(widget: tk.Misc, chars: int, lines: int = 1) -> None:
     """
     font = _font_of(widget)
     zero = int(widget.tk.call("font", "measure", font, "0")) or 1
-    widget.configure(width=chars, height=lines, wraplength=chars * zero)
+    widget.configure(height=lines)
+    fit_label_to_pixels(widget, chars * zero)
     widget._clamp_lines = lines  # type: ignore[attr-defined]
     widget._full_text = ""  # type: ignore[attr-defined]
 

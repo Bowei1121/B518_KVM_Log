@@ -17,8 +17,8 @@ from device_registry import default_registry_path
 import ui_i18n
 from ui_i18n import bind, t
 from ui_widgets import (BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip,
-                        apply_window_icon, fix_text_widths, fix_width_to_texts, measure_all_languages,
-                        pin_light_appearance)
+                        apply_window_icon, fit_label_to_pixels, fix_text_widths, fix_width_to_texts,
+                        measure_all_languages, pin_light_appearance)
 import wheel_scroll
 
 STATIONS = ("DFU", "FCT", "BT")
@@ -32,7 +32,8 @@ class DeviceSettingsWindow(tk.Toplevel):
                  restart_core: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
         super().__init__(parent)
         wheel_scroll.install(self)
-        self._head_px = 820  # the head lines' width in pixels; set from the window width in _fit_size (#117)
+        self._sizing = False
+        self._head_px = 0  # the head lines' width in pixels; set from the window width in _fit_size (#117)
         bind(self, "ds_title", option="title")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
@@ -86,12 +87,17 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         Their width is fixed here, so a language switch changes their words but not their size.
         """
-        self._head_px = max(200, window_px - 40)
-        zero = int(self.tk.call("font", "measure", DS_FONT, "0")) or 1
-        chars = max(1, self._head_px // zero)
-        # The path has no spaces, so it must never wrap (Tk would break it inside a name): width only, no wraplength.
-        self.lbl_path.configure(width=chars, wraplength=0)
-        self.lbl_status.configure(width=chars, wraplength=chars * zero)  # messages have spaces: wrapping is fine
+        head_px = max(200, window_px - 40)
+        if self._sizing or head_px == self._head_px:  # fitting lays out the head, which fires <Configure> again
+            return
+        self._sizing = True
+        try:
+            self._head_px = head_px
+            # The path has no spaces, so it must never wrap (Tk would break it inside a name): width only, no wraplength.
+            fit_label_to_pixels(self.lbl_path, self._head_px, wrap=False)
+            fit_label_to_pixels(self.lbl_status, self._head_px)  # messages have spaces: wrapping is fine
+        finally:
+            self._sizing = False
         self.lbl_path.configure(text=self._path_text())
 
     def _path_text(self) -> str:
