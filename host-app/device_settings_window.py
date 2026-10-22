@@ -65,7 +65,8 @@ class DeviceSettingsWindow(tk.Toplevel):
     def _build(self) -> None:
         head = tk.Frame(self, padx=10, pady=6, bg=WINDOW_BG)
         head.pack(fill="x")
-        bind(tk.Label(head, font=("Arial", 10), bg=WINDOW_BG, fg=TEXT_FG), "ds_path", path=str(self._path)).pack(anchor="w")
+        bind(tk.Label(head, font=("Arial", 10), bg=WINDOW_BG, fg=TEXT_FG, wraplength=840, justify="left"),
+             "ds_path", path=str(self._path)).pack(anchor="w")
         self.lbl_status = tk.Label(head, text="", font=("Arial", 10), anchor="w", justify="left", wraplength=840,
                                    bg=WINDOW_BG, fg=TEXT_FG)
         self.lbl_status.pack(fill="x", pady=(4, 0))

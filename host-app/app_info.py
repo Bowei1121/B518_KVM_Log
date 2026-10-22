@@ -61,7 +61,7 @@ def build_label() -> str:
     _version, build_hash, build_date = _build_info()
     if not build_hash:
         return "build dev"
-    return f"build {build_hash}，{build_date}" if build_date else f"build {build_hash}"
+    return f"build {build_hash}, {build_date}" if build_date else f"build {build_hash}"
 
 
 def title_text() -> str:

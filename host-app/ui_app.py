@@ -591,23 +591,11 @@ class AtlasUI(_BaseTk):
         Tooltip(self.lbl_core_caption, self._core_tooltip_text)
 
         # ----------------------------------------------------------------------
-        # Station Real-Time Status Dashboard
-        # ----------------------------------------------------------------------
-        dash_frame = tk.LabelFrame(self, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
-        bind(dash_frame, "dash_title")
-        dash_frame.pack(fill="x", padx=PADX, pady=GAP)
-
-        self.stations_container = tk.Frame(dash_frame, bg=WINDOW_BG)
-        self.stations_container.pack(fill="x", expand=True)
-
-        self._render_station_cards()
-
-        # ----------------------------------------------------------------------
         # Bottom: Log Viewer
         # ----------------------------------------------------------------------
         log_frame = tk.LabelFrame(self, font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
         bind(log_frame, "log_title")
-        # Packed before the middle pane and not expanding: the Log always keeps its lines (issue #115).
+        # Packed before the dashboard and the middle pane: the Log always keeps its lines (issue #115).
         log_frame.pack(side="bottom", fill="x", padx=PADX, pady=(GAP, GAP))
 
         txt_wrap = tk.Frame(log_frame, bg=WINDOW_BG)
@@ -632,15 +620,41 @@ class AtlasUI(_BaseTk):
         txt_wrap.columnconfigure(0, weight=1)
 
         # ----------------------------------------------------------------------
+        # Station Real-Time Status Dashboard
+        # ----------------------------------------------------------------------
+        dash_frame = tk.LabelFrame(self, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
+        bind(dash_frame, "dash_title")
+        dash_frame.pack(fill="x", padx=PADX, pady=GAP)
+
+        # Machines scroll inside a box capped at 28% of the screen height, so nine machines cannot push the Log
+        # out of view (issue #115 review). The cap is part of the measured minimum size, so it never shrinks the middle pane.
+        self._dash_measuring = False
+        self._dash_cap = max(120, int(self.winfo_screenheight() * 0.28))
+        dash_scroll = ttk.Scrollbar(dash_frame, orient="vertical")
+        dash_scroll.pack(side="right", fill="y")
+        self._dash_canvas = tk.Canvas(dash_frame, bg=WINDOW_BG, highlightthickness=0, yscrollcommand=dash_scroll.set)
+        dash_scroll.configure(command=self._dash_canvas.yview)
+        self._dash_canvas.pack(side="left", fill="x", expand=True)
+        self.stations_container = tk.Frame(self._dash_canvas, bg=WINDOW_BG)
+        dash_window = self._dash_canvas.create_window((0, 0), window=self.stations_container, anchor="nw")
+        self._dash_canvas.bind("<Configure>", lambda e: self._dash_canvas.itemconfigure(dash_window, width=e.width))
+        self.stations_container.bind("<Configure>", lambda _e: self._size_dashboard())
+
+        self._render_station_cards()
+
+        # ----------------------------------------------------------------------
         # Middle: Split into Live Stream View & Controls
         # ----------------------------------------------------------------------
-        mid_paned = ttk.Panedwindow(self, orient="horizontal")
-        mid_paned.pack(fill="both", expand=True, padx=PADX, pady=GAP)
+        # A grid, not a ttk.Panedwindow: the control column keeps its requested width; the live view takes the rest.
+        mid = tk.Frame(self, bg=WINDOW_BG)
+        mid.pack(fill="both", expand=True, padx=PADX, pady=GAP)
+        mid.columnconfigure(0, weight=1)
+        mid.rowconfigure(0, weight=1)
 
         # Left pane: Live Monitor Display
-        view_frame = tk.LabelFrame(mid_paned, font=self.f_bold, padx=6, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
+        view_frame = tk.LabelFrame(mid, font=self.f_bold, padx=6, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
         bind(view_frame, "view_title")
-        mid_paned.add(view_frame, weight=3)
+        view_frame.grid(row=0, column=0, sticky="nsew")
 
         self.canvas_preview = tk.Canvas(
             view_frame, bg=PREVIEW_BG, width=480, height=270, highlightthickness=0
@@ -679,9 +693,9 @@ class AtlasUI(_BaseTk):
         Tooltip(self.btn_streamer_window, lambda: t("tip_popout"))
 
         # Right pane: Diagnostics & Pattern tools
-        ctrl_frame = tk.LabelFrame(mid_paned, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
+        ctrl_frame = tk.LabelFrame(mid, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
         bind(ctrl_frame, "ctrl_title")
-        mid_paned.add(ctrl_frame, weight=2)
+        ctrl_frame.grid(row=0, column=1, sticky="ns", padx=(GAP, 0))
 
         # Target selection
         row_target = tk.Frame(ctrl_frame, bg=WINDOW_BG)
@@ -800,13 +814,23 @@ class AtlasUI(_BaseTk):
         Both languages are measured so a switch to the longer text never cuts a label or button. The
         minimum size is the same measure, so the window cannot be dragged smaller than its content.
         """
+        self._dash_measuring = True
+        self._size_dashboard()
         width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
+        self._dash_measuring = False
+        self._size_dashboard()
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
         width = min(width, screen_w)
         height = min(height, screen_h)
         self.minsize(width, height)
         self.geometry(f"{width}x{max(height, int(screen_h * 0.85))}")
+
+    def _size_dashboard(self) -> None:
+        """Dashboard box height: its content, up to the cap; the full cap while the window size is being measured."""
+        inner = self.stations_container
+        height = self._dash_cap if self._dash_measuring else min(inner.winfo_reqheight(), self._dash_cap)
+        self._dash_canvas.configure(height=height, scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering

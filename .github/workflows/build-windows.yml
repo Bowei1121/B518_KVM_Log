@@ -65,6 +65,8 @@ jobs:
 
       - name: Write build info (version, git short hash, date; shown in the title and Log)
         shell: bash
+        env:
+          BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}  # the PR head, not the temporary merge commit
         run: python tools/write_build_info.py
 
       - name: Import smoke test (fails the job if any runtime dependency is missing)

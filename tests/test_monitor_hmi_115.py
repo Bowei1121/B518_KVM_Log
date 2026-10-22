@@ -54,7 +54,7 @@ def test_local_source_run_has_no_build_hash_so_it_shows_dev(monkeypatch):
 def test_build_label_with_ci_hash_and_date(monkeypatch):
     monkeypatch.setattr(app_info, "_build_info", lambda: ("0.1.00", "736bb8b", "2026-10-22"))
     assert app_info.is_ci_build() is True
-    assert app_info.build_label() == "build 736bb8b，2026-10-22"
+    assert app_info.build_label() == "build 736bb8b, 2026-10-22"
     assert app_info.version() == "0.1.00"
 
 
@@ -62,12 +62,22 @@ def test_write_build_info_writes_version_hash_and_date(tmp_path, monkeypatch):
     writer = _load_tool("write_build_info")
     monkeypatch.setattr(writer, "OUT", tmp_path / "_build_info.py")
     monkeypatch.setattr(writer, "git_short_hash", lambda: "abc1234")
+    monkeypatch.delenv("BUILD_SHA", raising=False)
     writer.main()
     namespace = {}
     exec((tmp_path / "_build_info.py").read_text(encoding="utf-8"), namespace)
     assert namespace["VERSION"] == "0.1.00"
     assert namespace["BUILD_HASH"] == "abc1234"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", namespace["BUILD_DATE"])
+
+
+def test_write_build_info_prefers_the_pr_head_sha_from_ci(tmp_path, monkeypatch):
+    writer = _load_tool("write_build_info")
+    monkeypatch.setattr(writer, "OUT", tmp_path / "_build_info.py")
+    monkeypatch.setattr(writer, "git_short_hash", lambda: "merge00")
+    monkeypatch.setenv("BUILD_SHA", "9447e78aabbccdd")
+    writer.main()
+    assert 'BUILD_HASH = "9447e78"' in (tmp_path / "_build_info.py").read_text(encoding="utf-8")
 
 
 def test_generated_build_info_is_not_committed():
@@ -212,14 +222,18 @@ def _truncated(window):
     return cut
 
 
-@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 2.0])
+# Tk scaling is points-to-pixels: Windows 100/125/150/200% = DPI/72 = 1.333 / 1.667 / 2.0 / 2.667.
+WINDOWS_SCALINGS = [4 / 3, 5 / 3, 2.0, 8 / 3]
+
+
+@pytest.mark.parametrize("scale", WINDOWS_SCALINGS)
 def test_log_is_visible_with_six_lines_at_every_scaling(make_ui, monkeypatch, scale):
     app = make_ui(scale)
     assert _log_lines_visible(app) >= 6, scale
     assert app.log_text.winfo_ismapped()
 
 
-@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 2.0])
+@pytest.mark.parametrize("scale", WINDOWS_SCALINGS)
 def test_nothing_is_cut_off_in_either_language(make_ui, scale):
     app = make_ui(scale)
     for lang in ("en", "zh"):
@@ -237,6 +251,22 @@ def test_log_keeps_six_lines_even_when_the_window_is_shrunk_to_its_minimum(make_
     app.geometry(f"{min_w}x{min_h}")
     app.update_idletasks()
     assert _log_lines_visible(app) >= 6
+
+
+def test_window_opens_at_85_percent_of_a_tall_screen(make_ui, monkeypatch):
+    # The real opening height is 85% of the screen; a fake 2000 px screen makes that visible (1700).
+    monkeypatch.setattr(ui_app.AtlasUI, "winfo_screenheight", lambda self: 2000)
+    requested = []  # the real screen is shorter and Tk clamps the window, so spy on the size that was asked for
+    original = ui_app.AtlasUI.geometry
+
+    def spy(self, *args):
+        if args:
+            requested.append(args[0])
+        return original(self, *args)
+
+    monkeypatch.setattr(ui_app.AtlasUI, "geometry", spy)
+    make_ui(1.0)
+    assert requested[-1].split("+")[0].split("x")[1] == "1700"
 
 
 def test_window_opens_at_85_percent_of_screen_height_and_content_width(make_ui):
@@ -322,6 +352,20 @@ def test_empty_hint_goes_away_once_machines_are_shown(make_ui):
     assert app.lbl_empty_hint is None
     app._update_status_ui({"status": "ok", "stations": []})
     assert app.lbl_empty_hint is not None
+
+
+def test_nine_machines_keep_six_log_lines_and_every_light_at_200_percent(make_ui):
+    # The B518 list is nine machines. Before the cap, they pushed the Log out of the window (issue #115 review).
+    app = make_ui(8 / 3)
+    stations = [{"device": f"{name}-{n:02d}", "station": name, "status": "IDLE"}
+                for name in ("DFU", "FCT", "BT") for n in (1, 2, 3)]
+    app._update_status_ui({"status": "ok", "stations": stations})
+    app.update_idletasks()
+    assert _log_lines_visible(app) >= 6
+    assert int(app._dash_canvas.cget("height")) <= app._dash_cap
+    lights = [w for w in _walk(app.stations_container) if isinstance(w, ui_app.StatusLight)]
+    assert len(lights) == 9  # the connection lamp is outside the dashboard
+    assert all(light.winfo_ismapped() for light in lights)
 
 
 def test_window_icon_images_are_kept_on_the_root(make_ui):
