@@ -7,7 +7,10 @@ REM  Templates stay external at %%USERPROFILE%%\Documents\template
 REM ============================================================
 cd /d "%~dp0"
 
-python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all av --collect-all aiortc --collect-all cv2 ui_app.py
+REM Version and build info for the title and Log (issue #115). Same step as CI; the build hash is the git short hash.
+python "%~dp0..\tools\write_build_info.py"
+
+python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM --icon assets\bridge.ico --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all av --collect-all aiortc --collect-all cv2 ui_app.py
 
 echo.
 echo ============================================================

@@ -24,7 +24,7 @@ LANGUAGE_NAMES = {"en": "English", "zh": "中文"}
 STRINGS: Dict[str, Dict[str, str]] = {
     "en": {
         # ---- main window: top bar
-        "win_title": "Atlas2-518 Lightweight Monitor Client",
+        "win_title": "ATE - LabVIEW Bridge Monitor v{version}",
         "top_title": "Core Service connection",
         "lbl_addr": "Service address:",
         "tip_reconnect": "Reconnect to the background service. Press this when the picture stops updating.",
@@ -46,6 +46,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "core_down": "Service not connected (see log)",
         # ---- station dashboard
         "dash_title": "Test machine status",
+        "dash_empty": "No machines yet. Press ⚙ at the top right to add one.",
+        "dash_offline": "Not connected to the service, so the machine list cannot be shown. Check the address above, or press 🔄.",
         "station_label": "Station: {station}",
         "light_idle": "Green: idle and ready to use.",
         "light_busy": "Yellow: testing now.",
@@ -249,7 +251,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
     },
     "zh": {
         # ---- main window: top bar
-        "win_title": "Atlas2-518 Lightweight Monitor Client",
+        "win_title": "ATE - LabVIEW Bridge Monitor v{version}",
         "top_title": "Core Service 連線設定",
         "lbl_addr": "服務位址：",
         "tip_reconnect": "重新連上背景服務。畫面資料不更新的時候按這個。",
@@ -271,6 +273,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "core_down": "服務未連線（詳見日誌）",
         # ---- station dashboard
         "dash_title": "測試機台即時狀態",
+        "dash_empty": "還沒有設定機台，請按右上角 ⚙ 新增。",
+        "dash_offline": "尚未連上服務，無法顯示機台清單。請檢查上方位址，或按 🔄 重連。",
         "station_label": "站別：{station}",
         "light_idle": "綠燈：閒置，可以使用。",
         "light_busy": "黃燈：測試中。",

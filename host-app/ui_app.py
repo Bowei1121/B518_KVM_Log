@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
@@ -53,6 +54,7 @@ _HOST_APP_DIR = Path(__file__).resolve().parent
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
+from app_info import about_text, asset_path, is_ci_build, version
 from core_channel import CoreChannel, channel_name_for
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics, note_for_language
@@ -79,6 +81,8 @@ from ui_widgets import (
     StatusLight,
     Tooltip,
     apply_light_ttk_style,
+    apply_window_icon,
+    measure_all_languages,
     pin_light_appearance,
 )
 
@@ -343,6 +347,7 @@ class MatchResultsWindow(_BaseToplevel):
         self.geometry("980x700")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
+        apply_window_icon(self)
         self.photo: Optional[ImageTk.PhotoImage] = None
         self.summary: Optional[Dict[str, Any]] = None
         self.records: List[Dict[str, Any]] = []
@@ -456,7 +461,8 @@ class AtlasUI(_BaseTk):
         super().__init__()
         self._tk_scaling = apply_windows_tk_scaling(self)
         ui_i18n.set_language(ui_i18n.load_saved_language())
-        bind(self, "win_title", option="title")
+        bind(self, "win_title", option="title", version=version())
+        apply_window_icon(self)
         self.configure(bg=WINDOW_BG)
         apply_light_ttk_style(self)
         self.update_idletasks()  # Tk needs the root realised before its appearance can be set
@@ -510,10 +516,7 @@ class AtlasUI(_BaseTk):
         self._build_widgets()
         ui_i18n.on_language_change(self._on_language_changed)
 
-        # Geometry
-        self.update_idletasks()
-        self.geometry("860x920")
-        self.minsize(800, 750)
+        self._fit_window()
 
         # Scheduled jobs
         self.after(100, self._drain_queues)
@@ -528,13 +531,30 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Top-right: language switch (🌐)
         # ----------------------------------------------------------------------
+        # Top row, Facebook style (issue #115): FOXLINK logo on the left; 🌐 and ⚙ on the right.
+        # The gear is packed first so it sits at the far right and 🌐 sits just left of it.
         header = tk.Frame(self, bg=WINDOW_BG)
         header.pack(fill="x", padx=PADX, pady=(GAP, 0))
+        self.btn_device_settings = tk.Button(
+            header, text="⚙", font=self.f_gear, bg=BUTTON_BG, fg=TEXT_FG,
+            command=self.on_open_device_settings,
+        )
+        self.btn_device_settings.pack(side="right", padx=(4, 0))
+        Tooltip(self.btn_device_settings, lambda: t("tip_settings"))
         self.btn_lang = tk.Button(
             header, text="🌐", font=self.f_icon, bg=BUTTON_BG, fg=TEXT_FG, command=self.on_toggle_language,
         )
-        self.btn_lang.pack(side="right")
+        self.btn_lang.pack(side="right", padx=4)
         Tooltip(self.btn_lang, lambda: t("tip_lang"))
+
+        logo = self._load_logo()
+        self._logo_image = logo  # Tk drops an image that nothing references
+        if logo is not None:
+            self.lbl_logo = tk.Label(header, image=logo, bg=WINDOW_BG, fg=TEXT_FG, bd=0)
+        else:
+            self.lbl_logo = tk.Label(header, text="FOXLINK", font=self.f_large_bold, fg=INFO_FG, bg=WINDOW_BG)
+        self.lbl_logo.pack(side="left")
+        self._logo_tip = Tooltip(self.lbl_logo, about_text)
 
         # ----------------------------------------------------------------------
         # Top Bar: Core Service Connection
@@ -559,13 +579,6 @@ class AtlasUI(_BaseTk):
         self.btn_connect.pack(side="left", padx=6)
         Tooltip(self.btn_connect, lambda: t("tip_reconnect"))
 
-        self.btn_device_settings = tk.Button(
-            top_frame, text="⚙", font=self.f_gear, bg=BUTTON_BG, fg=TEXT_FG,
-            command=self.on_open_device_settings,
-        )
-        self.btn_device_settings.pack(side="left", padx=6)
-        Tooltip(self.btn_device_settings, lambda: t("tip_settings"))
-
         # One lamp for the Core Service: green = connected, red = not connected.
         # Uptime and connection count are in its hover tip.
         self.light_core = StatusLight(top_frame, bg=WINDOW_BG)
@@ -588,6 +601,35 @@ class AtlasUI(_BaseTk):
         self.stations_container.pack(fill="x", expand=True)
 
         self._render_station_cards()
+
+        # ----------------------------------------------------------------------
+        # Bottom: Log Viewer
+        # ----------------------------------------------------------------------
+        log_frame = tk.LabelFrame(self, font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
+        bind(log_frame, "log_title")
+        # Packed before the middle pane and not expanding: the Log always keeps its lines (issue #115).
+        log_frame.pack(side="bottom", fill="x", padx=PADX, pady=(GAP, GAP))
+
+        txt_wrap = tk.Frame(log_frame, bg=WINDOW_BG)
+        txt_wrap.pack(fill="both", expand=True)
+        vscroll = tk.Scrollbar(txt_wrap, orient="vertical", bg=WINDOW_BG)
+        self.log_text = tk.Text(
+            txt_wrap,
+            height=8,
+            font=self.f_mono,
+            bg=LOG_BG,
+            fg=LOG_FG,
+            insertbackground=LOG_FG,
+            wrap="word",  # long lines wrap; the Log file keeps every line whole (issue #115)
+            yscrollcommand=vscroll.set,
+        )
+        self.log_text.tag_configure("error", foreground=LOG_ERROR_FG)
+        self.log_text.tag_configure("warn", foreground=LOG_WARN_FG)
+        vscroll.config(command=self.log_text.yview)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        txt_wrap.rowconfigure(0, weight=1)
+        txt_wrap.columnconfigure(0, weight=1)
 
         # ----------------------------------------------------------------------
         # Middle: Split into Live Stream View & Controls
@@ -723,38 +765,8 @@ class AtlasUI(_BaseTk):
         bind(self.btn_match_results, "btn_match")
         Tooltip(self.btn_match_results, lambda: t("tip_match"))
 
-        # ----------------------------------------------------------------------
-        # Bottom: Log Viewer
-        # ----------------------------------------------------------------------
-        log_frame = tk.LabelFrame(self, font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
-        bind(log_frame, "log_title")
-        log_frame.pack(fill="both", expand=True, padx=PADX, pady=(GAP, GAP))
-
-        txt_wrap = tk.Frame(log_frame, bg=WINDOW_BG)
-        txt_wrap.pack(fill="both", expand=True)
-        vscroll = tk.Scrollbar(txt_wrap, orient="vertical", bg=WINDOW_BG)
-        hscroll = tk.Scrollbar(txt_wrap, orient="horizontal", bg=WINDOW_BG)
-        self.log_text = tk.Text(
-            txt_wrap,
-            height=6,
-            font=self.f_mono,
-            bg=LOG_BG,
-            fg=LOG_FG,
-            insertbackground=LOG_FG,
-            wrap="none",
-            yscrollcommand=vscroll.set,
-            xscrollcommand=hscroll.set,
-        )
-        self.log_text.tag_configure("error", foreground=LOG_ERROR_FG)
-        self.log_text.tag_configure("warn", foreground=LOG_WARN_FG)
-        vscroll.config(command=self.log_text.yview)
-        hscroll.config(command=self.log_text.xview)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
-        txt_wrap.rowconfigure(0, weight=1)
-        txt_wrap.columnconfigure(0, weight=1)
-
+        about = about_text()  # first Log line: version and build (issue #115)
+        self._append_log(about, about)
         self._log_key("log_started")
         self._log_key("log_target", addr=f"{self.client.host}:{self.client.port}")
         if self._tk_scaling is not None:
@@ -764,6 +776,37 @@ class AtlasUI(_BaseTk):
             )
         if PatternCropper is None:
             self._log_key("log_pattern_unavailable", level="error", detail=format_exception_text(_PATTERN_IMPORT_ERROR))
+
+    def _load_logo(self) -> Any:
+        """The FOXLINK logo, enlarged to the screen's DPI (native is 137×35 at 96 DPI). None when it cannot load.
+
+        A logo that will not load must not stop the window, so any failure falls back to the text logo.
+        """
+        path = asset_path("foxlink_logo.png")
+        try:
+            if _PIL_OK:
+                img = Image.open(path).convert("RGBA")
+                scale = max(1.0, float(self.winfo_fpixels("1i")) / 96.0)
+                if scale != 1.0:
+                    img = img.resize((round(img.width * scale), round(img.height * scale)), Image.Resampling.LANCZOS)
+                return ImageTk.PhotoImage(img, master=self)
+            return tk.PhotoImage(master=self, file=str(path))
+        except Exception:  # missing file, unreadable PNG, or Tk refusing it: the text logo takes over
+            return None
+
+    def _fit_window(self) -> None:
+        """Open at 85% of the screen height and as wide as the content needs, in both languages (issue #115).
+
+        Both languages are measured so a switch to the longer text never cuts a label or button. The
+        minimum size is the same measure, so the window cannot be dragged smaller than its content.
+        """
+        width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        width = min(width, screen_w)
+        height = min(height, screen_h)
+        self.minsize(width, height)
+        self.geometry(f"{width}x{max(height, int(screen_h * 0.85))}")
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
@@ -836,6 +879,23 @@ class AtlasUI(_BaseTk):
                 "metrics": lbl_metrics,
                 "state": state,
             }
+        self._render_empty_hint()
+
+    def _empty_hint_key(self) -> str:
+        """Why the dashboard is empty: not connected (nothing to show yet) or connected with no machines."""
+        return "dash_empty" if self._service_ok else "dash_offline"
+
+    def _render_empty_hint(self) -> None:
+        """Plain-language hint in place of a blank dashboard (issue #115). Shown only when there are no machines."""
+        self.lbl_empty_hint = None
+        if self._stations:
+            return
+        hint = tk.Label(
+            self.stations_container, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
+        )
+        bind(hint, lambda: t(self._empty_hint_key()))
+        hint.pack(fill="x", pady=8)
+        self.lbl_empty_hint = hint
 
     def _station_of(self, device: str) -> str:
         for st in self._stations:
@@ -896,7 +956,7 @@ class AtlasUI(_BaseTk):
 
             # Update stations list if returned
             stations = status_res.get("stations")
-            if stations and isinstance(stations, list):
+            if isinstance(stations, list):
                 self._stations = stations
                 device_ids = [str(st.get("device", "")) for st in stations]
                 if device_ids != self._rendered_device_ids:
@@ -924,6 +984,8 @@ class AtlasUI(_BaseTk):
             for w in self._station_widgets.values():
                 w["light"].set_status("DISCONNECTED")
                 w["state"]["status"] = "DISCONNECTED"
+        if self.lbl_empty_hint is not None:
+            self.lbl_empty_hint.config(text=t(self._empty_hint_key()))
 
     # --------------------------------------------------------------------------
     # Logging & Threading Queue Plumbing
@@ -1374,6 +1436,14 @@ def runtime_self_test() -> List[str]:
             importlib.import_module(name)
         except Exception as exc:
             problems.append(f"import {name}: {exc!r}")
+    # Issue #115: the logo and the bridge icon must be inside the frozen exe, and CI must have written the build info.
+    for name in ("foxlink_logo.png", "bridge_16.png", "bridge_32.png", "bridge_48.png"):
+        if not asset_path(name).is_file():
+            problems.append(f"asset missing: {asset_path(name)}")
+    if getattr(sys, "frozen", False) and not is_ci_build():
+        problems.append("_build_info.py is missing from the exe (tools/write_build_info.py did not run)")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version()):
+        problems.append(f"version is not x.y.z: {version()!r}")
     checks = {
         "_TK_OK": _TK_OK,
         "_PIL_OK": _PIL_OK,

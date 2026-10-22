@@ -13,6 +13,8 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Optional, Tuple, Union
 
+from app_info import asset_path
+
 # ---- Palette (light only) ---------------------------------------------------------
 WINDOW_BG = "#f0f0f0"
 PANEL_BG = "#ffffff"
@@ -80,6 +82,50 @@ def pin_light_appearance(window: tk.Misc) -> None:
         return
     # Toplevel: the appearance can only be set once it is mapped, so pin on every map.
     window.bind("<Map>", lambda _event: _set_aqua(window), add="+")
+
+
+# ---- Window icon (issue #115) ----------------------------------------------------------
+ICON_SIZES = (16, 32, 48)
+_ICON_ATTR = "_atlas_icon_images"  # kept on the Tk root: Tk drops an image that has no Python reference
+
+
+def apply_window_icon(window: tk.Misc) -> None:
+    """Give ``window`` the bridge icon (``host-app/assets/bridge_<size>.png``). Child windows use the root's images.
+
+    A missing or unreadable asset leaves Tk's default icon in place; it never stops the window from opening.
+    """
+    root = window._root()
+    images = getattr(root, _ICON_ATTR, None)
+    if images is None:
+        try:
+            images = [tk.PhotoImage(master=root, file=str(asset_path(f"bridge_{size}.png"))) for size in ICON_SIZES]
+        except (tk.TclError, OSError):
+            return
+        setattr(root, _ICON_ATTR, images)
+    try:
+        window.iconphoto(False, *images)
+    except tk.TclError:
+        pass
+
+
+def measure_all_languages(window: tk.Misc, languages: Tuple[str, ...], get_language: Callable[[], str],
+                          set_language: Callable[[str], None]) -> Tuple[int, int]:
+    """Largest requested ``(width, height)`` of ``window`` over every language, so a switch never truncates.
+
+    The language is put back afterwards. The window's own geometry is not changed.
+    """
+    original = get_language()
+    width = height = 0
+    try:
+        for lang in languages:
+            set_language(lang)
+            window.update_idletasks()
+            width = max(width, window.winfo_reqwidth())
+            height = max(height, window.winfo_reqheight())
+    finally:
+        set_language(original)
+    window.update_idletasks()
+    return width, height
 
 
 def is_dark_appearance(window: tk.Misc) -> bool:

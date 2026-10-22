@@ -16,7 +16,8 @@ import device_list_editor as editor
 from device_registry import default_registry_path
 import ui_i18n
 from ui_i18n import bind, t
-from ui_widgets import BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip, pin_light_appearance
+from ui_widgets import (BUTTON_BG, ENTRY_BG, ERROR_FG, MUTED_FG, OK_FG, TEXT_FG, WINDOW_BG, Tooltip,
+                        apply_window_icon, measure_all_languages, pin_light_appearance)
 
 STATIONS = ("DFU", "FCT", "BT")
 ERROR_COLOR = ERROR_FG
@@ -28,9 +29,9 @@ class DeviceSettingsWindow(tk.Toplevel):
                  restart_core: Optional[Callable[[], Dict[str, Any]]] = None) -> None:
         super().__init__(parent)
         bind(self, "ds_title", option="title")
-        self.geometry("880x520")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
+        apply_window_icon(self)
         self._client = client
         self._path = Path(path) if path is not None else default_registry_path()
         self._restart_core = restart_core
@@ -43,6 +44,7 @@ class DeviceSettingsWindow(tk.Toplevel):
 
         self._build()
         self._load_from_file()
+        self._fit_size()
         self.after(100, self._drain)
         ui_i18n.on_language_change(self._relabel)
         self.bind("<Destroy>", self._on_destroy, add="+")
@@ -52,6 +54,14 @@ class DeviceSettingsWindow(tk.Toplevel):
             ui_i18n.off_language_change(self._relabel)
 
     # ---------------------------------------------------------------- layout
+    def _fit_size(self) -> None:
+        """Wide enough for every column in both languages, within the screen; the table scrolls if it still is not (#115)."""
+        table_w, _table_h = measure_all_languages(self.table, ui_i18n.LANGUAGES, ui_i18n.current_language,
+                                                  ui_i18n.set_language)
+        wanted = table_w + self._scroll_bar.winfo_reqwidth() + 40  # table + vertical scrollbar + frame padding
+        width = min(max(880, wanted), self.winfo_screenwidth())
+        self.geometry(f"{width}x520")
+
     def _build(self) -> None:
         head = tk.Frame(self, padx=10, pady=6, bg=WINDOW_BG)
         head.pack(fill="x")
@@ -60,16 +70,22 @@ class DeviceSettingsWindow(tk.Toplevel):
                                    bg=WINDOW_BG, fg=TEXT_FG)
         self.lbl_status.pack(fill="x", pady=(4, 0))
 
+        # Both scrollbars: a wide table (the Test button sits at the far right) can always be scrolled to (#115).
         table_frame = tk.Frame(self, padx=10, bg=WINDOW_BG)
         table_frame.pack(fill="both", expand=True)
         canvas = tk.Canvas(table_frame, highlightthickness=0, bg=WINDOW_BG)
         scroll = ttk.Scrollbar(table_frame, orient="vertical", command=canvas.yview)
+        scroll_x = ttk.Scrollbar(table_frame, orient="horizontal", command=canvas.xview)
         self.table = tk.Frame(canvas, bg=WINDOW_BG)
         self.table.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.table, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        canvas.configure(yscrollcommand=scroll.set, xscrollcommand=scroll_x.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        self._scroll_bar = scroll
 
         headers = ("ds_h_select", "ds_h_device", "ds_h_station", "ds_h_ip", "ds_h_channels", "ds_h_probe")
         for col, key in enumerate(headers):
@@ -128,7 +144,8 @@ class DeviceSettingsWindow(tk.Toplevel):
         ip = tk.StringVar(value=str(row.get("kvm_ip", "")))
         channels = tk.StringVar(value=str(row.get("channels", "")))
 
-        check = tk.Checkbutton(self.table, variable=selected, bg=WINDOW_BG, fg=TEXT_FG, activebackground=WINDOW_BG)
+        # ttk, not tk: a tk.Checkbutton draws as a squashed "⌐" on high-DPI Windows (issue #115)
+        check = ttk.Checkbutton(self.table, variable=selected)
         e_device = tk.Entry(self.table, textvariable=device, width=10, font=("Arial", 10), bg=ENTRY_BG, fg=TEXT_FG)
         combo = ttk.Combobox(self.table, textvariable=station, values=list(STATIONS), state="readonly", width=6)
         e_ip = tk.Entry(self.table, textvariable=ip, width=16, font=("Arial", 10), bg=ENTRY_BG, fg=TEXT_FG)

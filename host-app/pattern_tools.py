@@ -11,7 +11,7 @@ from PIL import Image, ImageTk
 
 import ui_i18n
 from ui_i18n import bind, t
-from ui_widgets import WINDOW_BG, Tooltip, apply_light_ttk_style, pin_light_appearance
+from ui_widgets import WINDOW_BG, Tooltip, apply_light_ttk_style, apply_window_icon, pin_light_appearance
 
 
 class PatternCropper(tk.Toplevel):
@@ -26,6 +26,7 @@ class PatternCropper(tk.Toplevel):
         bind(self, "pt_title", option="title")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
+        apply_window_icon(self)
         apply_light_ttk_style(self)
         self._build_controls(device, template_key)
         self.bind("<Escape>", lambda _event: self.destroy())
