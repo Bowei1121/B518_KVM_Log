@@ -128,6 +128,9 @@ def measure_all_languages(window: tk.Misc, languages: Tuple[str, ...], get_langu
     return width, height
 
 
+FIXED_WIDTH_MARGIN = 1.25  # widths are fixed with this much room over the widest measured text (#117)
+
+
 def iter_widgets(widget: tk.Misc):
     """``widget`` and every widget below it, parents first."""
     yield widget
@@ -173,7 +176,9 @@ def fix_text_widths(window: tk.Misc, languages: Tuple[str, ...], get_language: C
             continue
         try:
             zero = int(w.tk.call("font", "measure", w.cget("font"), "0")) or 1  # Tk counts width in "0" widths
-            chars = max(1, -(-longest[id(w)] // zero))
+            # Windows draws some text wider than Tk measured it (fallback glyphs such as ✂); without a margin the
+            # text wraps there, the row grows and the window cut it (CI, #117). The margin keeps one line.
+            chars = max(1, -(-int(longest[id(w)] * FIXED_WIDTH_MARGIN) // zero))
             w.configure(width=chars, wraplength=chars * zero)  # wrap at the fixed width, so a longer text never clips
         except tk.TclError:
             continue
