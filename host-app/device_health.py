@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Iterable
+
+if TYPE_CHECKING:
+    try:
+        from device_registry import DeviceEntry
+    except ImportError:
+        from .device_registry import DeviceEntry  # type: ignore[import-not-found,no-redef]
 
 
-@dataclass(frozen=True)
+@dataclass
 class DeviceHealth:
-    """Snapshot of a single test device's runtime connectivity and lock state."""
+    """Mutable health record of a single test device's runtime connectivity and lock state."""
 
     device: str
     station: str
@@ -34,7 +40,7 @@ class DeviceHealth:
 
 
 def build_health(
-    entries: Iterable[Any],
+    entries: Iterable[DeviceEntry],
     active_devices: Iterable[str],
     frozen_devices: Iterable[str],
     active_ips: Iterable[str],

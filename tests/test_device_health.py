@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 
 from device_health import DeviceHealth, build_health
 from device_registry import DeviceEntry, DeviceRegistry
+from freeze_guard import FrameFreezeGuard
+from kvm_pool import PooledKVMConnection
 from protocol_helpers import make_registry
 from tcp_server import CommandContext, TcpJsonServer
 
@@ -114,6 +116,8 @@ def test_core_status_and_status_consistency():
         "DFU-02": {"station": "DFU", "kvm_ip": "192.168.200.2", "channels": 4},
         "DFU-03": {"station": "DFU", "kvm_ip": "192.168.200.3", "channels": 4},
         "DFU-04": {"station": "DFU", "kvm_ip": "192.168.200.4", "channels": 4},
+        "DFU-05": {"station": "DFU", "kvm_ip": "192.168.200.5", "channels": 4},
+        "DFU-06": {"station": "DFU", "kvm_ip": "192.168.200.6", "channels": 4},
         "FCT-01": {"station": "FCT", "kvm_ip": "192.168.201.1", "channels": 2},
         "BT-01": {"station": "BT", "kvm_ip": "192.168.202.1", "channels": 1},
     }
@@ -125,11 +129,13 @@ def test_core_status_and_status_consistency():
     # - DFU-02: busy + frozen, disconnected
     # - DFU-03: frozen-only, connected
     # - DFU-04: frozen-only, disconnected
+    # - DFU-05: busy-only, connected
+    # - DFU-06: busy-only, disconnected
     # - FCT-01: connected-only
     # - BT-01: disconnected
-    active_devices = ["DFU-01", "DFU-02"]
+    active_devices = ["DFU-01", "DFU-02", "DFU-05", "DFU-06"]
     frozen_devices = ["DFU-01", "DFU-02", "DFU-03", "DFU-04"]
-    active_ips = ["192.168.200.1", "192.168.200.3", "192.168.201.1"]
+    active_ips = ["192.168.200.1", "192.168.200.3", "192.168.201.1", "192.168.200.5"]
 
     server.lock_manager.get_active_devices = lambda: active_devices
     server.freeze_guard.get_status = lambda: {"frozen_devices": frozen_devices}
@@ -143,6 +149,12 @@ def test_core_status_and_status_consistency():
     devices_by_dev = {dev["device"]: dev for dev in status_res["devices"]}
 
     assert set(stations_by_dev.keys()) == set(devices_by_dev.keys()) == set(custom_routes.keys())
+
+    for device, connected in (("DFU-05", True), ("DFU-06", False)):
+        assert stations_by_dev[device]["status"] == "BUSY"
+        assert stations_by_dev[device]["is_busy"] is devices_by_dev[device]["busy"] is True
+        assert stations_by_dev[device]["is_frozen"] is devices_by_dev[device]["frozen"] is False
+        assert stations_by_dev[device]["is_connected"] is devices_by_dev[device]["connected"] is connected
 
     for dev_id in custom_routes:
         st_row = stations_by_dev[dev_id]
@@ -188,49 +200,64 @@ def test_device_health_calls_getters_once_and_no_locks_or_frames():
     registry = make_registry()
     server = TcpJsonServer(device_registry=registry, host="127.0.0.1", port=0)
 
-    # 1. Spy on getters
-    mock_get_active = Mock(return_value=["DFU-01"])
-    server.lock_manager.get_active_devices = mock_get_active
+    tracked = server.freeze_guard.get_status()["tracked_devices_count"]
+    slots, streams = len(server._slots), len(server.freeze_guard._streams)
+    getters = [Mock(wraps=server.lock_manager.get_active_devices),
+               Mock(wraps=server.freeze_guard.get_status),
+               Mock(wraps=server.kvm_pool.get_active_ips)]
+    server.lock_manager.get_active_devices, server.freeze_guard.get_status, server.kvm_pool.get_active_ips = getters
 
-    mock_get_status = Mock(return_value={"frozen_devices": ["DFU-02"]})
-    server.freeze_guard.get_status = mock_get_status
+    def poison(*args, **kwargs):
+        raise AssertionError("Status must not acquire a device lock or connection")
 
-    mock_get_ips = Mock(return_value=["192.168.200.1"])
-    server.kvm_pool.get_active_ips = mock_get_ips
+    server.lock_manager.try_acquire = poison
+    server.kvm_pool.get_connection = poison
+    server.kvm_pool.acquire_connection = poison
 
-    # 2. Poison lock acquisition so any lock attempt raises
-    def poison_lock(*args, **kwargs):
-        raise AssertionError("Lock acquisition called on lock_manager!")
-
-    server.lock_manager.try_acquire = poison_lock
-    server.lock_manager.acquire = poison_lock
-
-    # 3. Poison KVM frame access
     class PoisonKVM:
         def latest_frame(self, *args, **kwargs):
             raise AssertionError("latest_frame called on KVM!")
 
-    server.kvm_pool.get = Mock(return_value=PoisonKVM())
+    ip = registry.entries()[0].kvm_ip
+    server.kvm_pool._pool[ip] = PooledKVMConnection(ip, PoisonKVM())
+    server._device_health()
+    for getter in getters:
+        getter.assert_called_once_with()
 
-    # Call _device_health()
-    health_list = server._device_health()
+    for handler in (server._handle_core_status, server._handle_status):
+        asyncio.run(handler(CommandContext(), None))
+        assert len(server._slots) == slots
+        assert len(server.freeze_guard._streams) == streams
+        assert FrameFreezeGuard.get_status(server.freeze_guard)["tracked_devices_count"] == tracked
 
-    # Getters called exactly once
-    assert mock_get_active.call_count == 1
-    assert mock_get_status.call_count == 1
-    assert mock_get_ips.call_count == 1
 
-    # Returns health records for all entries
-    assert len(health_list) == len(registry.entries())
-    assert all(isinstance(h, DeviceHealth) for h in health_list)
-
-    # Both _station_rows() and _handle_status() must build from _device_health()
-    server._device_health = Mock(wraps=server._device_health)
-    server._station_rows()
-    assert server._device_health.call_count == 1
-
+def test_health_records_are_stored_and_updated_without_tracking_streams():
+    guard = FrameFreezeGuard()
+    tracked = guard.get_status()["tracked_devices_count"]
+    registry = make_registry()
+    server = TcpJsonServer(device_registry=registry, freeze_guard=guard)
+    assert guard.get_status()["tracked_devices_count"] == tracked
+    assert list(server._health) == [entry.device_id for entry in registry.entries()]
+    before = {h.device: h for h in server._device_health()}
+    first = registry.entries()[0]
+    server.lock_manager.get_active_devices = lambda: [first.device_id]
+    server.kvm_pool.get_active_ips = lambda: [first.kvm_ip]
+    original_status = guard.get_status
+    guard.get_status = lambda: {**original_status(), "frozen_devices": [first.device_id]}
+    after = {h.device: h for h in server._device_health()}
+    for device, record in before.items():
+        assert after[device] is record is server._health[device]
+    record = before[first.device_id]
+    assert (record.busy, record.frozen, record.connected) == (True, True, True)
+    server.lock_manager.get_active_devices = lambda: []
+    server.kvm_pool.get_active_ips = lambda: []
+    guard.get_status = original_status
     asyncio.run(server._handle_status(CommandContext(), None))
-    assert server._device_health.call_count == 2
+    asyncio.run(server._handle_core_status(CommandContext(), None))
+    assert (record.busy, record.frozen, record.connected) == (False, False, False)
+    assert guard.get_status()["tracked_devices_count"] == tracked
+    assert not server._slots
+    assert not guard._streams
 
 
 def test_status_and_core_status_rows_keep_their_keys_in_order():

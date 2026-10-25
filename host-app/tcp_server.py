@@ -271,6 +271,11 @@ class TcpJsonServer:
             device_registry if device_registry is not None else DeviceRegistry([])
         )
 
+        self._health: dict[str, DeviceHealth] = {
+            record.device: record
+            for record in build_health(self.device_registry.entries(), [], [], [])
+        }
+
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -339,14 +344,19 @@ class TcpJsonServer:
         return {"pong": True, "core_version": CORE_VERSION}
 
     def _device_health(self) -> list[DeviceHealth]:
-        """One health record per configured device: reads Device Lock, Freeze Guard and the pool once each.
+        """Update the stored per-device health records and return them in registry order.
 
-        Reads no frame and takes no device lock. Both core_status and LabVIEW status are built from it.
+        Reads Device Lock, Freeze Guard and the pool once each. Reads no frame and takes no device lock.
+        Both core_status and LabVIEW status are built from these records.
         """
-        active_devices = self.lock_manager.get_active_devices()
-        frozen_devices = self.freeze_guard.get_status().get("frozen_devices", [])
-        active_ips = self.kvm_pool.get_active_ips()
-        return build_health(self.device_registry.entries(), active_devices, frozen_devices, active_ips)
+        active = set(self.lock_manager.get_active_devices())
+        frozen = set(self.freeze_guard.get_status().get("frozen_devices", []))
+        connected = set(self.kvm_pool.get_active_ips())
+        for record in self._health.values():
+            record.busy = record.device in active
+            record.frozen = record.device in frozen
+            record.connected = record.kvm_ip in connected
+        return list(self._health.values())
 
     def _station_rows(self) -> list[Dict[str, Any]]:
         """Real-time status of every configured test station (the ``stations`` list of core_status).
