@@ -928,11 +928,14 @@ class AtlasUI(_BaseTk):
             lbl_title = tk.Label(header, text=dev_id, font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
             lbl_title.pack(side="left")
 
-            state: Dict[str, Any] = {"station": st_name, "status": status}
+            state: Dict[str, Any] = {"station": st_name, "status": status, "row": dict(st), "core_connected": True}
             light = StatusLight(header, bg=WINDOW_BG)
             light.pack(side="right")
-            light.set_status(status)
-            Tooltip(light, lambda s=state: t(ui_i18n.station_light_tip_key(s["status"])))
+            pres = present_station(st)
+            light.set_light(pres.light, pres.blink)
+            tip = Tooltip(light, lambda s=state: t(
+                present_station(s["row"], core_connected=s["core_connected"]).text_key
+            ))
 
             lbl_dev = tk.Label(card, text=t("station_label", station=st_name), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG)
             lbl_dev.pack(anchor="w", pady=(2, 4))
@@ -956,6 +959,7 @@ class AtlasUI(_BaseTk):
             self._station_widgets[dev_id] = {
                 "card": card,
                 "light": light,
+                "tip": tip,
                 "device": lbl_dev,
                 "metrics": lbl_metrics,
                 "state": state,
@@ -1052,7 +1056,10 @@ class AtlasUI(_BaseTk):
                 for st in stations:
                     w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
-                        w["light"].set_status(st.get("status", "DISCONNECTED"))
+                        pres = present_station(st)
+                        w["light"].set_light(pres.light, pres.blink)
+                        w["state"]["row"] = dict(st)
+                        w["state"]["core_connected"] = True
                         w["state"]["status"] = str(st.get("status", "DISCONNECTED")).upper()
                         w["metrics"].config(text=format_reading_metrics(st))
         else:
@@ -1066,7 +1073,8 @@ class AtlasUI(_BaseTk):
                 error = (str(msg), str(msg)) if msg else pair("err_conn_lost")
                 self._log_key("log_core_down", level="error", error=error)
             for w in self._station_widgets.values():
-                pres = present_station(w["state"], core_connected=False)
+                pres = present_station(w["state"]["row"], core_connected=False)
+                w["state"]["core_connected"] = False
                 w["light"].set_light(pres.light, pres.blink)
                 w["state"]["status"] = "DISCONNECTED"
         if self.lbl_empty_hint is not None:
