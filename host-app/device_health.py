@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Container, Iterable
 
 if TYPE_CHECKING:
     try:
@@ -23,6 +23,17 @@ class DeviceHealth:
     busy: bool
     frozen: bool
     channels: int = 0
+
+    def refresh(
+        self,
+        active_devices: Container[str],
+        frozen_devices: Container[str],
+        active_ips: Container[str],
+    ) -> None:
+        """Refresh runtime flags using set-like membership."""
+        self.busy = self.device in active_devices
+        self.frozen = self.device in frozen_devices
+        self.connected = self.kvm_ip in active_ips
 
     @property
     def status(self) -> str:
@@ -53,15 +64,17 @@ def build_health(
     frozen_set = set(frozen_devices)
     ips_set = set(active_ips)
 
-    return [
-        DeviceHealth(
+    records = []
+    for entry in entries:
+        record = DeviceHealth(
             device=entry.device_id,
             station=entry.station,
             kvm_ip=entry.kvm_ip,
-            connected=entry.kvm_ip in ips_set,
-            busy=entry.device_id in active_set,
-            frozen=entry.device_id in frozen_set,
+            connected=False,
+            busy=False,
+            frozen=False,
             channels=entry.channels,
         )
-        for entry in entries
-    ]
+        record.refresh(active_set, frozen_set, ips_set)
+        records.append(record)
+    return records

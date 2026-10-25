@@ -224,8 +224,11 @@ def test_device_health_calls_getters_once_and_no_locks_or_frames():
     for getter in getters:
         getter.assert_called_once_with()
 
+    server._device_health = Mock(wraps=server._device_health)
     for handler in (server._handle_core_status, server._handle_status):
+        calls_before = server._device_health.call_count
         asyncio.run(handler(CommandContext(), None))
+        assert server._device_health.call_count == calls_before + 1
         assert len(server._slots) == slots
         assert len(server.freeze_guard._streams) == streams
         assert FrameFreezeGuard.get_status(server.freeze_guard)["tracked_devices_count"] == tracked
@@ -238,17 +241,27 @@ def test_health_records_are_stored_and_updated_without_tracking_streams():
     server = TcpJsonServer(device_registry=registry, freeze_guard=guard)
     assert guard.get_status()["tracked_devices_count"] == tracked
     assert list(server._health) == [entry.device_id for entry in registry.entries()]
+    stored = dict(server._health)
     before = {h.device: h for h in server._device_health()}
+    for device, record in stored.items():
+        assert server._health[device] is record
+        assert before[device] is not record
     first = registry.entries()[0]
     server.lock_manager.get_active_devices = lambda: [first.device_id]
     server.kvm_pool.get_active_ips = lambda: [first.kvm_ip]
     original_status = guard.get_status
     guard.get_status = lambda: {**original_status(), "frozen_devices": [first.device_id]}
     after = {h.device: h for h in server._device_health()}
-    for device, record in before.items():
-        assert after[device] is record is server._health[device]
-    record = before[first.device_id]
+    for device, record in stored.items():
+        assert server._health[device] is record
+        assert after[device] is not record
+        assert after[device] is not before[device]
+    record = stored[first.device_id]
     assert (record.busy, record.frozen, record.connected) == (True, True, True)
+    after[first.device_id].kvm_ip = "10.0.0.99"
+    refreshed = {h.device: h for h in server._device_health()}
+    assert refreshed[first.device_id].kvm_ip == first.kvm_ip
+    assert refreshed[first.device_id].connected is True
     server.lock_manager.get_active_devices = lambda: []
     server.kvm_pool.get_active_ips = lambda: []
     guard.get_status = original_status

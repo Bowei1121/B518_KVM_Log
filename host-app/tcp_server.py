@@ -18,7 +18,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Coroutine, Dict, Mapping, Optional, Set, Tuple
 
 try:
@@ -271,6 +271,9 @@ class TcpJsonServer:
             device_registry if device_registry is not None else DeviceRegistry([])
         )
 
+        # Runtime records are read/written only on the asyncio event-loop thread.
+        # _device_health has no await, so readers never see a partial update.
+        # Future worker-thread updates must add an internal lock, not the Device Lock.
         self._health: dict[str, DeviceHealth] = {
             record.device: record
             for record in build_health(self.device_registry.entries(), [], [], [])
@@ -344,7 +347,7 @@ class TcpJsonServer:
         return {"pong": True, "core_version": CORE_VERSION}
 
     def _device_health(self) -> list[DeviceHealth]:
-        """Update the stored per-device health records and return them in registry order.
+        """Update stored health records and return copies in registry order.
 
         Reads Device Lock, Freeze Guard and the pool once each. Reads no frame and takes no device lock.
         Both core_status and LabVIEW status are built from these records.
@@ -353,10 +356,8 @@ class TcpJsonServer:
         frozen = set(self.freeze_guard.get_status().get("frozen_devices", []))
         connected = set(self.kvm_pool.get_active_ips())
         for record in self._health.values():
-            record.busy = record.device in active
-            record.frozen = record.device in frozen
-            record.connected = record.kvm_ip in connected
-        return list(self._health.values())
+            record.refresh(active, frozen, connected)
+        return [replace(record) for record in self._health.values()]
 
     def _station_rows(self) -> list[Dict[str, Any]]:
         """Real-time status of every configured test station (the ``stations`` list of core_status).
