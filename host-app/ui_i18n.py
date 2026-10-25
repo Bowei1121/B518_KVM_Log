@@ -508,7 +508,7 @@ def pair(key: str, **kwargs: Any) -> Tuple[str, str]:
 
 def station_light_tip_key(status: str) -> str:
     """Hover text key for a station light, matched the same way as ``ui_widgets.light_for_status``."""
-    return present_station(status).text_key
+    return present_station({"status": status}).text_key
 
 
 # ---------------------------------------------------------------- live switching

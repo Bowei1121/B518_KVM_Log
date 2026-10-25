@@ -91,7 +91,7 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
     ],
 )
 def test_exact_statuses_table_rows(status, expected):
-    res = present_station(status)
+    res = present_station({"status": status})
     assert res == expected
     assert res.text_key == expected.text_key
     assert res.light == expected.light
@@ -102,7 +102,7 @@ def test_exact_statuses_table_rows(status, expected):
 
 
 def test_station_presentation_is_frozen():
-    pres = present_station("IDLE")
+    pres = present_station({"status": "IDLE"})
     with pytest.raises((FrozenInstanceError, AttributeError)):
         pres.light = "yellow"  # type: ignore[misc]
 
@@ -119,10 +119,15 @@ def test_station_presentation_is_frozen():
         ("frozen", "light_frozen", "red", True),
         ("disconnected", "light_disc", "red", False),
         ("UNKNOWN_STATUS", "light_disc", "red", False),
+        ("NOT_OK", "light_disc", "red", False),
+        ("LOOKING", "light_disc", "red", False),
+        ("IDLE_BUSY", "light_disc", "red", False),
+        ("BUSY_FROZEN", "light_disc", "red", False),
+        ("FROZEN?", "light_disc", "red", False),
     ],
 )
 def test_unknown_and_normalised_strings(status, expected_key, expected_light, expected_blink):
-    res = present_station(status)
+    res = present_station({"status": status})
     assert res.text_key == expected_key
     assert res.light == expected_light
     assert res.blink == expected_blink
@@ -141,14 +146,19 @@ def test_unknown_and_normalised_strings(status, expected_key, expected_light, ex
         "FROZEN",
         "DISCONNECTED",
         "WEIRD",
+        "NOT_OK",
+        "LOOKING",
+        "IDLE_BUSY",
+        "BUSY_FROZEN",
+        "FROZEN?",
         "",
         None,
         "idle",
     ],
 )
 def test_core_disconnected_overrides_every_status(status):
-    res = present_station(status, core_connected=False)
-    disc = present_station("DISCONNECTED", core_connected=True)
+    res = present_station({"status": status}, core_connected=False)
+    disc = present_station({"status": "DISCONNECTED"}, core_connected=True)
     assert res == disc
     assert res.text_key == "light_disc"
     assert res.light == "red"
@@ -159,16 +169,32 @@ def test_core_disconnected_overrides_every_status(status):
 
 
 @pytest.mark.parametrize(
-    "status",
-    ["IDLE", "OK", "BUSY", "TESTING", "FROZEN", "DISCONNECTED"],
+    ("lang", "case", "expected_text"),
+    [
+        ('en', 'IDLE', 'Green: idle and ready to use.'),
+        ('en', 'OK', 'Green: idle and ready to use.'),
+        ('en', 'BUSY', 'Yellow: testing now.'),
+        ('en', 'TESTING', 'Yellow: testing now.'),
+        ('en', 'FROZEN', 'Blinking red: the picture is frozen (stuck).'),
+        ('en', 'DISCONNECTED', 'Red: disconnected.'),
+        ('en', 'WEIRD', 'Red: disconnected.'),
+        ('en', 'CORE_DOWN', 'Red: disconnected.'),
+        ('zh', 'IDLE', '綠燈：閒置，可以使用。'),
+        ('zh', 'OK', '綠燈：閒置，可以使用。'),
+        ('zh', 'BUSY', '黃燈：測試中。'),
+        ('zh', 'TESTING', '黃燈：測試中。'),
+        ('zh', 'FROZEN', '紅燈閃爍：畫面卡住不動。'),
+        ('zh', 'DISCONNECTED', '紅燈：斷線。'),
+        ('zh', 'WEIRD', '紅燈：斷線。'),
+        ('zh', 'CORE_DOWN', '紅燈：斷線。'),
+    ],
 )
-def test_hint_text_exists_and_non_empty_in_en_and_zh(status):
-    pres = present_station(status)
-    for lang in ("en", "zh"):
-        text = ui_i18n.t(pres.text_key, lang=lang)
-        assert isinstance(text, str)
-        assert text.strip() != ""
-        assert text != pres.text_key
+def test_hint_text_matches_literal_translation(lang, case, expected_text):
+    pres = present_station(
+        {"status": "IDLE" if case == "CORE_DOWN" else case},
+        core_connected=case != "CORE_DOWN",
+    )
+    assert ui_i18n.t(pres.text_key, lang=lang) == expected_text
 
 
 @pytest.mark.parametrize(
@@ -181,6 +207,11 @@ def test_hint_text_exists_and_non_empty_in_en_and_zh(status):
         "FROZEN",
         "DISCONNECTED",
         "WEIRD",
+        "NOT_OK",
+        "LOOKING",
+        "IDLE_BUSY",
+        "BUSY_FROZEN",
+        "FROZEN?",
         "",
         None,
         "idle",
@@ -190,12 +221,22 @@ def test_hint_text_exists_and_non_empty_in_en_and_zh(status):
     ],
 )
 def test_equivalence_with_light_for_status_and_station_light_tip_key(status):
-    pres = present_station(status)
+    pres = present_station({"status": status})
     assert light_for_status(status) == (pres.light, pres.blink)
     assert station_light_tip_key(status) == pres.text_key
 
 
 def test_row_background_is_todays_window_background():
     for status in ("IDLE", "BUSY", "FROZEN", "DISCONNECTED", "WEIRD"):
-        assert present_station(status).row_bg == WINDOW_BG
-        assert present_station(status, core_connected=False).row_bg == WINDOW_BG
+        assert present_station({"status": status}).row_bg == WINDOW_BG
+        assert present_station({"status": status}, core_connected=False).row_bg == WINDOW_BG
+
+
+@pytest.mark.parametrize("row", [None, {}])
+def test_missing_row_or_status_is_disconnected(row):
+    assert present_station(row) == present_station({"status": "DISCONNECTED"})
+
+
+def test_extra_row_keys_are_ignored():
+    row = {"status": "FROZEN", "device": "DFU-01", "other": "BUSY"}
+    assert present_station(row) == present_station({"status": "FROZEN"})

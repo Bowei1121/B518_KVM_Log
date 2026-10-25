@@ -370,3 +370,19 @@ def test_snapshot_failure_shows_short_text_and_clears_when_fixed(ui):
     ui._set_info(ui.lbl_preview_info, "Size: 1x1", "#555555")
     assert ui.lbl_preview_info.cget("text") == "Size: 1x1"
     assert ui.lbl_preview_info.bind("<Button-1>") == ""
+
+
+def test_core_disconnect_stops_all_station_blinking(ui):
+    from ui_i18n import station_light_tip_key
+
+    ui._update_status_ui({"status": "ok", "stations": [
+        {"device": "DFU-01", "station": "DFU", "status": "FROZEN"},
+        {"device": "FCT-01", "station": "FCT", "status": "IDLE"},
+    ]})
+    assert ui._station_widgets["DFU-01"]["light"].is_blinking()
+    ui._update_status_ui({"status": "error"})
+    assert ui._station_widgets
+    for w in ui._station_widgets.values():
+        assert w["light"].current_fill() == LED_RED
+        assert w["light"].is_blinking() is False
+        assert station_light_tip_key(w["state"]["status"]) == "light_disc"

@@ -333,7 +333,7 @@ def is_dark_appearance(window: tk.Misc) -> bool:
 
 def light_for_status(status: str) -> Tuple[str, bool]:
     """Map a Core station status to ``(colour key, blink)``. FROZEN blinks red; DISCONNECTED is red."""
-    pres = present_station(status)
+    pres = present_station({"status": status})
     return pres.light, pres.blink
 
 

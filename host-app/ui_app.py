@@ -1066,7 +1066,7 @@ class AtlasUI(_BaseTk):
                 error = (str(msg), str(msg)) if msg else pair("err_conn_lost")
                 self._log_key("log_core_down", level="error", error=error)
             for w in self._station_widgets.values():
-                pres = present_station(w["state"].get("status", "DISCONNECTED"), core_connected=False)
+                pres = present_station(w["state"], core_connected=False)
                 w["light"].set_light(pres.light, pres.blink)
                 w["state"]["status"] = "DISCONNECTED"
         if self.lbl_empty_hint is not None:
