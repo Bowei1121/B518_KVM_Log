@@ -58,6 +58,7 @@ from app_info import about_text, asset_path, is_ci_build, version
 from core_channel import CoreChannel, channel_name_for
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics, note_for_language
+from station_presentation import present_station
 from template_catalog import TemplateCatalog
 from ui_logfile import DailyLogFile, log_dir_for_template_root
 import ui_i18n
@@ -1065,7 +1066,8 @@ class AtlasUI(_BaseTk):
                 error = (str(msg), str(msg)) if msg else pair("err_conn_lost")
                 self._log_key("log_core_down", level="error", error=error)
             for w in self._station_widgets.values():
-                w["light"].set_status("DISCONNECTED")
+                pres = present_station(w["state"].get("status", "DISCONNECTED"), core_connected=False)
+                w["light"].set_light(pres.light, pres.blink)
                 w["state"]["status"] = "DISCONNECTED"
         if self.lbl_empty_hint is not None:
             self.lbl_empty_hint.config(text=t(self._empty_hint_key()))

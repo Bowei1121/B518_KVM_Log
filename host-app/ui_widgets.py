@@ -14,6 +14,7 @@ from tkinter import ttk
 from typing import Callable, List, Optional, Tuple, Union
 
 from app_info import asset_path
+from station_presentation import present_station
 from ui_i18n import bind
 
 # ---- Palette (light only) ---------------------------------------------------------
@@ -332,14 +333,8 @@ def is_dark_appearance(window: tk.Misc) -> bool:
 
 def light_for_status(status: str) -> Tuple[str, bool]:
     """Map a Core station status to ``(colour key, blink)``. FROZEN blinks red; DISCONNECTED is red."""
-    status_up = str(status or "").upper()
-    if "BUSY" in status_up or "TESTING" in status_up:
-        return "yellow", False
-    if "FROZEN" in status_up:
-        return "red", True
-    if "IDLE" in status_up or "OK" in status_up:
-        return "green", False
-    return "red", False
+    pres = present_station(status)
+    return pres.light, pres.blink
 
 
 class StatusLight(tk.Canvas):
