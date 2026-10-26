@@ -16,6 +16,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from device_registry import DEVICES_FILE_ENV  # noqa: E402
 
 
+def check_capture_method(platform: str, capture: str) -> None:
+    if platform == "win32" and capture == "fd":
+        raise pytest.UsageError(
+            "issue #140: on Windows run pytest with --capture=sys (or -s); fd capture breaks Tk init"
+        )
+
+
+def pytest_configure(config):
+    check_capture_method(sys.platform, config.getoption("capture", "no"))
+
+
 @pytest.fixture(autouse=True)
 def isolated_user_home(tmp_path_factory, monkeypatch):
     # Own sibling directory, not inside tmp_path: tests may list their tmp_path contents.
