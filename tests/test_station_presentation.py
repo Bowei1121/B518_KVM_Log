@@ -242,8 +242,24 @@ def test_extra_row_keys_are_ignored():
 
 
 def test_frozen_row_with_kvm_disconnected_stays_frozen():
-    """User decision 2026-10-26: Core sends status FROZEN with is_connected false; the row shows Frame frozen."""
+    """User decision 2026-10-26 (#144, option B): Core sends status FROZEN with is_connected false.
+
+    The row keeps its Frame frozen words, red light and red background; only the lamp follows the real KVM state.
+    """
     res = present_station({"status": "FROZEN", "is_frozen": True, "is_connected": False})
-    assert res == present_station({"status": "FROZEN"})
-    assert res.text_key == "light_frozen"
-    assert res.light == "red"
+    assert (res.text_key, res.status_key) == ("light_frozen", "station_frozen")
+    assert (res.light, res.blink) == ("red", False)
+    assert (res.row_bg, res.row_red, res.fg) == ("#B71C1C", True, "#ffffff")
+    assert res.online is False
+
+
+@pytest.mark.parametrize("status", ["FROZEN", "BUSY", "IDLE", "DISCONNECTED"])
+@pytest.mark.parametrize("connected", [False, True])
+def test_red_row_lamp_follows_kvm_connection_and_words_stay(status, connected):
+    """#144: on every red row the lamp is the current is_connected; the row words and colours do not change."""
+    res = present_station({"status": status, "is_frozen": True, "is_connected": connected})
+    frozen = present_station({"status": "FROZEN"})
+    assert res.row_red
+    assert (res.text_key, res.status_key, res.light, res.blink, res.row_bg, res.fg) == (
+        frozen.text_key, frozen.status_key, frozen.light, frozen.blink, frozen.row_bg, frozen.fg)
+    assert res.online is connected

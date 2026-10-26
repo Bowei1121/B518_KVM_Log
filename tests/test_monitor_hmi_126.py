@@ -117,15 +117,18 @@ def test_clicking_row_or_any_child_selects_device(ui):
         assert ui.var_sel_device.get() == "DFU-02"
 
 
-@pytest.mark.parametrize("status,connected,online", [("IDLE", None, True), ("FROZEN", False, False), ("DISCONNECTED", True, True)])
-def test_online_lamp_uses_explicit_connection_flag(ui, status, connected, online):
+# #144: an Offline lamp on a red row is a hollow white ring (no fill), so FROZEN offline expects fill "".
+@pytest.mark.parametrize("status,connected,online,fill", [
+    ("IDLE", None, True, "#2E7D32"), ("FROZEN", False, False, ""), ("DISCONNECTED", True, True, "#2E7D32")])
+def test_online_lamp_uses_explicit_connection_flag(ui, status, connected, online, fill):
     row = {"device": "DFU-01", "station": "DFU", "status": status}
     if connected is not None:
         row["is_connected"] = connected
     ui._update_status_ui({"status": "ok", "stations": [row]})
     lamp = ui._station_widgets["DFU-01"]["online_lamp"]
     dot = lamp.find_all()[0]
-    assert lamp.itemcget(dot, "fill") == ("#2E7D32" if online else "#ffffff")
+    assert ui._station_widgets["DFU-01"]["online"].cget("text") == ("Online" if online else "Offline")
+    assert lamp.itemcget(dot, "fill") == fill
     ui._update_status_ui({"status": "error"})
     assert lamp.itemcget(dot, "fill") == "#ffffff"
 
