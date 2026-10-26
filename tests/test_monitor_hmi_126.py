@@ -52,6 +52,9 @@ def test_twelve_fixed_cells_are_visible_without_scrolling(ui, count):
     ui._update_status_ui({"status": "ok", "stations": devices})
     ui.geometry("960x1010")
     ui.update()
+    if 960 > ui.winfo_screenwidth() or 1010 > ui.winfo_screenheight():
+        pytest.skip(f"requested 960x1010, screen {ui.winfo_screenwidth()}x{ui.winfo_screenheight()}: "
+                    "the OS clamps the window to the screen, so rows are squeezed; not a layout result")
     panel = ui.station_panel
     cells = ui.stations_container.winfo_children()
     assert panel.winfo_width() == 200
