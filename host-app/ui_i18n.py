@@ -17,6 +17,8 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from station_presentation import present_station
+
 LANGUAGES = ("en", "zh")
 DEFAULT_LANGUAGE = "en"
 LANGUAGE_NAMES = {"en": "English", "zh": "中文"}
@@ -506,14 +508,7 @@ def pair(key: str, **kwargs: Any) -> Tuple[str, str]:
 
 def station_light_tip_key(status: str) -> str:
     """Hover text key for a station light, matched the same way as ``ui_widgets.light_for_status``."""
-    status_up = str(status or "").upper()
-    if "BUSY" in status_up or "TESTING" in status_up:
-        return "light_busy"
-    if "FROZEN" in status_up:
-        return "light_frozen"
-    if "IDLE" in status_up or "OK" in status_up:
-        return "light_idle"
-    return "light_disc"
+    return present_station({"status": status}).text_key
 
 
 # ---------------------------------------------------------------- live switching

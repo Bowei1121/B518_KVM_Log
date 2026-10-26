@@ -370,3 +370,61 @@ def test_snapshot_failure_shows_short_text_and_clears_when_fixed(ui):
     ui._set_info(ui.lbl_preview_info, "Size: 1x1", "#555555")
     assert ui.lbl_preview_info.cget("text") == "Size: 1x1"
     assert ui.lbl_preview_info.bind("<Button-1>") == ""
+
+
+def test_core_disconnect_stops_all_station_blinking(ui):
+    ui._update_status_ui({"status": "ok", "stations": [
+        {"device": "DFU-01", "station": "DFU", "status": "FROZEN"},
+        {"device": "FCT-01", "station": "FCT", "status": "IDLE"},
+    ]})
+    assert ui._station_widgets["DFU-01"]["light"].is_blinking()
+    ui._update_status_ui({"status": "error"})
+    assert ui._station_widgets
+    for w in ui._station_widgets.values():
+        assert w["light"].current_fill() == LED_RED
+        assert w["light"].is_blinking() is False
+        assert w["tip"].current_text() == "Red: disconnected."
+
+
+@pytest.mark.parametrize("path", ["first_draw", "ok_poll", "disconnect"])
+def test_station_presentation_receives_complete_core_row(ui, monkeypatch, path):
+    first = {"device": "DFU-01", "station": "DFU", "status": "FROZEN", "extra_field": "x"}
+    latest = {**first, "status": "BUSY", "extra_field": "updated"}
+    calls = []
+    real_present_station = ui_app.present_station
+
+    def record(row, core_connected=True):
+        calls.append((dict(row), core_connected))
+        return real_present_station(row, core_connected=core_connected)
+
+    if path != "first_draw":
+        ui._update_status_ui({"status": "ok", "stations": [first]})
+    if path == "disconnect":
+        ui._update_status_ui({"status": "ok", "stations": [latest]})
+    monkeypatch.setattr(ui_app, "present_station", record)
+
+    if path == "first_draw":
+        ui._stations = [first]
+        ui._render_station_cards()
+        assert calls == [(first, True)]
+    elif path == "ok_poll":
+        ui._update_status_ui({"status": "ok", "stations": [latest]})
+        assert calls == [(latest, True)]
+    else:
+        ui._update_status_ui({"status": "error"})
+        assert calls == [(latest, False)]
+
+
+def test_station_tooltip_tracks_core_disconnect_and_recovery(ui):
+    frozen = {"device": "DFU-01", "station": "DFU", "status": "FROZEN", "extra_field": "x"}
+    ui._update_status_ui({"status": "ok", "stations": [frozen]})
+    w = ui._station_widgets["DFU-01"]
+    assert w["tip"].current_text() == "Blinking red: the picture is frozen (stuck)."
+
+    ui._update_status_ui({"status": "error"})
+    assert w["tip"].current_text() == "Red: disconnected."
+    ui._update_status_ui({"status": "error"})
+    assert w["tip"].current_text() == "Red: disconnected."
+
+    ui._update_status_ui({"status": "ok", "stations": [{**frozen, "status": "IDLE"}]})
+    assert w["tip"].current_text() == "Green: idle and ready to use."
