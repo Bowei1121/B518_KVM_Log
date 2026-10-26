@@ -980,7 +980,10 @@ class AtlasUI(_BaseTk):
             tip = Tooltip(light, lambda state=state: t(
                 present_station(state["row"], core_connected=state["core_connected"]).text_key))
             def row_text(state=state):
-                return t("station_label", station=state["station"]) + "\n" + format_reading_metrics(state["row"])
+                pres = present_station(state["row"], core_connected=state["core_connected"])
+                return (t("station_label", station=state["station"]) + "\n"
+                        + t("row_tip_kvm_connected" if pres.online else "row_tip_kvm_disconnected") + "\n"
+                        + format_reading_metrics(state["row"]))
             row_tip = Tooltip(card, row_text)
             Tooltip(title, row_text)
             for widget in (card, *card.winfo_children()):
@@ -1085,7 +1088,7 @@ class AtlasUI(_BaseTk):
         widgets["status_label"].configure(text=t(pres.status_key))
         widgets["online"].configure(text=t("station_online_lamp" if pres.online else "station_offline_lamp"))
         lamp = widgets["online_lamp"]
-        lamp.itemconfigure(widgets["lamp_dot"], fill="#2E7D32" if pres.online else "#ffffff",
+        lamp.itemconfigure(widgets["lamp_dot"], fill="#2E7D32" if pres.online else ("" if pres.row_red else "#ffffff"),
                            outline="#ffffff" if pres.row_red else ("#2E7D32" if pres.online else "#9E9E9E"))
 
     def _empty_hint_key(self) -> str:
