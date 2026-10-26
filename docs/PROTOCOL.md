@@ -124,8 +124,12 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `devices[].station` | string | `DFU`／`FCT`／`BT` |
 | `devices[].connected` | boolean | KVM 連線池中是否已連線 |
 | `devices[].busy` | boolean | 是否有上鎖指令執行中 |
-| `devices[].frozen` | boolean | 畫面一旦判定凍結即持續為 true，直到同一設備再次觀察到 PTS 前進；換串流首張影格不解除，須等新串流第一次 PTS 前進，不需人工確認 |
+| `devices[].frozen` | boolean | 畫面判定凍結後持續為 true，直到讀取影格的指令觀察到同一設備 PTS 前進才解除（見下方說明），不需人工確認 |
 | `devices[].channels` | number | 設定的測試通道數 |
+
+凍結解除說明：只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，持續輪詢也不會解除。KVM 重連換串流後至少需讀取兩次：首張建立基準，後續影格須有 PTS 前進。LabVIEW 不應只輪詢 `status` 等待 `frozen=false`，應送唯讀的 `inspect` 重新判斷，必要時重複送出。
+
+檢查期間 KVM 斷線、將本次 FROZEN 判定改回 `kvm_connect_failed` 時，不鎖定本次新增的凍結狀態。若設備早已鎖定凍結後才斷線，`status` 應顯示 FROZEN 或 DISCONNECTED（spec §14.3 與 §4 衝突）仍待使用者決定；目前保留 `frozen=true`、`connected=false`。
 
 KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 

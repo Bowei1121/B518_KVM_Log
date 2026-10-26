@@ -71,6 +71,7 @@ class FrameStream:
         self._generation = 0
         self._verdict: Optional[Verdict] = None
         self._status_frozen = False  # stays frozen until PTS advances on this device
+        self._latched_by: Optional[Verdict] = None
 
     @property
     def is_frozen(self) -> bool:
@@ -80,6 +81,13 @@ class FrameStream:
     def frozen_now(self, now: Optional[float] = None) -> bool:
         """Status stays frozen until PTS advances. Reads without the lock and takes no sample."""
         return self._status_frozen
+
+    def release_kvm_lost_latch(self) -> None:
+        """Undo a newly latched verdict when the caller reports KVM loss instead of freeze."""
+        with self._lock:
+            if self._latched_by is self._verdict:
+                self._status_frozen = False
+                self._latched_by = None
 
     def last_verdict(self) -> Optional[Verdict]:
         return self._verdict
@@ -181,9 +189,12 @@ class FrameStream:
             await sleep(poll_interval)
 
     def _record(self, verdict: Verdict) -> Verdict:
+        self._verdict = replace(verdict, generation=self._generation)
         if verdict.kind == FROZEN:
+            if not self._status_frozen:
+                self._latched_by = self._verdict
             self._status_frozen = True
         elif verdict.advanced:
             self._status_frozen = False
-        self._verdict = replace(verdict, generation=self._generation)
+            self._latched_by = None
         return self._verdict

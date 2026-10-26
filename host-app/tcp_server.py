@@ -529,8 +529,10 @@ class TcpJsonServer:
 
         if not kvm.is_healthy():
             return lost()
-        verdict = await self.freeze_guard.stream(ctx.entry.device_id).wait_live(kvm.latest_frame)
+        stream = self.freeze_guard.stream(ctx.entry.device_id)
+        verdict = await stream.wait_live(kvm.latest_frame)
         if not kvm.is_healthy():
+            stream.release_kvm_lost_latch()
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
             return "frame_frozen", verdict.message
@@ -707,6 +709,7 @@ class TcpJsonServer:
                 code, message = reading.error
                 # The KVM can die while its last picture is frozen: a lost connection, not a frozen picture.
                 if code == "frame_frozen" and not kvm.is_healthy():
+                    slot.gate.stream.release_kvm_lost_latch()
                     return _kvm_lost(ctx)
                 return check.fail(code, message)
 

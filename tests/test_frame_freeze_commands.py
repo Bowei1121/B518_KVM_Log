@@ -235,3 +235,43 @@ def test_frozen_monitor_start_keeps_the_input_release_of_a_settled_round(serve):
     assert resp["error"] == "frame_frozen"
     assert rnd.input_released is True
     assert _hid(kvm) == []
+
+
+def _assert_not_frozen_in_status(srv):
+    status = _send(srv, build_request("status", "status-after-loss", ""))
+    assert status["status"] == "ok"
+    device = next(row for row in status["data"]["devices"] if row["device"] == "DFU-01")
+    assert device["frozen"] is False
+    core = _send(srv, build_request("core_status", "core-after-loss", ""))
+    assert core["status"] == "ok"
+    assert "DFU-01" not in core["data"]["freeze_guard"]["frozen_devices"]
+
+
+@pytest.mark.parametrize("command", ["input", "start_test", "monitor_start"])
+def test_kvm_lost_inside_window_does_not_latch_status_frozen(serve, command):
+    kvm = DyingLogSolutionKVM(state="standby") if command == "monitor_start" else DyingDfuKVM(FOUR)
+    srv = serve(kvm)
+    send = {"input": _input, "start_test": _start_test, "monitor_start": _monitor_start}[command]
+    assert send(srv)["error"] == "kvm_connect_failed"
+    _assert_not_frozen_in_status(srv)
+
+
+def test_kvm_lost_during_monitor_wait_read_does_not_latch_status_frozen(serve):
+    kvm = LogSolutionKVM(state="preparing")
+    srv = serve(kvm)
+
+    def die_on_next_read():
+        read = kvm.latest_frame
+        kvm.freeze()
+
+        def dying_read():
+            time.sleep(FREEZE_THRESHOLD)
+            kvm.end_track()
+            return read()
+
+        kvm.latest_frame = dying_read
+
+    resp, _ = _monitor_start_waiting_on_preparing(srv, kvm, die_on_next_read)
+    assert resp is not None
+    assert resp["error"] == "kvm_connect_failed"
+    _assert_not_frozen_in_status(srv)
