@@ -27,12 +27,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import tkinter as tk
-    from tkinter import messagebox, ttk
+    from tkinter import font as tkfont, messagebox, ttk
     _TK_OK = True
 except Exception:
     tk = None  # type: ignore[assignment]
     messagebox = None  # type: ignore[assignment]
     ttk = None  # type: ignore[assignment]
+    tkfont = None  # type: ignore[assignment]
     _TK_OK = False
 
 try:
@@ -58,6 +59,7 @@ from app_info import about_text, asset_path, is_ci_build, version
 from core_channel import CoreChannel, channel_name_for
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics, note_for_language
+from station_list_hint import list_hint_text
 from station_presentation import present_station
 from template_catalog import TemplateCatalog
 from ui_logfile import DailyLogFile, log_dir_for_template_root
@@ -83,6 +85,7 @@ from ui_widgets import (
     Tooltip,
     apply_light_ttk_style,
     apply_window_icon,
+    fit_label_to_pixels,
     fix_text_widths,
     measure_all_languages,
     bind_clamped,
@@ -92,6 +95,14 @@ from ui_widgets import (
 )
 import wheel_scroll
 from window_placement import frame_size, open_geometry, placed_area, usable_client_size
+
+# Station list (spec v5.3 §14.10): 12 visible rows of 56 px plus a 4 px gap, a 16 px track beside them.
+ROW_W, ROW_H, ROW_PITCH = 176, 56, 60
+LIST_VIEW_H = 728
+LIST_HINT_H, LIST_HINT_MAX_W = 16, 188
+TRACK_W, THUMB_W, THUMB_MIN_H = 16, 13, 40
+TRACK_BG, TRACK_EDGE, THUMB_BG, THUMB_ACTIVE = "#ECEFF1", "#CFD8DC", "#90A4AE", "#607D8B"
+ALARM_RED, HINT_GREY = "#B71C1C", "#546E7A"
 
 # Smallest live view, as a share of its DPI size, when the usable height is short (user decision, issue #117 comment
 # 6342904432): 70%, so 200% gives 672×378. Shared with tests/test_monitor_hmi_115.py; do not loosen it elsewhere.
@@ -608,9 +619,9 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         body = tk.Frame(self, bg=WINDOW_BG)
         body.pack(fill="both", expand=True, padx=PADX, pady=GAP)
-        # Height 780: title plus the twelve fixed cells (about 732 px), so the measured window always fits them.
+        # Height 780: title, the 728 px list and the 16 px hint line, so the measured window always fits them.
         self.station_panel = tk.LabelFrame(
-            body, font=self.f_bold, width=200, height=780, padx=4, pady=4,
+            body, font=self.f_bold, width=200, height=780, padx=2, pady=4,
             bg=WINDOW_BG, fg=TEXT_FG,
         )
         bind(self.station_panel, "dash_title")
@@ -648,8 +659,42 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Station Real-Time Status Dashboard
         # ----------------------------------------------------------------------
-        self.stations_container = tk.Frame(self.station_panel, bg=WINDOW_BG)
-        self.stations_container.pack(fill="both", expand=True)
+        # Spec v5.3 §14.10: the list always shows exactly 12 rows (728 px) beside a fixed 16 px scroll track,
+        # and a 16 px hint line right under the list names rows that are off-screen.
+        hint_frame = tk.Frame(self.station_panel, height=LIST_HINT_H, bg=WINDOW_BG)
+        hint_frame.pack_propagate(False)
+        self._list_hint_font = tkfont.Font(family=self.f_label[0], size=-12, weight="bold")
+        self.lbl_list_hint = tk.Label(hint_frame, text="", font=self._list_hint_font, anchor="w",
+                                      bg=WINDOW_BG, bd=0, padx=0)
+        self.lbl_list_hint.pack(fill="both", expand=True)
+        # A fixed one-line width, so the #117 width lock leaves it alone (it starts empty and would get 1 char).
+        fit_label_to_pixels(self.lbl_list_hint, LIST_HINT_MAX_W + 4, wrap=False)
+        self.station_list_frame = tk.Frame(self.station_panel, bg=WINDOW_BG)
+        self.station_list_frame.pack(fill="x")
+        hint_frame.pack(fill="x")  # directly under the 728 px list, as in spec shot v5.3-01
+        self._list_content_h = LIST_VIEW_H
+        self._list_row_tops: Dict[str, int] = {}
+        self._list_above: List[str] = []
+        self._list_below: List[str] = []
+        self._track_drag: Optional[float] = None  # pointer offset inside the thumb while dragging
+        self._track_hover = False
+        self.station_canvas = tk.Canvas(
+            self.station_list_frame, width=ROW_W, height=LIST_VIEW_H, highlightthickness=0, bd=0,
+            bg=WINDOW_BG, yscrollincrement=ROW_PITCH, yscrollcommand=self._on_station_list_scrolled,
+        )
+        self.station_canvas.pack(side="left", anchor="n")
+        wheel_scroll.register(self.station_canvas)  # one wheel notch = one 60 px row
+        self.stations_container = tk.Frame(self.station_canvas, bg=WINDOW_BG)
+        self.station_canvas.create_window(0, 0, anchor="nw", window=self.stations_container)
+        self.station_track = tk.Canvas(self.station_list_frame, width=TRACK_W, height=LIST_VIEW_H,
+                                       highlightthickness=0, bd=0, bg=TRACK_BG)
+        self.station_track.pack(side="left", anchor="n")
+        self.station_track.create_line(0, 0, 0, LIST_VIEW_H, fill=TRACK_EDGE, tags="edge")
+        self.station_track.bind("<Button-1>", self._station_track_press)
+        self.station_track.bind("<B1-Motion>", self._station_track_drag)
+        self.station_track.bind("<ButtonRelease-1>", self._station_track_release)
+        self.station_track.bind("<Motion>", self._station_track_motion)
+        self.station_track.bind("<Leave>", lambda _e: self._station_track_motion(None))
 
         self._render_station_cards()
 
@@ -873,18 +918,19 @@ class AtlasUI(_BaseTk):
     # Station Cards Dashboard Rendering
     # --------------------------------------------------------------------------
     def _render_station_cards(self) -> None:
-        """Build twelve fixed cells in Core device-list order."""
+        """Build all devices in Core order, with at least twelve fixed cells."""
         for widget in self.stations_container.winfo_children():
             widget.destroy()
         self._station_widgets.clear()
         self._render_empty_hint()
         previous_prefix = None
-        for index in range(12):
+        self._list_row_tops = {}
+        for index in range(max(12, len(self._stations))):
             st = self._stations[index] if index < len(self._stations) else None
             prefix = str(st.get("device", "")).split("-")[0] if st else previous_prefix
             gap = 4 + (4 if previous_prefix is not None and prefix != previous_prefix else 0)
-            card = tk.Frame(self.stations_container, width=186, height=56, bg=WINDOW_BG)
-            card.grid(row=index, column=0, padx=1, pady=(gap, 0))
+            card = tk.Frame(self.stations_container, width=ROW_W, height=ROW_H, bg=WINDOW_BG)
+            card.grid(row=index, column=0, padx=0, pady=(gap, 0))
             card.pack_propagate(False)
             card.grid_propagate(False)
             previous_prefix = prefix
@@ -903,13 +949,13 @@ class AtlasUI(_BaseTk):
             title.place(x=30, y=0, width=86, height=28)
             lamp = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)
             lamp_dot = lamp.create_oval(2, 2, 14, 14, width=3)
-            lamp.place(x=116, y=6, width=16, height=16)
+            lamp.place(x=106, y=6, width=16, height=16)
             online = tk.Label(card, font=(fam, -10, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            online.place(x=134, y=0, width=52, height=28)
+            online.place(x=124, y=0, width=52, height=28)
             status = tk.Label(card, font=(fam, -16, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            status.place(x=12, y=29, width=172, height=26)
+            status.place(x=12, y=29, width=162, height=26)
             tip = Tooltip(light, lambda state=state: t(
                 present_station(state["row"], core_connected=state["core_connected"]).text_key))
             def row_text(state=state):
@@ -923,6 +969,81 @@ class AtlasUI(_BaseTk):
                        "status_label": status, "state": state}
             self._station_widgets[dev_id] = widgets
             self._configure_station_row(widgets, present_station(st))
+
+        self.update_idletasks()
+        self._list_row_tops = {dev: w["card"].winfo_y() for dev, w in self._station_widgets.items()}
+        self._list_content_h = self.stations_container.winfo_reqheight()
+        self.station_canvas.configure(scrollregion=(0, 0, ROW_W, max(LIST_VIEW_H, self._list_content_h)))
+        self._refresh_station_list_marks()
+        if len(self._stations) > 12:
+            self._log_key("log_list_scroll", level="info", n=len(self._stations))
+
+    def _on_station_list_scrolled(self, _first: str, _last: str) -> None:
+        self._refresh_station_list_marks()
+
+    def _refresh_station_list_marks(self) -> None:
+        """Redraw the thumb, the red ticks for off-screen abnormal rows and the bottom hint line.
+
+        Never scrolls the list: only the operator does (spec v5.3 §14.10).
+        """
+        if not hasattr(self, "station_track"):
+            return
+        track = self.station_track
+        track.delete("thumb", "tick")
+        content_h = self._list_content_h
+        first, last = self.station_canvas.yview()
+        visible = last - first
+        if content_h > LIST_VIEW_H:
+            h = max(THUMB_MIN_H, round(LIST_VIEW_H * LIST_VIEW_H / content_h))
+            y = round(first * (LIST_VIEW_H - h) / (1 - visible)) if visible < 1 else 0
+            fill = THUMB_ACTIVE if self._track_hover or self._track_drag is not None else THUMB_BG
+            track.create_rectangle(2, y, 2 + THUMB_W, y + h, fill=fill, outline="", tags="thumb")
+        top = self.station_canvas.canvasy(0)
+        self._list_above, self._list_below = [], []
+        abnormal_above: List[str] = []
+        abnormal_below: List[str] = []
+        for dev, row_top in self._list_row_tops.items():
+            if row_top >= top and row_top + ROW_H <= top + LIST_VIEW_H:
+                continue  # fully visible; a partly visible row counts as off-screen
+            above = row_top < top
+            (self._list_above if above else self._list_below).append(dev)
+            state = self._station_widgets[dev]["state"]
+            if present_station(state["row"], core_connected=state["core_connected"]).row_red:
+                (abnormal_above if above else abnormal_below).append(dev)
+                y = min(LIST_VIEW_H - 6, max(0, (row_top + ROW_H / 2) / content_h * LIST_VIEW_H - 3))
+                track.create_rectangle(1, y, 10, y + 6, fill=ALARM_RED, outline="", tags="tick")
+        text = list_hint_text(self._list_above, self._list_below, abnormal_above, abnormal_below,
+                              lambda candidate: self._list_hint_font.measure(candidate) <= LIST_HINT_MAX_W)
+        self.lbl_list_hint.configure(text=text, fg=ALARM_RED if abnormal_above or abnormal_below else HINT_GREY)
+
+    def _station_track_press(self, event: Any) -> None:
+        thumb = self.station_track.coords("thumb")
+        if not thumb:
+            return
+        if thumb[1] <= event.y <= thumb[3]:
+            self._track_drag = event.y - thumb[1]
+            self._refresh_station_list_marks()
+        else:
+            self.station_canvas.yview_scroll(-1 if event.y < thumb[1] else 1, "pages")
+
+    def _station_track_drag(self, event: Any) -> None:
+        if self._track_drag is None:
+            return
+        thumb = self.station_track.coords("thumb")
+        h = thumb[3] - thumb[1]
+        first, last = self.station_canvas.yview()
+        travel = LIST_VIEW_H - h
+        self.station_canvas.yview_moveto(max(0, min(travel, event.y - self._track_drag)) / travel * (1 - (last - first)))
+
+    def _station_track_release(self, event: Any) -> None:
+        self._track_drag = None
+        self._station_track_motion(event)
+
+    def _station_track_motion(self, event: Any) -> None:
+        thumb = self.station_track.coords("thumb")
+        self._track_hover = bool(event is not None and thumb
+                                 and thumb[0] <= event.x <= thumb[2] and thumb[1] <= event.y <= thumb[3])
+        self._refresh_station_list_marks()
 
     def _configure_station_row(self, widgets, pres) -> None:
         """Change row colours and words without changing its geometry."""
@@ -959,7 +1080,7 @@ class AtlasUI(_BaseTk):
             wraplength=180, width=20,
         )
         bind(hint, lambda: t(self._empty_hint_key()))
-        hint.pack(fill="x", pady=8, before=self.stations_container)
+        hint.pack(fill="x", pady=8, before=self.station_list_frame)
         self.lbl_empty_hint = hint
 
     def _station_of(self, device: str) -> str:
@@ -983,6 +1104,7 @@ class AtlasUI(_BaseTk):
         for w in self._station_widgets.values():
             self._configure_station_row(w, present_station(
                 w["state"]["row"], core_connected=w["state"]["core_connected"]))
+        self._refresh_station_list_marks()
         self.btn_live_stream.config(text=t("btn_live_stop") if self._streaming_active else t("btn_live"))
         if str(self.btn_run_check.cget("state")) != "disabled":
             self.btn_run_check.config(text=t("btn_check"))
@@ -1051,6 +1173,7 @@ class AtlasUI(_BaseTk):
                 w["state"]["core_connected"] = False
                 self._configure_station_row(w, pres)
                 w["state"]["status"] = "DISCONNECTED"
+        self._refresh_station_list_marks()
         if self.lbl_empty_hint is not None:
             self.lbl_empty_hint.config(text=t(self._empty_hint_key()))
 

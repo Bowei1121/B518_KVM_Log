@@ -49,8 +49,12 @@ LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED, "grey": 
 # Station row colours (spec v5.2 §14.1, issue #126); the table itself lives in station_presentation.
 ROW_FG = frozenset({"#2E7D32", "#1565C0", "#616161", "#ffffff"})  # status words and colour bar
 ROW_BG = frozenset({"#E8F5E9", "#E3F2FD", "#F5F5F5", "#B71C1C"})
-ALL_BG = frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG}) | ROW_BG | ROW_FG
-ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG}) | ROW_FG
+LIST_TRACK_BG = "#ECEFF1"  # station list scroll track (spec v5.3 §14.10)
+ALL_BG = (frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG, LIST_TRACK_BG})
+          | ROW_BG | ROW_FG)
+# Station list hint line: red when an off-screen device is abnormal, else grey (spec v5.3 §14.10).
+LIST_HINT_FG = frozenset({"#B71C1C", "#546E7A"})
+ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG}) | ROW_FG | LIST_HINT_FG
 
 
 def apply_light_ttk_style(master: tk.Misc) -> None:
