@@ -133,7 +133,7 @@ def test_online_lamp_uses_explicit_connection_flag(ui, status, connected, online
     assert ui._station_widgets["DFU-01"]["online"].cget("text") == ("Online" if online else "Offline")
     assert lamp.itemcget(dot, "fill") == fill
     ui._update_status_ui({"status": "error"})
-    assert lamp.itemcget(dot, "fill") == "#ffffff"
+    assert lamp.itemcget(dot, "fill") == ""
 
 
 def test_frozen_device_stays_red_after_disconnect_and_recovers_in_place(ui):

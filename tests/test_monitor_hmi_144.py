@@ -22,7 +22,7 @@ except tk.TclError:
 import ui_app  # noqa: E402
 import ui_i18n  # noqa: E402
 from station_presentation import present_station  # noqa: E402
-from ui_widgets import LED_GREEN  # noqa: E402
+from ui_widgets import LED_GREEN, TEXT_FG  # noqa: E402
 
 GREEN = "#2E7D32"
 WHITE = "#ffffff"
@@ -184,3 +184,52 @@ def test_disconnected_status_with_kvm_connected_row_reads_connected(ui):
     ui.update_idletasks()
     assert widgets["status_label"].cget("text") == "已連線"
     assert "KVM：已連線" in widgets["row_tip"].current_text().splitlines()
+
+
+def na_item(widgets):
+    lamp = widgets["online_lamp"]
+    return {key: lamp.itemcget(widgets["lamp_dot"], key) for key in ("fill", "outline", "width", "dash")}
+
+
+def assert_lamp_na(widgets, colour):
+    item = na_item(widgets)
+    assert item["fill"] == ""
+    assert item["outline"] == colour
+    assert float(item["width"]) == 3.0
+    assert item["dash"] not in ("", "{}")  # dotted ring
+    assert widgets["online"].cget("text") == "N/A"
+    assert widgets["online"].cget("fg") == (WHITE if colour == WHITE else TEXT_FG)  # same as Online/Offline words
+    assert widgets["online_lamp"].winfo_manager() == "place"  # never hidden
+
+
+@pytest.mark.parametrize("status,connected", [("IDLE", True), ("DISCONNECTED", False), ("FROZEN", True), ("BUSY", True)])
+def test_core_disconnected_lamp_is_na_and_recovers(ui, status, connected):
+    """#144 item 14 (c), user decision 2026-10-26 22:19 (spec line 124, §14.5): Core down -> every lamp N/A."""
+    row = {"device": "DFU-01", "station": "DFU", "status": status, "is_frozen": status == "FROZEN",
+           "is_connected": connected}
+    widgets = show(ui, row)
+    ui._update_status_ui({"status": "error"})
+    ui.update_idletasks()
+    assert_lamp_na(widgets, "#9E9E9E")
+    tip = widgets["row_tip"].current_text()
+    assert "KVM: Unknown (Core disconnected)" in tip.splitlines()
+    assert "Disconnected" not in tip.replace("Core disconnected", "")
+    ui.on_toggle_language()
+    ui.update_idletasks()
+    assert widgets["online"].cget("text") == "未知"
+    tip = widgets["row_tip"].current_text()
+    assert "KVM：未知（Core 未連線）" in tip.splitlines()
+    assert "已斷線" not in tip
+    ui.on_toggle_language()
+    show(ui, dict(row, status="IDLE", is_frozen=False, is_connected=True))
+    assert widgets["online"].cget("text") == "Online"
+    item = na_item(widgets)
+    assert (item["fill"], item["outline"], item["dash"] in ("", "{}")) == (GREEN, GREEN, True)
+
+
+def test_core_disconnected_lamp_on_red_last_status_row_is_white(ui):
+    """Red Last status rows (#129) keep a red background during a Core outage; their N/A ring and words are white."""
+    widgets = show(ui, {"device": "DFU-01", "station": "DFU", "status": "IDLE", "is_connected": True})
+    ui._configure_station_row(widgets, present_station({"status": "FROZEN", "is_frozen": True}), core_connected=False)
+    assert widgets["card"].cget("bg") == RED
+    assert_lamp_na(widgets, WHITE)
