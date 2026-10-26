@@ -383,6 +383,7 @@ class TcpJsonServer:
                 "is_busy": h.busy,
                 "is_frozen": h.frozen,
                 "is_connected": h.connected,
+                "is_heartbeat_stopped": slot.heartbeat.stopped if slot is not None else False,
                 **reading,
             })
         return stations_list
