@@ -35,16 +35,21 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt pytest
 
+      - name: Show Tcl/Tk version
+        shell: bash
+        run: python -c "import sys, tkinter; print(sys.version); print('Tcl patchlevel', tkinter.Tcl().call('info', 'patchlevel'))"
+
       - name: Run Windows tests
         shell: bash
         # Scoped on purpose. The full suite has 17 Windows-only failures (daemon/pid, Monitor UI prefs,
         # UI client cancel), tracked in #111. Until that is closed, only the Windows-relevant modules run here;
         # the full suite stays a macOS/local run.
-        # --capture=sys, not the default fd capture (#140): fd capture replaces the handles behind fds 0/1/2 around
-        # every test, while Tcl keeps the old std handle values cached for the Tk roots that stay alive. Windows
-        # reuses those values for the next init.tcl/tk.tcl open and Tcl hands back the stale std channel instead,
-        # so a random tk.Tk() fails with "couldn't read file .../init.tcl: No error". Guarded by test_windows_ci_capture_140.
-        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py
+        # Default fd capture swaps std handles behind fds 0/1/2 each test while Tk roots stay alive;
+        # --capture=sys leaves them unchanged. On windows-2025 the four-module step went from
+        # Tk init failures in 5/19 runs to 0/14; the exact Tcl mechanism is unproven.
+        # Guarded by tests/test_windows_ci_capture_140.py (static workflow check)
+        # and the win32 capture check in tests/conftest.py.
+        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_windows_ci_capture_140.py
 
   build:
     runs-on: windows-latest
