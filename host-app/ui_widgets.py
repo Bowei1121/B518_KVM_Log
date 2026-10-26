@@ -26,6 +26,7 @@ INFO_FG = "#1565c0"
 OK_FG = "#2e7d32"
 WARN_FG = "#e65100"
 ERROR_FG = "#c62828"
+OFFLINE_FG = "#B71C1C"  # line 1 of the offline list hint (#140)
 BUTTON_BG = "#e8e8e8"
 ENTRY_BG = "#ffffff"
 TIP_BG = "#fffde7"
@@ -54,7 +55,7 @@ ALL_BG = (frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_B
           | ROW_BG | ROW_FG)
 # Station list hint line: red when an off-screen device is abnormal, else grey (spec v5.3 §14.10).
 LIST_HINT_FG = frozenset({"#B71C1C", "#546E7A"})
-ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG}) | ROW_FG | LIST_HINT_FG
+ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, OFFLINE_FG, LOG_FG}) | ROW_FG | LIST_HINT_FG
 
 
 def apply_light_ttk_style(master: tk.Misc) -> None:
