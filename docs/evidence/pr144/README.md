@@ -10,3 +10,7 @@ DFU-02 Connected, DFU-03 Offline (grey).
 - `red_row_kvm_offline_tooltip_{100,200}pct_{en,zh}.png`: the row tooltip. After adds `KVM: Disconnected` / `KVM：已斷線`.
 
 Note: at 200% under Xvfb the tooltip is cut by the panel edge in both before and after; that is unchanged by this PR.
+
+Core disconnected (#144 item 14c): `after/core_disconnected_na_{100,200}pct_{en,zh}.png` and the `_tooltip_` variants,
+generated with `shoot144.py REPO LANG SCALE core OUT.png [tip]` (same Tk 8.6.16 Xft setup). Every lamp is the N/A
+3px #9E9E9E dotted ring with no fill and "N/A／未知"; the row tooltip reads "KVM: Unknown (Core disconnected)".

@@ -1,4 +1,4 @@
-"""Usage: shoot144.py REPO LANG(en|zh) SCALE(100|200) KVM(offline|online) OUT.png [tip]"""
+"""Usage: shoot144.py REPO LANG(en|zh) SCALE(100|200) KVM(offline|online|core: Core disconnected, N/A lamps) OUT.png [tip]"""
 import sys, os, time
 repo, lang, pct, kvm, out = sys.argv[1:6]
 tip = len(sys.argv) > 6
@@ -17,6 +17,7 @@ rows = [
     {"device": "DFU-03", "station": "DFU", "status": "DISCONNECTED", "is_connected": False},
 ]
 a._update_status_ui({"status": "ok", "stations": rows})
+if kvm == "core": a._update_status_ui({"status": "error"})
 for _ in range(10): a.update(); time.sleep(0.04)
 w = a._station_widgets["DFU-01"]
 if tip:
