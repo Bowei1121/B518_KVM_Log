@@ -239,3 +239,11 @@ def test_missing_row_or_status_is_disconnected(row):
 def test_extra_row_keys_are_ignored():
     row = {"status": "FROZEN", "device": "DFU-01", "other": "BUSY"}
     assert present_station(row) == present_station({"status": "FROZEN"})
+
+
+def test_frozen_row_with_kvm_disconnected_stays_frozen():
+    """User decision 2026-10-26: Core sends status FROZEN with is_connected false; the row shows Frame frozen."""
+    res = present_station({"status": "FROZEN", "is_frozen": True, "is_connected": False})
+    assert res == present_station({"status": "FROZEN"})
+    assert res.text_key == "light_frozen"
+    assert res.light == "red"

@@ -291,3 +291,35 @@ def test_a_frozen_picture_restarts_the_heartbeat_run():
     decision = gate.observe(_frame("monitoring"), 3, 13.0, now=13.0, stream_id=STREAM, pts=102.0)
 
     assert decision.kind != "heartbeat_stopped"
+
+
+def test_stopped_state_latches_until_a_counted_change():
+    tracker = HeartbeatTracker()
+    assert tracker.stopped is False
+    assert feed(tracker, [0.0, 1.0, 2.0], lambda t: FROZEN_CELLS)[-1] is Step.STOPPED
+    assert tracker.stopped is True
+    assert tracker.observe(STREAM, 4, 3.0, healthy_cells(3.0)) is Step.CHANGED
+    assert tracker.stopped is False
+
+
+@pytest.mark.parametrize("interruption", ["invalid", "reset", "stream", "gap"])
+def test_stopped_latch_survives_judging_run_restarts(interruption):
+    tracker = HeartbeatTracker()
+    assert feed(tracker, [0.0, 1.0, 2.0], lambda t: FROZEN_CELLS)[-1] is Step.STOPPED
+    stream = STREAM
+    resumed_at = 4.0
+    if interruption == "invalid":
+        assert tracker.observe(STREAM, 4, 3.0, None) is Step.INVALID
+    elif interruption == "reset":
+        tracker.reset()
+    elif interruption == "stream":
+        stream = "stream-b"
+    else:
+        resumed_at = 6.0
+    assert tracker.stopped is True
+    # Even different cells after a restart are only a baseline, not Step.CHANGED.
+    assert tracker.observe(stream, 5, resumed_at, healthy_cells(3.0)) is Step.COUNTED
+    assert tracker.stopped is True
+    assert tracker.changed_within(resumed_at) is False
+    assert tracker.observe(stream, 6, resumed_at + 1.0, FROZEN_CELLS) is Step.CHANGED
+    assert tracker.stopped is False

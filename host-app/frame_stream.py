@@ -6,7 +6,8 @@ Holds the only copy of stream id, sequence order and PTS stillness for a device.
   ``observe``. PTS static for ``freeze_threshold`` seconds is frozen.
 - Active window: ``wait_live`` for one-shot commands. Reuses the last advance when it is recent.
 
-A missing PTS is frozen (the server always requires PTS). Nothing here touches HID or the round.
+A missing PTS is frozen (Core always uses require_pts=True). With require_pts=False,
+pts_not_required does not clear a latched no_frame verdict. Nothing here touches HID or the round.
 """
 from __future__ import annotations
 
@@ -21,7 +22,6 @@ if TYPE_CHECKING:
 
 FREEZE_THRESHOLD_SEC = 1.0  # PTS static this long is a frozen picture
 FRESHNESS_PENDING = "freshness_pending"  # reading not judged: PTS has not been seen to move yet
-STATUS_VERDICT_MAX_AGE_SEC = 5.0  # a frozen verdict older than this is not shown as FROZEN in status
 
 LIVE = "live"
 PENDING = "pending"  # PTS static, but not yet for the threshold: not judged
@@ -71,19 +71,42 @@ class FrameStream:
         self._advanced = False  # the last reading moved PTS forward (a first frame does not count)
         self._generation = 0
         self._verdict: Optional[Verdict] = None
+        self._status_frozen = False  # stays frozen until PTS advances on this device
+        self._latched_by: Optional[Verdict] = None
+        self._frozen_delivered = False
 
     @property
     def is_frozen(self) -> bool:
         verdict = self._verdict
         return verdict is not None and verdict.kind == FROZEN
 
-    def frozen_now(self, now: Optional[float] = None) -> bool:
-        """Last verdict is FROZEN and recent enough to show. Reads without the lock and takes no sample."""
-        verdict = self._verdict
-        if verdict is None or verdict.kind != FROZEN:
-            return False
-        now = self.clock() if now is None else float(now)
-        return now - verdict.at <= STATUS_VERDICT_MAX_AGE_SEC
+    def frozen_now(self) -> bool:
+        """Status stays frozen until a frame-reading command sees PTS advance. Takes no sample.
+
+        A KVM disconnect does not clear it. The one narrow exception: a FROZEN read whose own reply is
+        kvm_connect_failed undoes the latch that same verdict just set (see release_kvm_lost_latch),
+        only if no command has delivered frame_frozen for this latch. Once delivered, the latch
+        stays until PTS advances, even if its originating read later replies kvm_connect_failed.
+        A latch that existed before the disconnect always stays (ADR-0005, 2026-10-26).
+        """
+        return self._status_frozen
+
+    def mark_frozen_delivered(self) -> None:
+        """Protect the current latch after a healthy command replies frame_frozen to LabVIEW."""
+        with self._lock:
+            if self._status_frozen:
+                self._frozen_delivered = True
+
+    def release_kvm_lost_latch(self, verdict: Optional[Verdict]) -> None:
+        """Undo only an undelivered latch set by this read when its reply is kvm_connect_failed.
+
+        Any command delivering frame_frozen protects this latch until PTS advances.
+        An earlier latch is never released.
+        """
+        with self._lock:
+            if not self._frozen_delivered and verdict is not None and self._latched_by is verdict:
+                self._status_frozen = False
+                self._latched_by = None
 
     def last_verdict(self) -> Optional[Verdict]:
         return self._verdict
@@ -186,4 +209,12 @@ class FrameStream:
 
     def _record(self, verdict: Verdict) -> Verdict:
         self._verdict = replace(verdict, generation=self._generation)
+        if verdict.kind == FROZEN:
+            if not self._status_frozen:
+                self._latched_by = self._verdict
+            self._status_frozen = True
+        elif verdict.advanced:
+            self._status_frozen = False
+            self._latched_by = None
+            self._frozen_delivered = False
         return self._verdict

@@ -342,3 +342,22 @@ def test_check_in_progress_is_answered_server_shutting_down_when_core_stops(rig)
     assert resp["req_id"] == "req-stop"
     assert resp["status"] == "error"
     assert resp["error"] == "server_shutting_down"
+
+
+def test_kvm_lost_during_check_read_does_not_latch_status_frozen(rig):
+    kvm = rig.kvm()
+    kvm.show("monitoring")
+    kvm.freeze()
+    stream = rig.srv.freeze_guard.stream(DEVICE)
+    stream.observe_snapshot(kvm.latest_frame())
+    time.sleep(rig.srv.freeze_guard.freeze_threshold)  # the next reading of the still PTS is FROZEN
+    read = kvm.latest_frame
+
+    def dying_read():
+        kvm.end_track()
+        return read()
+
+    kvm.latest_frame = dying_read
+    resp = _check_once(rig, DEVICE, "req-loss-status", 10)
+    assert resp["error"] == "kvm_connect_failed"
+    assert DEVICE not in rig.srv.freeze_guard.get_status()["frozen_devices"]
