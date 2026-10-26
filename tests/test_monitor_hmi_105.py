@@ -236,6 +236,18 @@ def test_frozen_station_is_solid_red_then_recovers(ui):
     assert light.current_fill() == LED_GREEN
 
 
+def test_blinking_station_light_stops_on_recovery(ui):
+    # FROZEN no longer blinks (#126), but a blinking lamp (e.g. connection failure, spec §3/§4) must still stop.
+    ui._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "FROZEN"}]})
+    light = ui._station_widgets["DFU-01"]["light"]
+    light.set_light("red", True)
+    assert light.is_blinking()
+
+    ui._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "IDLE"}]})
+    assert light.is_blinking() is False
+    assert light.current_fill() == LED_GREEN
+
+
 def test_repeated_blink_status_keeps_the_blink_phase(ui):
     # The status poll repeats FROZEN every 1.5 s; that must not restart the blink cycle.
     light = StatusLight(ui)
@@ -373,7 +385,8 @@ def test_core_disconnect_stops_all_station_blinking(ui):
         {"device": "DFU-01", "station": "DFU", "status": "FROZEN"},
         {"device": "FCT-01", "station": "FCT", "status": "IDLE"},
     ]})
-    assert not ui._station_widgets["DFU-01"]["light"].is_blinking()
+    ui._station_widgets["DFU-01"]["light"].set_light("red", True)
+    assert ui._station_widgets["DFU-01"]["light"].is_blinking()
     ui._update_status_ui({"status": "error"})
     assert ui._station_widgets
     for w in ui._station_widgets.values():
