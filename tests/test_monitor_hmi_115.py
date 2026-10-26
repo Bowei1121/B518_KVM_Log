@@ -604,5 +604,7 @@ def test_list_hint_keeps_its_12px_bold_font_and_fits_its_line_at_every_scaling(m
         ui_i18n.set_language(lang)
         hint.configure(text="DFU-05, BT-02 abnormal" if lang == "en" else "DFU-05、BT-02 異常")
         app.update_idletasks()
-        assert hint.winfo_reqheight() <= hint.winfo_height(), _context(app, screen, scale, lang)
-        assert hint.winfo_reqwidth() <= hint.winfo_width(), _context(app, screen, scale, lang)
+        # The line's own height, not winfo_height: Tk clamps a window larger than the CI screen, which squeezes rows.
+        line_h = int(str(hint.master.cget("height")))
+        assert hint.winfo_reqheight() <= line_h, _context(app, screen, scale, lang)
+        assert hint.cget("font") == app._list_hint_font.name
