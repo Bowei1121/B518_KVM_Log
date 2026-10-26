@@ -22,6 +22,7 @@ except tk.TclError:
 import ui_app  # noqa: E402
 import ui_i18n  # noqa: E402
 from station_presentation import present_station  # noqa: E402
+from ui_widgets import LED_GREEN  # noqa: E402
 
 GREEN = "#2E7D32"
 WHITE = "#ffffff"
@@ -161,3 +162,25 @@ def test_row_tooltip_kvm_line_follows_reconnect(ui):
     row["is_connected"] = True
     show(ui, row)
     assert "KVM: Connected" in widgets["row_tip"].current_text().splitlines()
+
+
+def test_disconnected_status_with_kvm_connected_follows_the_flag():
+    """#144 item 14 (b), user decision 2026-10-26 22:19: DISCONNECTED + is_connected=true is drawn as Connected."""
+    res = present_station({"status": "DISCONNECTED", "is_connected": True})
+    assert res == present_station({"status": "IDLE", "is_connected": True})
+    assert (res.status_key, res.light, res.online) == ("station_connected", "green", True)
+
+
+def test_disconnected_status_with_kvm_connected_row_reads_connected(ui):
+    row = {"device": "DFU-01", "station": "DFU", "status": "DISCONNECTED", "is_connected": True}
+    widgets = show(ui, row)
+    assert widgets["status_label"].cget("text") == "Connected"
+    assert widgets["status_label"].cget("fg") == GREEN
+    assert widgets["light"].current_fill() == LED_GREEN
+    assert widgets["online"].cget("text") == "Online"
+    assert (lamp_item(widgets)["fill"], lamp_item(widgets)["outline"]) == (GREEN, GREEN)
+    assert "KVM: Connected" in widgets["row_tip"].current_text().splitlines()
+    ui.on_toggle_language()
+    ui.update_idletasks()
+    assert widgets["status_label"].cget("text") == "已連線"
+    assert "KVM：已連線" in widgets["row_tip"].current_text().splitlines()
