@@ -24,7 +24,7 @@ def check_capture_method(platform: str, capture: str) -> None:
 
 
 def pytest_configure(config):
-    check_capture_method(sys.platform, config.getoption("capture"))
+    check_capture_method(sys.platform, config.getoption("capture", "no"))
 
 
 @pytest.fixture(autouse=True)
