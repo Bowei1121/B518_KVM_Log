@@ -689,6 +689,9 @@ class AtlasUI(_BaseTk):
         self.station_track = tk.Canvas(self.station_list_frame, width=TRACK_W, height=LIST_VIEW_H,
                                        highlightthickness=0, bd=0, bg=TRACK_BG)
         self.station_track.pack(side="left", anchor="n")
+        wheel_scroll.register(self.station_track, scrolls=self.station_canvas)
+        wheel_scroll.register(hint_frame, scrolls=self.station_canvas)
+        wheel_scroll.register(self.lbl_list_hint, scrolls=self.station_canvas)
         self.station_track.create_line(0, 0, 0, LIST_VIEW_H, fill=TRACK_EDGE, tags="edge")
         self.station_track.bind("<Button-1>", self._station_track_press)
         self.station_track.bind("<B1-Motion>", self._station_track_drag)
@@ -946,7 +949,7 @@ class AtlasUI(_BaseTk):
             light.place(x=12, y=7, width=16, height=16)
             title = tk.Label(card, text=dev_id, font=(mono, -22, "bold"),
                              bg=WINDOW_BG, fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            title.place(x=30, y=0, width=86, height=28)
+            title.place(x=30, y=0, width=76, height=28)
             lamp = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)
             lamp_dot = lamp.create_oval(2, 2, 14, 14, width=3)
             lamp.place(x=106, y=6, width=16, height=16)
@@ -1030,6 +1033,9 @@ class AtlasUI(_BaseTk):
         if self._track_drag is None:
             return
         thumb = self.station_track.coords("thumb")
+        if not thumb:
+            self._track_drag = None
+            return
         h = thumb[3] - thumb[1]
         first, last = self.station_canvas.yview()
         travel = LIST_VIEW_H - h

@@ -100,9 +100,9 @@ def view_top(ui):
     return ui.station_canvas.canvasy(0)
 
 
-def wheel(ui, widget, delta):
+def wheel(ui, widget, delta, x=40, y=20):
     ui.event_generate("<MouseWheel>", delta=delta,
-                      rootx=widget.winfo_rootx() + 40, rooty=widget.winfo_rooty() + 20)
+                      rootx=widget.winfo_rootx() + x, rooty=widget.winfo_rooty() + y)
     ui.update()
 
 
@@ -139,7 +139,7 @@ def test_more_than_twelve_draws_all_rows_and_scrolls_one_row_per_notch(ui, count
     card = ui._station_widgets["DFU-01"]["card"]
     wheel(ui, card, -120)
     assert view_top(ui) == 60
-    assert len(fully_visible(ui)) <= 12
+    assert len(fully_visible(ui)) == 12
     wheel(ui, ui._station_widgets["DFU-03"]["card"], 120)
     assert view_top(ui) == 0
 
@@ -189,22 +189,90 @@ def test_normal_off_screen_rows_give_a_grey_hint_in_both_languages(ui):
     assert ui.lbl_list_hint.cget("fg") == RED
 
 
-def test_program_never_scrolls_the_list(ui):
-    show(ui, rows(14, frozen=()))
-    before = ui.station_canvas.yview()
-    show(ui, rows(14, frozen=("BT-02",)))  # alarm on an off-screen row
-    ui._select_device("BT-02")  # device chosen in the combo
-    ui.combo_device.set("BT-01")
-    ui.combo_device.event_generate("<<ComboboxSelected>>")
-    ui._station_widgets["DFU-01"]["card"].event_generate("<Button-1>")
-    ui._update_status_ui({"status": "error"})  # Core disconnect
-    ui.on_toggle_language()
+def test_partly_visible_rows_count_as_off_screen(ui):
+    show(ui, rows(14))  # BT-02 frozen
+    # Stop half a row off the 60 px steps (a thumb drag, an extra station gap): 90 px down the list.
+    ui.station_canvas.configure(yscrollincrement=1)
+    ui.station_canvas.yview_moveto(90 / ui._list_content_h)
     ui.update()
-    assert ui.station_canvas.yview() == before
+    top = view_top(ui)
+    assert top == 90
+    tops = ui._list_row_tops
+    assert tops["DFU-02"] < top < tops["DFU-02"] + 56  # DFU-02 half hidden at the top
+    assert tops["BT-02"] < top + 728 < tops["BT-02"] + 56  # BT-02 half shown at the bottom
+    assert ui._list_above == ["DFU-01", "DFU-02"]
+    assert ui._list_below == ["BT-02"]
+    assert len(ui.station_track.find_withtag("tick")) == 1
+    assert "1 abnormal (BT-02)" in ui.lbl_list_hint.cget("text")
+    assert ui.lbl_list_hint.cget("fg") == RED
+
+
+def test_program_never_scrolls_the_list(ui):
+    show(ui, rows(20, frozen=()))
+    wheel(ui, ui._station_widgets["DFU-01"]["card"], -240)
+    assert view_top(ui) == 120
+    assert 0 < view_top(ui) < ui._list_content_h - ui.station_canvas.winfo_height()
+    pos = ui.station_canvas.yview()
+    below = rows(20)[-1]["device"]
+    visible = fully_visible(ui)[0]
+    assert below in ui._list_below and "DFU-01" in ui._list_above
+
+    def unchanged():
+        ui.update()
+        assert ui.station_canvas.yview() == pos
+
+    show(ui, rows(20, frozen=(below,)))
+    unchanged()
+    show(ui, rows(20, frozen=("DFU-01",)))
+    unchanged()
+    for device in (below, "DFU-01", visible):
+        ui._select_device(device)
+        unchanged()
+    ui.combo_device.set(below)
+    ui.combo_device.event_generate("<<ComboboxSelected>>")
+    unchanged()
+    ui._station_widgets[visible]["card"].event_generate("<Button-1>")
+    unchanged()
+    ui._update_status_ui({"status": "error"})  # Core disconnect
+    unchanged()
+    show(ui, rows(20, frozen=()))  # Core back
+    unchanged()
+    for _ in range(2):
+        ui.on_toggle_language()
+        unchanged()
     # A changed device list keeps the operator's position.
-    wheel(ui, ui._station_widgets["DFU-01"]["card"], -120)
-    show(ui, rows(14) + [{"device": "BT-03", "station": "BT", "status": "IDLE"}])
+    show(ui, rows(21, frozen=()))
+    assert view_top(ui) == 120
+
+
+def test_row_titles_do_not_overlap_online_lamps(ui):
+    show(ui, rows(14))
+    for widgets in ui._station_widgets.values():
+        title, lamp = widgets["title"], widgets["online_lamp"]
+        assert title.winfo_x() + title.winfo_width() <= lamp.winfo_x()
+
+
+def test_drag_stops_when_the_thumb_disappears(ui, monkeypatch):
+    errors = []
+    monkeypatch.setattr(ui, "report_callback_exception", lambda *args: errors.append(args))
+    show(ui, rows(14))
+    thumb = ui.station_track.coords("thumb")
+    ui.station_track.event_generate("<Button-1>", x=8, y=int(thumb[1]) + 5)
+    assert ui._track_drag is not None
+    show(ui, rows(12))
+    assert not ui.station_track.coords("thumb")
+    ui.station_track.event_generate("<B1-Motion>", x=8, y=30)
+    ui.update()
+    assert errors == []
+    assert ui._track_drag is None
+
+
+def test_wheel_over_track_and_hint_scrolls_the_list(ui):
+    show(ui, rows(14))
+    wheel(ui, ui.station_track, -120, x=8)
     assert view_top(ui) == 60
+    wheel(ui, ui.lbl_list_hint, -120, x=8, y=8)
+    assert view_top(ui) == 120
 
 
 def test_track_click_pages_and_thumb_drag_scrolls(ui):
