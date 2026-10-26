@@ -121,8 +121,6 @@ except Exception:
 
 logger = logging.getLogger("MonitorUI")
 
-STATION_ORDER = ("DFU", "FCT", "BT")
-CARDS_PER_ROW = 3
 
 _STATE_KEYS = {
     "standby": "state_standby",
@@ -606,12 +604,24 @@ class AtlasUI(_BaseTk):
         Tooltip(self.lbl_core_caption, self._core_tooltip_text)
 
         # ----------------------------------------------------------------------
-        # Bottom: Log Viewer
+        # Body: fixed 200 px station panel on the left (issue #126), live view, controls and Log on the right
         # ----------------------------------------------------------------------
-        log_frame = tk.LabelFrame(self, font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
+        body = tk.Frame(self, bg=WINDOW_BG)
+        body.pack(fill="both", expand=True, padx=PADX, pady=GAP)
+        # Height 780: title plus the twelve fixed cells (about 732 px), so the measured window always fits them.
+        self.station_panel = tk.LabelFrame(
+            body, font=self.f_bold, width=200, height=780, padx=4, pady=4,
+            bg=WINDOW_BG, fg=TEXT_FG,
+        )
+        bind(self.station_panel, "dash_title")
+        self.station_panel.pack(side="left", fill="y")
+        self.station_panel.pack_propagate(False)
+        right = tk.Frame(body, bg=WINDOW_BG)
+        right.pack(side="left", fill="both", expand=True, padx=(GAP, 0))
+        log_frame = tk.LabelFrame(right, font=self.f_bold, padx=6, pady=4, bg=WINDOW_BG, fg=TEXT_FG)
         bind(log_frame, "log_title")
-        # Packed before the dashboard and the middle pane: the Log always keeps its lines (issue #115).
-        log_frame.pack(side="bottom", fill="x", padx=PADX, pady=(GAP, GAP))
+        # Packed before the middle pane: the Log always keeps its lines (issue #115).
+        log_frame.pack(side="bottom", fill="x", pady=(GAP, 0))
 
         txt_wrap = tk.Frame(log_frame, bg=WINDOW_BG)
         txt_wrap.pack(fill="both", expand=True)
@@ -638,24 +648,8 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Station Real-Time Status Dashboard
         # ----------------------------------------------------------------------
-        dash_frame = tk.LabelFrame(self, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
-        bind(dash_frame, "dash_title")
-        dash_frame.pack(fill="x", padx=PADX, pady=GAP)
-
-        # Machines scroll inside a box capped at 28% of the screen height, so nine machines cannot push the Log
-        # out of view (issue #115 review). The cap is part of the measured minimum size, so it never shrinks the middle pane.
-        self._dash_measuring = False
-        self._dash_cap = max(120, int(self.winfo_screenheight() * 0.22))
-        dash_scroll = ttk.Scrollbar(dash_frame, orient="vertical")
-        dash_scroll.pack(side="right", fill="y")
-        self._dash_canvas = tk.Canvas(dash_frame, bg=WINDOW_BG, highlightthickness=0, yscrollcommand=dash_scroll.set)
-        dash_scroll.configure(command=self._dash_canvas.yview)
-        self._dash_canvas.pack(side="left", fill="x", expand=True)
-        wheel_scroll.register(self._dash_canvas)
-        self.stations_container = tk.Frame(self._dash_canvas, bg=WINDOW_BG)
-        dash_window = self._dash_canvas.create_window((0, 0), window=self.stations_container, anchor="nw")
-        self._dash_canvas.bind("<Configure>", lambda e: self._dash_canvas.itemconfigure(dash_window, width=e.width))
-        self.stations_container.bind("<Configure>", lambda _e: self._size_dashboard())
+        self.stations_container = tk.Frame(self.station_panel, bg=WINDOW_BG)
+        self.stations_container.pack(fill="both", expand=True)
 
         self._render_station_cards()
 
@@ -663,8 +657,8 @@ class AtlasUI(_BaseTk):
         # Middle: Split into Live Stream View & Controls
         # ----------------------------------------------------------------------
         # A grid, not a ttk.Panedwindow: the control column keeps its requested width; the live view takes the rest.
-        mid = tk.Frame(self, bg=WINDOW_BG)
-        mid.pack(fill="both", expand=True, padx=PADX, pady=GAP)
+        mid = tk.Frame(right, bg=WINDOW_BG)
+        mid.pack(fill="both", expand=True)
         mid.columnconfigure(0, weight=1)
         mid.rowconfigure(0, weight=1)
 
@@ -866,107 +860,88 @@ class AtlasUI(_BaseTk):
     def _fit_preview_to(self, max_h: int) -> Tuple[int, int]:
         """Measure the content at the full live-view size, then at smaller steps, until it fits ``max_h`` (#117)."""
         width = height = 0
-        self._dash_measuring = True
-        try:
-            for shrink in (1.0, 0.85, PREVIEW_MIN_SHARE):
-                preview_w, preview_h = self._preview_size(shrink)
-                self.canvas_preview.configure(width=preview_w, height=preview_h)
-                self._size_dashboard()
-                width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language,
-                                                      ui_i18n.set_language)
-                if height <= max_h:
-                    break
-        finally:
-            self._dash_measuring = False
-            self._size_dashboard()
+        for shrink in (1.0, 0.85, PREVIEW_MIN_SHARE):
+            preview_w, preview_h = self._preview_size(shrink)
+            self.canvas_preview.configure(width=preview_w, height=preview_h)
+            width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language,
+                                                  ui_i18n.set_language)
+            if height <= max_h:
+                break
         return width, height
-
-    def _size_dashboard(self) -> None:
-        """Dashboard box height: its content, up to the cap; the full cap while the window size is being measured."""
-        inner = self.stations_container
-        height = self._dash_cap if self._dash_measuring else min(inner.winfo_reqheight(), self._dash_cap)
-        # The canvas asks for the content's width too, so the window measure includes it and nothing is cut.
-        self._dash_canvas.configure(width=inner.winfo_reqwidth(), height=height,
-                                    scrollregion=(0, 0, inner.winfo_reqwidth(), inner.winfo_reqheight()))
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
     # --------------------------------------------------------------------------
     def _render_station_cards(self) -> None:
-        """Render one status light per configured test station."""
-        for w in self.stations_container.winfo_children():
-            w.destroy()
+        """Build twelve fixed cells in Core device-list order."""
+        for widget in self.stations_container.winfo_children():
+            widget.destroy()
         self._station_widgets.clear()
-
-        # Each station gets its own block of rows (DFU, FCT, BT, then any other), three cards per row.
-        counts: Dict[str, int] = {}
-        for st in self._stations:
-            name = str(st.get("station", "UNKNOWN"))
-            counts[name] = counts.get(name, 0) + 1
-        ordered = sorted(counts, key=lambda n: (STATION_ORDER.index(n) if n in STATION_ORDER else len(STATION_ORDER), n))
-        block_start: Dict[str, int] = {}
-        next_row = 0
-        for name in ordered:
-            block_start[name] = next_row
-            next_row += (counts[name] + CARDS_PER_ROW - 1) // CARDS_PER_ROW
-        seen: Dict[str, int] = {}
-        for st in self._stations:
-            st_name = str(st.get("station", "UNKNOWN"))
-            dev_id = str(st.get("device", ""))
-            status = str(st.get("status", "DISCONNECTED")).upper()
-            index = seen.get(st_name, 0)
-            seen[st_name] = index + 1
-            row = block_start[st_name] + index // CARDS_PER_ROW
-            col = index % CARDS_PER_ROW
-
-            card = tk.Frame(self.stations_container, relief="ridge", bd=1, padx=8, pady=4, bg=WINDOW_BG)
-            card.grid(row=row, column=col, sticky="nsew", padx=4, pady=2)
-
-            # Header: the device ID is the title; the station name sits in the body.
-            header = tk.Frame(card, bg=WINDOW_BG)
-            header.pack(fill="x")
-            lbl_title = tk.Label(header, text=dev_id, font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
-            lbl_title.pack(side="left")
-
-            state: Dict[str, Any] = {"station": st_name, "status": status, "row": dict(st), "core_connected": True}
-            light = StatusLight(header, bg=WINDOW_BG)
-            light.pack(side="right")
-            pres = present_station(st)
-            light.set_light(pres.light, pres.blink)
-            tip = Tooltip(light, lambda s=state: t(
-                present_station(s["row"], core_connected=s["core_connected"]).text_key
-            ))
-
-            lbl_dev = tk.Label(card, text=t("station_label", station=st_name), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG)
-            lbl_dev.pack(anchor="w", pady=(2, 4))
-            lbl_metrics = tk.Label(
-                card, text=format_reading_metrics(st), font=self.f_mono, fg=MUTED_FG, bg=WINDOW_BG, justify="left"
-            )
-            lbl_metrics.pack(anchor="w", pady=(0, 4))
-
-            # Select button: an icon only, so its tip says what it does
-            btn_sel = tk.Button(
-                card,
-                text="👁",
-                font=self.f_icon,
-                bg=BUTTON_BG,
-                fg=TEXT_FG,
-                command=lambda d=dev_id: self._select_device(d),
-            )
-            btn_sel.pack(fill="x")
-            Tooltip(btn_sel, lambda: t("tip_select"))
-
-            self._station_widgets[dev_id] = {
-                "card": card,
-                "light": light,
-                "tip": tip,
-                "device": lbl_dev,
-                "metrics": lbl_metrics,
-                "state": state,
-            }
         self._render_empty_hint()
-        # Machines are rendered after startup too: fix their label widths now, so a language switch keeps the layout (#117).
-        fix_text_widths(self.stations_container, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
+        previous_prefix = None
+        for index in range(12):
+            st = self._stations[index] if index < len(self._stations) else None
+            prefix = str(st.get("device", "")).split("-")[0] if st else previous_prefix
+            gap = 4 + (4 if previous_prefix is not None and prefix != previous_prefix else 0)
+            card = tk.Frame(self.stations_container, width=186, height=56, bg=WINDOW_BG)
+            card.grid(row=index, column=0, padx=1, pady=(gap, 0))
+            card.pack_propagate(False)
+            card.grid_propagate(False)
+            previous_prefix = prefix
+            if st is None:
+                continue
+            dev_id = str(st.get("device", ""))
+            state = {"station": str(st.get("station", "")), "row": dict(st),
+                     "status": str(st.get("status", "DISCONNECTED")).upper(), "core_connected": True}
+            fam, mono = self.f_label[0], self.f_mono[0]
+            bar = tk.Frame(card, bg=WINDOW_BG)
+            bar.place(x=0, y=0, width=8, height=56)
+            light = StatusLight(card, diameter=12, bg=WINDOW_BG)
+            light.place(x=12, y=7, width=16, height=16)
+            title = tk.Label(card, text=dev_id, font=(mono, -22, "bold"),
+                             bg=WINDOW_BG, fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
+            title.place(x=30, y=0, width=86, height=28)
+            lamp = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)
+            lamp_dot = lamp.create_oval(2, 2, 14, 14, width=3)
+            lamp.place(x=116, y=6, width=16, height=16)
+            online = tk.Label(card, font=(fam, -10, "bold"), bg=WINDOW_BG,
+                              fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
+            online.place(x=134, y=0, width=52, height=28)
+            status = tk.Label(card, font=(fam, -16, "bold"), bg=WINDOW_BG,
+                              fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
+            status.place(x=12, y=29, width=172, height=26)
+            tip = Tooltip(light, lambda state=state: t(
+                present_station(state["row"], core_connected=state["core_connected"]).text_key))
+            def row_text(state=state):
+                return t("station_label", station=state["station"]) + "\n" + format_reading_metrics(state["row"])
+            row_tip = Tooltip(card, row_text)
+            Tooltip(title, row_text)
+            for widget in (card, *card.winfo_children()):
+                widget.bind("<Button-1>", lambda _e, device=dev_id: self._select_device(device))
+            widgets = {"card": card, "light": light, "tip": tip, "row_tip": row_tip,
+                       "title": title, "bar": bar, "online_lamp": lamp, "lamp_dot": lamp_dot, "online": online,
+                       "status_label": status, "state": state}
+            self._station_widgets[dev_id] = widgets
+            self._configure_station_row(widgets, present_station(st))
+
+    def _configure_station_row(self, widgets, pres) -> None:
+        """Change row colours and words without changing its geometry."""
+        card = widgets["card"]
+        card.configure(bg=pres.row_bg)
+        for child in card.winfo_children():
+            child.configure(bg=pres.row_bg)
+        # Red rows are white text throughout; otherwise only the status words carry the status colour.
+        text_fg = pres.fg if pres.row_red else TEXT_FG
+        widgets["title"].configure(fg=text_fg)
+        widgets["online"].configure(fg=text_fg)
+        widgets["status_label"].configure(fg=pres.fg)
+        widgets["bar"].configure(bg=pres.fg)
+        widgets["light"].set_light(pres.light, pres.blink)
+        widgets["status_label"].configure(text=t(pres.status_key))
+        widgets["online"].configure(text=t("station_online_lamp" if pres.online else "station_offline_lamp"))
+        lamp = widgets["online_lamp"]
+        lamp.itemconfigure(widgets["lamp_dot"], fill="#2E7D32" if pres.online else "#ffffff",
+                           outline="#ffffff" if pres.row_red else ("#2E7D32" if pres.online else "#9E9E9E"))
 
     def _empty_hint_key(self) -> str:
         """Why the dashboard is empty: not connected (nothing to show yet) or connected with no machines."""
@@ -974,15 +949,17 @@ class AtlasUI(_BaseTk):
 
     def _render_empty_hint(self) -> None:
         """Plain-language hint in place of a blank dashboard (issue #115). Shown only when there are no machines."""
+        if getattr(self, "lbl_empty_hint", None) is not None:
+            self.lbl_empty_hint.destroy()
         self.lbl_empty_hint = None
         if self._stations:
             return
         hint = tk.Label(
-            self.stations_container, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
-            wraplength=int(self.winfo_screenwidth() * 0.6),
+            self.station_panel, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
+            wraplength=180, width=20,
         )
         bind(hint, lambda: t(self._empty_hint_key()))
-        hint.pack(fill="x", pady=8)  # wraplength: 60% of the screen, so a long sentence wraps instead of being cut
+        hint.pack(fill="x", pady=8, before=self.stations_container)
         self.lbl_empty_hint = hint
 
     def _station_of(self, device: str) -> str:
@@ -1003,11 +980,9 @@ class AtlasUI(_BaseTk):
 
     def _on_language_changed(self) -> None:
         """Re-label the parts whose text is built from data, and the buttons whose label changes."""
-        for dev_id, w in self._station_widgets.items():
-            w["device"].config(text=t("station_label", station=w["state"]["station"]))
-            st = next((s for s in self._stations if str(s.get("device", "")) == dev_id), None)
-            if st is not None:
-                w["metrics"].config(text=format_reading_metrics(st))
+        for w in self._station_widgets.values():
+            self._configure_station_row(w, present_station(
+                w["state"]["row"], core_connected=w["state"]["core_connected"]))
         self.btn_live_stream.config(text=t("btn_live_stop") if self._streaming_active else t("btn_live"))
         if str(self.btn_run_check.cget("state")) != "disabled":
             self.btn_run_check.config(text=t("btn_check"))
@@ -1057,11 +1032,10 @@ class AtlasUI(_BaseTk):
                     w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
                         pres = present_station(st)
-                        w["light"].set_light(pres.light, pres.blink)
+                        self._configure_station_row(w, pres)
                         w["state"]["row"] = dict(st)
                         w["state"]["core_connected"] = True
                         w["state"]["status"] = str(st.get("status", "DISCONNECTED")).upper()
-                        w["metrics"].config(text=format_reading_metrics(st))
         else:
             # Log once per outage (first poll or connected -> disconnected), not on every 1.5 s poll.
             was_ok = self._service_ok
@@ -1075,7 +1049,7 @@ class AtlasUI(_BaseTk):
             for w in self._station_widgets.values():
                 pres = present_station(w["state"]["row"], core_connected=False)
                 w["state"]["core_connected"] = False
-                w["light"].set_light(pres.light, pres.blink)
+                self._configure_station_row(w, pres)
                 w["state"]["status"] = "DISCONNECTED"
         if self.lbl_empty_hint is not None:
             self.lbl_empty_hint.config(text=t(self._empty_hint_key()))

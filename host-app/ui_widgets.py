@@ -40,13 +40,17 @@ LOG_WARN_FG = WARN_FG
 LED_GREEN = "#43a047"
 LED_YELLOW = "#fdd835"
 LED_RED = "#e53935"
+LED_GREY = "#9e9e9e"
 LED_RED_DIM = "#ffcdd2"  # off-phase of a blinking red light
 
-LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED}
+LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED, "grey": LED_GREY}
 
 # Every colour a Monitor widget may use, for the palette test.
-ALL_BG = frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG})
-ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG})
+# Station row colours (spec v5.2 §14.1, issue #126); the table itself lives in station_presentation.
+ROW_FG = frozenset({"#2E7D32", "#1565C0", "#616161", "#ffffff"})  # status words and colour bar
+ROW_BG = frozenset({"#E8F5E9", "#E3F2FD", "#F5F5F5", "#B71C1C"})
+ALL_BG = frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG}) | ROW_BG | ROW_FG
+ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG}) | ROW_FG
 
 
 def apply_light_ttk_style(master: tk.Misc) -> None:
@@ -332,7 +336,7 @@ def is_dark_appearance(window: tk.Misc) -> bool:
 
 
 def light_for_status(status: str) -> Tuple[str, bool]:
-    """Map a Core station status to ``(colour key, blink)``. FROZEN blinks red; DISCONNECTED is red."""
+    """Map a Core station status to ``(colour key, blink)``. FROZEN is solid red; DISCONNECTED is grey."""
     pres = present_station({"status": status})
     return pres.light, pres.blink
 

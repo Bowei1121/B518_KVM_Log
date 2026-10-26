@@ -423,7 +423,8 @@ def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale
     app._update_status_ui({"status": "ok", "stations": stations})
     app.update_idletasks()
     assert _log_lines_visible(app) >= 6, _context(app, screen, scale, "en")
-    assert int(app._dash_canvas.cget("height")) <= app._dash_cap
+    assert not any(w.winfo_class() in ("Scrollbar", "TScrollbar")
+                   for w in _walk(app.stations_container.master))
     lights = [w for w in _walk(app.stations_container) if isinstance(w, ui_app.StatusLight)]
     assert len(lights) == 9
     assert all(light.winfo_ismapped() for light in lights)

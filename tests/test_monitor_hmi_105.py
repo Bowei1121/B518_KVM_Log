@@ -30,9 +30,9 @@ tk = pytest.importorskip("tkinter")
         ("OK", ("green", False)),
         ("BUSY", ("yellow", False)),
         ("TESTING", ("yellow", False)),
-        ("FROZEN", ("red", True)),
-        ("DISCONNECTED", ("red", False)),
-        ("", ("red", False)),
+        ("FROZEN", ("red", False)),
+        ("DISCONNECTED", ("grey", False)),
+        ("", ("grey", False)),
     ],
 )
 def test_station_status_maps_to_one_light(status, expected):
@@ -114,7 +114,7 @@ except tk.TclError:
     pytest.skip("no Tk display", allow_module_level=True)
 
 import ui_app  # noqa: E402
-from ui_widgets import LED_GREEN, LED_RED, LED_RED_DIM, LED_YELLOW, StatusLight, Tooltip  # noqa: E402
+from ui_widgets import LED_GREEN, LED_GREY, LED_RED, LED_RED_DIM, LED_YELLOW, StatusLight, Tooltip  # noqa: E402
 
 _TK_CLASSES = {"Frame", "Labelframe", "Label", "Button", "Canvas", "Text", "Entry",
                "Listbox", "Checkbutton", "Scrollbar", "Toplevel"}
@@ -224,16 +224,11 @@ def test_core_service_lamp_shows_detail_in_tip_and_logs_each_outage_once(ui):
     assert ui.log_text.get("1.0", "end").count("Core Service not connected") == 1
 
 
-def test_frozen_station_blinks_then_stops_on_recovery(ui):
+def test_frozen_station_is_solid_red_then_recovers(ui):
     frozen = {"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "FROZEN"}]}
     ui._update_status_ui(frozen)
     light = ui._station_widgets["DFU-01"]["light"]
-    assert light.is_blinking()
-    assert light.current_fill() == LED_RED
-
-    light._tick()  # dark half of the cycle
-    assert light.current_fill() == LED_RED_DIM
-    light._tick()  # lit again
+    assert not light.is_blinking()
     assert light.current_fill() == LED_RED
 
     ui._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "IDLE"}]})
@@ -267,19 +262,20 @@ def test_nine_stations_each_get_a_visible_grid_cell(ui):
         assert info, f"{dev} is not placed in the grid"
         cells.add((int(info["row"]), int(info["column"])))
     assert len(cells) == 9
-    assert max(col for _row, col in cells) == 2 and max(row for row, _col in cells) == 2
+    assert [(int(w["card"].grid_info()["row"]), int(w["card"].grid_info()["column"]))
+            for w in ui._station_widgets.values()] == [(i, 0) for i in range(9)]
 
 
-def test_more_than_three_cards_for_one_station_wrap_to_the_next_row(ui):
+def test_more_than_three_cards_for_one_station_keep_device_list_order(ui):
     stations = [{"device": f"DFU-{n:02d}", "station": "DFU", "status": "IDLE"} for n in range(1, 5)]
     stations.append({"device": "FCT-01", "station": "FCT", "status": "IDLE"})
     ui._update_status_ui({"status": "ok", "stations": stations})
     cells = {dev: (int(w["card"].grid_info()["row"]), int(w["card"].grid_info()["column"]))
              for dev, w in ui._station_widgets.items()}
     assert len(set(cells.values())) == 5
-    assert cells["DFU-03"] == (0, 2)
-    assert cells["DFU-04"] == (1, 0)   # fourth DFU starts row 2 of the DFU block
-    assert cells["FCT-01"] == (2, 0)   # FCT block starts after the two DFU rows
+    assert cells["DFU-03"] == (2, 0)
+    assert cells["DFU-04"] == (3, 0)
+    assert cells["FCT-01"] == (4, 0)
 
 
 def test_restart_failure_is_short_on_the_settings_page_and_full_in_the_log(ui, monkeypatch):
@@ -377,13 +373,13 @@ def test_core_disconnect_stops_all_station_blinking(ui):
         {"device": "DFU-01", "station": "DFU", "status": "FROZEN"},
         {"device": "FCT-01", "station": "FCT", "status": "IDLE"},
     ]})
-    assert ui._station_widgets["DFU-01"]["light"].is_blinking()
+    assert not ui._station_widgets["DFU-01"]["light"].is_blinking()
     ui._update_status_ui({"status": "error"})
     assert ui._station_widgets
     for w in ui._station_widgets.values():
-        assert w["light"].current_fill() == LED_RED
+        assert w["light"].current_fill() == LED_GREY
         assert w["light"].is_blinking() is False
-        assert w["tip"].current_text() == "Red: disconnected."
+        assert w["tip"].current_text() == "Grey: offline (not connected)."
 
 
 @pytest.mark.parametrize("path", ["first_draw", "ok_poll", "disconnect"])
@@ -419,12 +415,12 @@ def test_station_tooltip_tracks_core_disconnect_and_recovery(ui):
     frozen = {"device": "DFU-01", "station": "DFU", "status": "FROZEN", "extra_field": "x"}
     ui._update_status_ui({"status": "ok", "stations": [frozen]})
     w = ui._station_widgets["DFU-01"]
-    assert w["tip"].current_text() == "Blinking red: the picture is frozen (stuck)."
+    assert w["tip"].current_text() == "Red: the picture is frozen (stuck)."
 
     ui._update_status_ui({"status": "error"})
-    assert w["tip"].current_text() == "Red: disconnected."
+    assert w["tip"].current_text() == "Grey: offline (not connected)."
     ui._update_status_ui({"status": "error"})
-    assert w["tip"].current_text() == "Red: disconnected."
+    assert w["tip"].current_text() == "Grey: offline (not connected)."
 
     ui._update_status_ui({"status": "ok", "stations": [{**frozen, "status": "IDLE"}]})
     assert w["tip"].current_text() == "Green: idle and ready to use."
