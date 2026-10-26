@@ -1,0 +1,52 @@
+# Temporary diagnostics for issue #140 (Tk init.tcl read failures on the Windows runner). Not for merge.
+name: Diag Tk init (issue 140)
+on:
+  push:
+    branches: [ 'diag/windows-tk-init-140' ]
+permissions:
+  contents: read
+jobs:
+  diag:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-2025, windows-2022 ]
+        defender: [ 'on', 'off' ]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: host-app/requirements.txt
+      - name: Defender state
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object AMRunningMode,RealTimeProtectionEnabled,OnAccessProtectionEnabled,IoavProtectionEnabled,BehaviorMonitorEnabled | Format-List
+          (Get-MpPreference).ExclusionPath
+          (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+          Get-Date
+      - name: Turn Defender real-time scanning off
+        if: matrix.defender == 'off'
+        shell: pwsh
+        run: |
+          Set-MpPreference -DisableRealtimeMonitoring $true
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,OnAccessProtectionEnabled | Format-List
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r host-app/requirements.txt pytest
+      - name: Stress Tcl/Tk (A read loop, B create loop, C create loop with threads)
+        shell: bash
+        run: python diag140/tk_stress.py ${{ matrix.os }}-defender-${{ matrix.defender }}
+      - name: Real Windows test step, 5 times
+        shell: bash
+        run: |
+          for i in 1 2 3 4 5; do
+            python -m pytest -o faulthandler_timeout=120 -q -p no:cacheprovider tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py > out_$i.txt 2>&1 || true
+            echo "PYTEST140 ${{ matrix.os }} defender=${{ matrix.defender }} run=$i: $(tail -1 out_$i.txt) tk_errors=$(grep -cE '^(ERROR|FAILED) .*(init.tcl|tk.tcl|tcl_findLibrary)' out_$i.txt)"
+            grep -E '^(ERROR|FAILED) .*(init.tcl|tk.tcl|tcl_findLibrary)' out_$i.txt | cut -c1-160 || true
+          done
