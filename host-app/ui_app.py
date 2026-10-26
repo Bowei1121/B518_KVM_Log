@@ -980,7 +980,11 @@ class AtlasUI(_BaseTk):
             tip = Tooltip(light, lambda state=state: t(
                 present_station(state["row"], core_connected=state["core_connected"]).text_key))
             def row_text(state=state):
-                return t("station_label", station=state["station"]) + "\n" + format_reading_metrics(state["row"])
+                pres = present_station(state["row"], core_connected=state["core_connected"])
+                return (t("station_label", station=state["station"]) + "\n"
+                        + t("row_tip_kvm_unknown" if not state["core_connected"] else
+                            ("row_tip_kvm_connected" if pres.online else "row_tip_kvm_disconnected")) + "\n"
+                        + format_reading_metrics(state["row"]))
             row_tip = Tooltip(card, row_text)
             Tooltip(title, row_text)
             for widget in (card, *card.winfo_children()):
@@ -989,7 +993,7 @@ class AtlasUI(_BaseTk):
                        "title": title, "bar": bar, "online_lamp": lamp, "lamp_dot": lamp_dot, "online": online,
                        "status_label": status, "state": state}
             self._station_widgets[dev_id] = widgets
-            self._configure_station_row(widgets, present_station(st))
+            self._configure_station_row(widgets, present_station(st), core_connected=state["core_connected"])
 
         self.update_idletasks()
         self._list_row_tops = {dev: w["card"].winfo_y() for dev, w in self._station_widgets.items()}
@@ -1069,7 +1073,7 @@ class AtlasUI(_BaseTk):
                                  and thumb[0] <= event.x <= thumb[2] and thumb[1] <= event.y <= thumb[3])
         self._refresh_station_list_marks()
 
-    def _configure_station_row(self, widgets, pres) -> None:
+    def _configure_station_row(self, widgets, pres, *, core_connected: bool = True) -> None:
         """Change row colours and words without changing its geometry."""
         card = widgets["card"]
         card.configure(bg=pres.row_bg)
@@ -1083,9 +1087,14 @@ class AtlasUI(_BaseTk):
         widgets["bar"].configure(bg=pres.fg)
         widgets["light"].set_light(pres.light, pres.blink)
         widgets["status_label"].configure(text=t(pres.status_key))
-        widgets["online"].configure(text=t("station_online_lamp" if pres.online else "station_offline_lamp"))
+        widgets["online"].configure(text=t("station_na_lamp" if not core_connected else
+                                            ("station_online_lamp" if pres.online else "station_offline_lamp")))
         lamp = widgets["online_lamp"]
-        lamp.itemconfigure(widgets["lamp_dot"], fill="#2E7D32" if pres.online else "#ffffff",
+        if not core_connected:
+            lamp.itemconfigure(widgets["lamp_dot"], fill="",
+                               outline="#ffffff" if pres.row_red else "#9E9E9E", width=3, dash=(2, 2))
+            return
+        lamp.itemconfigure(widgets["lamp_dot"], dash="", fill="#2E7D32" if pres.online else ("" if pres.row_red else "#ffffff"),
                            outline="#ffffff" if pres.row_red else ("#2E7D32" if pres.online else "#9E9E9E"))
 
     def _empty_hint_key(self) -> str:
@@ -1150,7 +1159,8 @@ class AtlasUI(_BaseTk):
         """Re-label the parts whose text is built from data, and the buttons whose label changes."""
         for w in self._station_widgets.values():
             self._configure_station_row(w, present_station(
-                w["state"]["row"], core_connected=w["state"]["core_connected"]))
+                w["state"]["row"], core_connected=w["state"]["core_connected"]),
+                core_connected=w["state"]["core_connected"])
         self._refresh_station_list_marks()
         self.btn_live_stream.config(text=t("btn_live_stop") if self._streaming_active else t("btn_live"))
         if str(self.btn_run_check.cget("state")) != "disabled":
@@ -1201,9 +1211,9 @@ class AtlasUI(_BaseTk):
                     w = self._station_widgets.get(str(st.get("device", "")))
                     if w:
                         pres = present_station(st)
-                        self._configure_station_row(w, pres)
                         w["state"]["row"] = dict(st)
                         w["state"]["core_connected"] = True
+                        self._configure_station_row(w, pres, core_connected=w["state"]["core_connected"])
                         w["state"]["status"] = str(st.get("status", "DISCONNECTED")).upper()
         else:
             # Log once per outage (first poll or connected -> disconnected), not on every 1.5 s poll.
@@ -1220,7 +1230,7 @@ class AtlasUI(_BaseTk):
             for w in self._station_widgets.values():
                 pres = present_station(w["state"]["row"], core_connected=False)
                 w["state"]["core_connected"] = False
-                self._configure_station_row(w, pres)
+                self._configure_station_row(w, pres, core_connected=False)
                 w["state"]["status"] = "DISCONNECTED"
         self._refresh_station_list_marks()
         if not self._stations and self._empty_hint_shown != self._empty_hint_key():

@@ -38,11 +38,13 @@ _LOOKUP = {"IDLE": _IDLE, "OK": _IDLE, "BUSY": _BUSY, "TESTING": _BUSY,
 def present_station(
     row: Optional[Mapping[str, Any]], core_connected: bool = True
 ) -> StationPresentation:
-    """Frozen overrides device state; a Core outage always displays Offline."""
+    """Frozen wins; connected DISCONNECTED rows use IDLE; Core outages show Offline."""
     if not core_connected:
         return _DISCONNECTED
     row = row or {}
     status = str(row.get("status") or "").strip().upper()
+    if status == "DISCONNECTED" and row.get("is_connected"):
+        status = "IDLE"
     pres = _FROZEN if row.get("is_frozen") else _LOOKUP.get(status, _DISCONNECTED)
     online = bool(row["is_connected"]) if "is_connected" in row else status in (
         "IDLE", "OK", "BUSY", "TESTING", "FROZEN"
