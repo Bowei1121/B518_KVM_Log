@@ -16,7 +16,7 @@
 - **JSON Protocol**: 換行符分隔（Newline-Delimited）的 JSON 格式協定。包含 Request ID，取代原先易碎的逗號分隔純字串協定，無向後相容包袱。
 - **Long Polling**: 用於耗時測試的 TCP 等待機制。LabVIEW 對 `check` 送出長 Timeout 請求，Core Service 卡住該 TCP 連線在背景監聽，直到結果出現才回傳，降低頻寬浪費。
 - **Frame Freeze Guard**: 畫面凍結防呆機制。強制檢查 JetKVM 底層回傳影格的時間戳 (Presentation Timestamp)，確保測試機 HDMI 畫面活躍，避免因當機誤判前次結果。只能證明 JetKVM 串流在送畫面；Mac 或 Log Solution 當機時 HDMI 仍持續輸出、PTS 仍前進，須由「Log Solution 心跳」判斷。觀察串流不算消耗輪次：唯讀的 `inspect` 也會更新凍結狀態。
-- **FrameStream**: 每台設備一份的畫面串流活性狀態（串流編號、序號順序、PTS 靜止），是 Frame Freeze Guard 唯一的判斷來源（`host-app/frame_stream.py`，ADR-0005 2026-10-20 修訂）。被動追蹤（每次讀取）與一次性指令的主動窗口共用同一份狀態；只有 PTS 實際前進才算活著，首張影格不算。設備一旦判定凍結，狀態持續顯示 FROZEN，直到同一設備再次觀察到 PTS 前進才解除；換串流的首張影格不解除，須等新串流第一次 PTS 前進（ADR-0005 2026-10-26 修訂），不需人工確認。只有讀取影格的指令能觀察 PTS 前進並解除凍結，status／core_status 輪詢不會解除。FROZEN 判定的讀取結束時若檢查到 KVM 已斷線（包含超過 inspection timeout 後才完成的背景讀取），以及指令回覆 `kvm_connect_failed` 時，只解除該判定自己新增的凍結 latch；KVM 存活時先前已鎖定的凍結保留。既有凍結後斷線時，status 應顯示 FROZEN 或 DISCONNECTED 仍待使用者決定。
+- **FrameStream**: 每台設備一份的畫面串流活性狀態（串流編號、序號順序、PTS 靜止），是 Frame Freeze Guard 唯一的判斷來源（`host-app/frame_stream.py`，ADR-0005 2026-10-20 修訂）。被動追蹤（每次讀取）與一次性指令的主動窗口共用同一份狀態；只有 PTS 實際前進才算活著，首張影格不算。設備一旦判定凍結，狀態持續顯示 FROZEN，直到同一設備再次觀察到 PTS 前進才解除；換串流的首張影格不解除，須等新串流第一次 PTS 前進（ADR-0005 2026-10-26 修訂），不需人工確認。只有讀取影格的指令能觀察 PTS 前進並解除凍結，status／core_status 輪詢不會解除。KVM 斷線不會解除凍結。唯一例外範圍很窄：某次讀取判定 FROZEN，而該次讀取的回覆是 `kvm_connect_failed`（不是 `frame_frozen`；包括讀取超過 inspection timeout、在背景完成時 KVM 已斷線的那次讀取），只撤銷這個判定剛新增的凍結 latch。理由：LabVIEW 從未因這次讀取收到 `frame_frozen`，而且這個凍結判定可能只是 KVM 在讀取途中斷線造成的假象。斷線前就已存在的凍結 latch 一律保留。已凍結的設備 KVM 斷線後仍顯示凍結（`frozen=true`、`connected=false`，Monitor UI 紅色 Frame frozen，連線狀態只在 tooltip；使用者決定 2026-10-26，ADR-0005 修訂第 5、6 點）。
 
 ## 協作角色
 

@@ -256,6 +256,36 @@ def test_kvm_lost_inside_window_does_not_latch_status_frozen(serve, command):
     _assert_not_frozen_in_status(srv)
 
 
+@pytest.mark.parametrize("command", ["input", "start_test"])
+def test_no_frame_kvm_lost_during_heartbeat_probe_releases_latch(serve, monkeypatch, command):
+    kvm = StaticPtsDfuKVM(FOUR)
+    monkeypatch.setattr(kvm, "latest_frame", lambda: None)
+    srv = serve(kvm)
+
+    sample_heartbeat = srv._heartbeat_refusal
+    probe_reads = []
+
+    def dying_probe_read():
+        probe_reads.append(1)
+        kvm.end_track()  # the KVM drops while the heartbeat probe is sampling
+        return None
+
+    async def die_during_probe(ctx):
+        # wait_live has already latched FROZEN(no_frame) with the KVM still alive.
+        assert ctx.kvm.is_healthy()
+        assert srv.freeze_guard.stream("DFU-01").last_verdict().reason == "no_frame"
+        assert "DFU-01" in srv.freeze_guard.get_status()["frozen_devices"]
+        monkeypatch.setattr(kvm, "latest_frame", dying_probe_read)
+        return await sample_heartbeat(ctx)
+
+    monkeypatch.setattr(srv, "_heartbeat_refusal", die_during_probe)
+    send = _input if command == "input" else _start_test
+    assert send(srv)["error"] == "kvm_connect_failed"
+    assert probe_reads  # the track ended inside the real heartbeat sampling
+    assert "DFU-01" not in srv.freeze_guard.get_status()["frozen_devices"]
+    _assert_not_frozen_in_status(srv)
+
+
 def test_kvm_lost_during_monitor_wait_read_does_not_latch_status_frozen(serve):
     kvm = LogSolutionKVM(state="preparing")
     srv = serve(kvm)
@@ -321,6 +351,34 @@ def test_kvm_loss_reply_keeps_server_latch_from_before_disconnect(serve):
     assert "DFU-01" in srv.freeze_guard.get_status()["frozen_devices"]
 
 
+def test_frozen_before_kvm_loss_stays_frozen_while_disconnected(serve):
+    """User decision 2026-10-26: a device frozen before its KVM drops keeps showing frozen while disconnected."""
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.omit_presentation_time = True
+    srv = serve(kvm)
+    srv.inspection_timeout_sec = 5
+    assert _send(srv, build_request("inspect", "frozen-first", "DFU-01", {"timeout_sec": 5}))["error"] == "frame_frozen"
+    read = kvm.latest_frame
+
+    def dying_read():
+        kvm.end_track()
+        return read()
+
+    kvm.latest_frame = dying_read
+    assert _send(srv, build_request("inspect", "then-loss", "DFU-01", {"timeout_sec": 5}))["error"] == "kvm_connect_failed"
+
+    status = _send(srv, build_request("status", "status-frozen-offline", ""))
+    device = next(row for row in status["data"]["devices"] if row["device"] == "DFU-01")
+    assert device["frozen"] is True
+    assert device["connected"] is False
+    core = _send(srv, build_request("core_status", "core-frozen-offline", ""))
+    station = next(row for row in core["data"]["stations"] if row["device"] == "DFU-01")
+    assert station["status"] == "FROZEN"
+    assert station["is_frozen"] is True
+    assert station["is_connected"] is False
+    assert "DFU-01" in core["data"]["freeze_guard"]["frozen_devices"]
+
+
 @pytest.mark.parametrize("command", ["inspect", "check_finish"])
 def test_finished_read_verdict_releases_own_latch_before_loss_reply(command):
     """讀取完成後才斷線且另一 lane 已判定時，回覆仍用該 lane 的 verdict。"""
@@ -341,8 +399,10 @@ def test_finished_read_verdict_releases_own_latch_before_loss_reply(command):
     kvm.connected = True
     srv = TcpJsonServer(device_registry=make_registry(), freeze_guard=guard)
 
-    async def completed_after_timeout(slot, kvm, mode):
+    async def completed_after_timeout(slot, kvm, mode, submitted=None):
         slot.flights[lane] = future
+        if submitted is not None:
+            submitted.append(future)
         kvm.end_track()
         return Reading.unknown("inspection_timeout")
 
@@ -379,6 +439,39 @@ def test_loss_before_new_command_does_not_release_previous_command_verdict():
         reply = asyncio.run(srv._long_poll(ctx, 5, CheckMode.INSPECT))
         assert reply["error"] == "kvm_connect_failed"
         # 先前命令在 KVM 存活時鎖定；斷線後 status 顯示方式仍待使用者決定。
+        assert guard.get_status()["frozen_devices"] == ["DFU-01"]
+    finally:
+        srv._inspector.shutdown(wait=True)
+
+
+def test_loss_does_not_release_another_inspects_read_submitted_during_command():
+    import asyncio
+    from concurrent.futures import Future
+    from device_slot import DeviceSlot
+    from round_check import CheckMode, Reading
+    from tcp_server import CommandContext
+
+    guard = FrameFreezeGuard()
+    slot = DeviceSlot("DFU-01", guard.stream("DFU-01"))
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.connected = True
+    srv = TcpJsonServer(device_registry=make_registry(), freeze_guard=guard)
+    srv._is_running = True
+
+    async def another_inspects_read(slot, kvm, mode, submitted=None):
+        verdict = slot.stream.observe("s", 1, None)
+        future = Future()
+        future.set_result(Reading.failed("frame_frozen", verdict.message, verdict=verdict))
+        slot.flights["inspect"] = future
+        # Another inspect submitted this future; this command owns no read.
+        kvm.end_track()
+        return Reading.unknown("inspection_timeout")
+
+    srv._read_reading = another_inspects_read
+    ctx = CommandContext(entry=make_registry().get("DFU-01"), kvm=kvm, slot=slot)
+    try:
+        reply = asyncio.run(srv._long_poll(ctx, 5, CheckMode.INSPECT))
+        assert reply["error"] == "kvm_connect_failed"
         assert guard.get_status()["frozen_devices"] == ["DFU-01"]
     finally:
         srv._inspector.shutdown(wait=True)

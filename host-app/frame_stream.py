@@ -81,13 +81,15 @@ class FrameStream:
     def frozen_now(self, now: Optional[float] = None) -> bool:
         """Status stays frozen until a frame-reading command sees PTS advance. Takes no sample.
 
-        A FROZEN read that ends with the KVM lost releases only the latch it set itself
-        (see release_kvm_lost_latch); a latch set earlier, while the KVM was alive, is kept.
+        A KVM disconnect does not clear it. The one narrow exception: a FROZEN read whose own reply is
+        kvm_connect_failed undoes the latch that same verdict just set (see release_kvm_lost_latch),
+        because LabVIEW never got frame_frozen for it and the verdict may be an artifact of the KVM
+        dying mid-read. A latch that existed before the disconnect always stays (ADR-0005, 2026-10-26).
         """
         return self._status_frozen
 
     def release_kvm_lost_latch(self, verdict: Optional[Verdict]) -> None:
-        """Release only the status latch caused by this reading when its KVM is lost."""
+        """Undo the latch ``verdict`` itself set, when that read is answered kvm_connect_failed. Never an earlier latch."""
         with self._lock:
             if verdict is not None and self._latched_by is verdict:
                 self._status_frozen = False
