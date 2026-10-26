@@ -83,6 +83,7 @@ from ui_widgets import (
     Tooltip,
     apply_light_ttk_style,
     apply_window_icon,
+    fit_label_to_pixels,
     fix_text_widths,
     measure_all_languages,
     bind_clamped,
@@ -956,9 +957,11 @@ class AtlasUI(_BaseTk):
             return
         hint = tk.Label(
             self.station_panel, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
-            wraplength=180, width=20,
         )
         bind(hint, lambda: t(self._empty_hint_key()))
+        # The list column is a fixed 200 px at every scaling, but a width in characters grows with the font: fit
+        # the hint to 180 px and wrap there, so the whole sentence stays inside the column (Windows CI, #137).
+        fit_label_to_pixels(hint, 180)
         hint.pack(fill="x", pady=8, before=self.stations_container)
         self.lbl_empty_hint = hint
 
