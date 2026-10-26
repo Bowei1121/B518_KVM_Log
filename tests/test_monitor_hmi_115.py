@@ -511,6 +511,23 @@ def test_offline_hint_tooltip_has_the_sentence_the_address_and_who_to_call(make_
     ui_i18n.set_language("en")
 
 
+def test_offline_explanation_is_also_written_to_the_log_once_per_outage(make_ui, monkeypatch):
+    # spec §14.14: the same explanation as the hover tip goes into the Log (file: both languages; panel: current one).
+    app = make_ui()
+    written = []
+    original = app._file_log.write
+    monkeypatch.setattr(app._file_log, "write", lambda en, zh, **kw: (written.append((en, zh)), original(en, zh, **kw)))
+    app._service_ok = True  # connected, then the service goes away
+    app._update_status_ui({"status": "error", "message": "refused"})
+    app._update_status_ui({"status": "error", "message": "refused"})  # still the same outage: no second line
+    explained = [(en, zh) for en, zh in written if OFFLINE_FULL["en"] in en]
+    assert len(explained) == 1, written
+    en, zh = explained[0]
+    for lang, line in (("en", en), ("zh", zh)):
+        assert OFFLINE_FULL[lang] in line and "127.0.0.1:1" in line and OFFLINE_CALL[lang] in line, (lang, line)
+    assert OFFLINE_FULL["en"] in app.log_text.get("1.0", "end")
+
+
 @pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 4 / 3)],
                          ids=["2880x1800@200%", "1920x1080@100%"])
 def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale):
