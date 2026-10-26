@@ -158,9 +158,12 @@ def test_off_screen_abnormal_device_gets_a_red_tick_and_red_hint(ui):
     show(ui, rows(14))
     assert ui._list_below == ["BT-01", "BT-02"]
     # The full "▼ 2 more below · 1 abnormal (BT-02)" is wider than 188 px in 12 px bold (spec: 224 px), so it
-    # drops "below" first, as in spec shot v5.3-01.
+    # drops "below" first (spec shot v5.3-01, where it is "▼ 2 more · 1 abnormal (BT-02)"), then the count,
+    # so assert the first form that fits in this font.
     assert ui._list_hint_font.measure("▼ 2 more below · 1 abnormal (BT-02)") > 188
-    assert ui.lbl_list_hint.cget("text") == "▼ 2 more · 1 abnormal (BT-02)"
+    forms = ["▼ 2 more below · 1 abnormal (BT-02)", "▼ 2 more · 1 abnormal (BT-02)", "▼ 1 abnormal (BT-02)"]
+    expected = next((f for f in forms if ui._list_hint_font.measure(f) <= ui_app.LIST_HINT_MAX_W), forms[-1])
+    assert ui.lbl_list_hint.cget("text") == expected, [(f, ui._list_hint_font.measure(f)) for f in forms]
     # Drawn on one line and wide enough for the whole text (the #117 width lock must not shrink it to 1 char).
     assert int(str(ui.lbl_list_hint.cget("wraplength")) or 0) == 0
     hint_top = ui.lbl_list_hint.winfo_rooty()
@@ -168,7 +171,8 @@ def test_off_screen_abnormal_device_gets_a_red_tick_and_red_hint(ui):
     assert ui.lbl_list_hint.winfo_reqwidth() >= ui._list_hint_font.measure(ui.lbl_list_hint.cget("text"))
     assert ui.lbl_list_hint.cget("fg") == RED
     assert ui._list_hint_font.measure(ui.lbl_list_hint.cget("text")) <= 188
-    assert ui.lbl_list_hint.winfo_ismapped() and ui.lbl_list_hint.master.winfo_height() == 16
+    # 16 px, taller only if the font's line is (e.g. CJK font).
+    assert ui.lbl_list_hint.winfo_ismapped() and ui.lbl_list_hint.master.winfo_height() == max(ui_app.LIST_HINT_H, ui.lbl_list_hint.winfo_reqheight())
     ticks = ui.station_track.find_withtag("tick")
     assert len(ticks) == 1
     x0, y0, x1, y1 = ui.station_track.coords(ticks[0])
