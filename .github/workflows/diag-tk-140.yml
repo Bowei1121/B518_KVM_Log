@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows-2025, windows-2022 ]
+        os: [ windows-2025 ]
         defender: [ 'on' ]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
@@ -39,15 +39,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt pytest
-      - name: Deterministic repro (fd churn vs control)
+      - name: Mechanism check (close a cached std handle, then tk.Tk())
         shell: bash
         run: |
-          python diag140/std_handle_repro.py control
-          python diag140/std_handle_repro.py churn
-      - name: Real Windows test step, 8x default capture vs 8x --capture=sys
+          python diag140/stale_reuse_repro.py 0
+          python diag140/stale_reuse_repro.py 2
+      - name: Real test step with std-handle watcher, 6x fd vs 6x sys
         shell: bash
         run: |
-          for cap in fd sys; do for i in 1 2 3 4 5 6 7 8; do
-            python -m pytest -o faulthandler_timeout=120 -q -p no:cacheprovider --capture=$cap tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py > out.txt 2>&1 || true
-            echo "PYTEST140 ${{ matrix.os }} capture=$cap run=$i: $(tail -1 out.txt) tk_errors=$(grep -cE '(init.tcl|tk.tcl|tcl_findLibrary)' out.txt)"
+          for cap in fd sys; do for i in 1 2 3 4 5 6; do
+            PYTHONPATH=diag140 python -m pytest -p stdwatch -o faulthandler_timeout=120 -q -p no:cacheprovider --capture=$cap tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py > out.txt 2>&1 || true
+            echo "PYTEST140 ${{ matrix.os }} capture=$cap run=$i: $(grep -E 'passed|failed' out.txt | tail -1) | $(grep STDWATCH140 out.txt)"
           done; done
