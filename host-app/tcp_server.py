@@ -206,9 +206,11 @@ def _inspect_round(kvm: Any, tracker: Any, stream: Any = None, heartbeat: Any = 
     if stream is not None:
         verdict = stream.observe_snapshot(snapshot)
         if verdict.kind == "frozen":
+            if not kvm.is_healthy():
+                stream.release_kvm_lost_latch(verdict)
             if heartbeat is not None:
                 heartbeat.reset()
-            return {"error": "frame_frozen", "message": verdict.message}, None
+            return {"error": "frame_frozen", "message": verdict.message, "verdict": verdict}, None
         if not verdict.advanced:
             # PTS has not been seen to move: not judged, and the tracker does not see this frame.
             return _unknown(FRESHNESS_PENDING), None
@@ -532,7 +534,7 @@ class TcpJsonServer:
         stream = self.freeze_guard.stream(ctx.entry.device_id)
         verdict = await stream.wait_live(kvm.latest_frame)
         if not kvm.is_healthy():
-            stream.release_kvm_lost_latch()
+            stream.release_kvm_lost_latch(verdict)
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
             return "frame_frozen", verdict.message
@@ -690,6 +692,8 @@ class TcpJsonServer:
             max_dock_recoveries=self.max_dock_recoveries,
         )
 
+        lane = "inspect" if mode is CheckMode.INSPECT else "check"
+        last_read = None  # Only this command's reads may release a latch on the timeout path.
         while True:
             is_client_gone = (reader is not None and reader.at_eof()) or (
                 writer is not None and (writer.is_closing() or getattr(writer, "_transport", None) is None)
@@ -702,14 +706,24 @@ class TcpJsonServer:
                 return {"status": "error", "error": "server_shutting_down"}
             # KVM died mid-command (track ended or peer failed): report now, without waiting for the freeze.
             if not kvm.is_healthy():
+                if last_read is not None and last_read.done() and not last_read.cancelled():
+                    try:
+                        completed = last_read.result()
+                    except Exception:
+                        pass  # A failed read returned no verdict to release.
+                    else:
+                        slot.stream.release_kvm_lost_latch(completed.verdict)
                 return _kvm_lost(ctx)
 
+            before_read = slot.flights.get(lane)
             reading = await self._read_reading(slot, kvm, mode)
+            if slot.flights.get(lane) is not before_read:
+                last_read = slot.flights[lane]
             if reading.error is not None:
                 code, message = reading.error
                 # The KVM can die while its last picture is frozen: a lost connection, not a frozen picture.
                 if code == "frame_frozen" and not kvm.is_healthy():
-                    slot.gate.stream.release_kvm_lost_latch()
+                    slot.gate.stream.release_kvm_lost_latch(reading.verdict)
                     return _kvm_lost(ctx)
                 return check.fail(code, message)
 

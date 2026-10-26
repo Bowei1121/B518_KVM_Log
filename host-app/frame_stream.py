@@ -79,13 +79,17 @@ class FrameStream:
         return verdict is not None and verdict.kind == FROZEN
 
     def frozen_now(self, now: Optional[float] = None) -> bool:
-        """Status stays frozen until PTS advances. Reads without the lock and takes no sample."""
+        """Status stays frozen until a frame-reading command sees PTS advance. Takes no sample.
+
+        A FROZEN read that ends with the KVM lost releases only the latch it set itself
+        (see release_kvm_lost_latch); a latch set earlier, while the KVM was alive, is kept.
+        """
         return self._status_frozen
 
-    def release_kvm_lost_latch(self) -> None:
-        """Undo a newly latched verdict when the caller reports KVM loss instead of freeze."""
+    def release_kvm_lost_latch(self, verdict: Optional[Verdict]) -> None:
+        """Release only the status latch caused by this reading when its KVM is lost."""
         with self._lock:
-            if self._latched_by is self._verdict:
+            if verdict is not None and self._latched_by is verdict:
                 self._status_frozen = False
                 self._latched_by = None
 

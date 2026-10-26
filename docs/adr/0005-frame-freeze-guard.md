@@ -39,7 +39,7 @@ Accepted
 2. 換串流仍重置 PTS 比較基準，但不解除狀態回報中的凍結。新串流首張影格只建立基準，第一次 PTS 前進才解除凍結。
 3. 送 HID 前的主動窗口（`FrameStream.wait_live`）、`FrameStream.is_frozen` 與輪次閘門的判斷規則不變；本次修訂只調整狀態回報的凍結保留方式。
 4. 只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，輪詢不會解除。KVM 重連換串流後至少需兩次讀取：首張建立基準，後續須有 PTS 前進。LabVIEW 應送唯讀的 `inspect` 重新判斷，必要時重複送出，不應只輪詢 `status` 等待 `frozen=false`。
-5. 檢查期間 KVM 斷線、本次 FROZEN 判定改回 `kvm_connect_failed` 時，不鎖定本次新增的凍結狀態；先前已鎖定的凍結不受影響。
+5. FROZEN 判定的讀取結束時若檢查到 KVM 已斷線（包含超過 inspection timeout 後才完成的背景讀取），以及指令回覆 `kvm_connect_failed` 時，只解除該判定自己新增的凍結 latch；KVM 存活時先前已鎖定的凍結保留。
 6. 已鎖定凍結的設備後續 KVM 斷線時，`status` 應顯示 FROZEN 或 DISCONNECTED（spec §14.3 與 §4 衝突）仍待使用者決定；目前維持 `frozen=true`、`connected=false`。
 
 原文保留，不刪除原規定。

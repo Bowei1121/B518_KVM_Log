@@ -301,7 +301,7 @@ class TestStatusView:
         clock.advance(1.0)
         verdict = stream.observe("s", 2, 10.0)
         assert guard.get_status()["frozen_devices"] == ["BT-01"]
-        stream.release_kvm_lost_latch()
+        stream.release_kvm_lost_latch(verdict)
         assert guard.get_status()["frozen_devices"] == []
         assert stream.last_verdict() is verdict
         assert stream.is_frozen is True
@@ -310,3 +310,21 @@ class TestStatusView:
         clock.advance(1.0)
         assert stream.observe("s", 4, 10.1).kind == FROZEN
         assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+    def test_kvm_loss_keeps_latch_from_an_earlier_verdict(self):
+        guard = FrameFreezeGuard(clock=FakeClock())
+        stream = guard.stream("BT-01")
+        first = stream.observe("s", 1, None)
+        second = stream.observe("s", 2, None)
+        assert first.kind == second.kind == FROZEN
+        stream.release_kvm_lost_latch(second)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+    def test_kvm_loss_releases_own_latch_after_another_lane_records(self):
+        guard = FrameFreezeGuard(clock=FakeClock())
+        stream = guard.stream("BT-01")
+        first = stream.observe("s", 1, None)
+        second = stream.observe("s", 2, None)
+        assert first is not second
+        stream.release_kvm_lost_latch(first)
+        assert guard.get_status()["frozen_devices"] == []

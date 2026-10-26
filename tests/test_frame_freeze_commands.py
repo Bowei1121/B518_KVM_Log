@@ -275,3 +275,110 @@ def test_kvm_lost_during_monitor_wait_read_does_not_latch_status_frozen(serve):
     assert resp is not None
     assert resp["error"] == "kvm_connect_failed"
     _assert_not_frozen_in_status(srv)
+
+
+@pytest.mark.parametrize("command", ["inspect", "check_finish"])
+@pytest.mark.parametrize("before_loss, after_loss", [
+    (0.3, 0.3),  # 0.6 s read: done before the next poll, which replies kvm_connect_failed
+    (0.1, 1.0),  # read still running when kvm_connect_failed is replied; it releases its own latch
+])
+def test_slow_read_finishing_after_timeout_and_kvm_loss_releases_own_latch(serve, command, before_loss, after_loss):
+    kvm = LogSolutionKVM(state="monitoring")
+    srv = serve(kvm)
+    srv.inspection_timeout_sec = 0.2
+    read = kvm.latest_frame
+
+    def slow_dying_read():
+        time.sleep(before_loss)
+        kvm.end_track()
+        time.sleep(after_loss)
+        return read()
+
+    kvm.omit_presentation_time = True
+    kvm.latest_frame = slow_dying_read
+    resp = _send(srv, build_request(command, "slow-loss", "DFU-01", {"timeout_sec": 5}))
+    assert resp["error"] == "kvm_connect_failed"
+    time.sleep(before_loss + after_loss + 0.5)
+    assert "DFU-01" not in srv.freeze_guard.get_status()["frozen_devices"]
+    _assert_not_frozen_in_status(srv)
+
+
+def test_kvm_loss_reply_keeps_server_latch_from_before_disconnect(serve):
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.omit_presentation_time = True
+    srv = serve(kvm)
+    srv.inspection_timeout_sec = 5
+    assert _send(srv, build_request("inspect", "latch-first", "DFU-01", {"timeout_sec": 5}))["error"] == "frame_frozen"
+    read = kvm.latest_frame
+
+    def dying_read():
+        kvm.end_track()
+        return read()
+
+    kvm.latest_frame = dying_read
+    assert _send(srv, build_request("inspect", "loss-next", "DFU-01", {"timeout_sec": 5}))["error"] == "kvm_connect_failed"
+    # 僅驗證既有 latch 保留；斷線後 status 顯示方式仍待使用者決定。
+    assert "DFU-01" in srv.freeze_guard.get_status()["frozen_devices"]
+
+
+@pytest.mark.parametrize("command", ["inspect", "check_finish"])
+def test_finished_read_verdict_releases_own_latch_before_loss_reply(command):
+    """讀取完成後才斷線且另一 lane 已判定時，回覆仍用該 lane 的 verdict。"""
+    import asyncio
+    from concurrent.futures import Future
+    from device_slot import DeviceSlot
+    from round_check import CheckMode, Reading
+    from tcp_server import CommandContext
+
+    kvm = LogSolutionKVM(state="monitoring")
+    guard = FrameFreezeGuard()
+    slot = DeviceSlot("DFU-01", guard.stream("DFU-01"))
+    verdict = slot.stream.observe("s", 1, None)
+    slot.stream.observe("s", 2, None)
+    future = Future()
+    future.set_result(Reading.failed("frame_frozen", verdict.message, verdict=verdict))
+    lane = "inspect" if command == "inspect" else "check"
+    kvm.connected = True
+    srv = TcpJsonServer(device_registry=make_registry(), freeze_guard=guard)
+
+    async def completed_after_timeout(slot, kvm, mode):
+        slot.flights[lane] = future
+        kvm.end_track()
+        return Reading.unknown("inspection_timeout")
+
+    srv._read_reading = completed_after_timeout
+    srv._is_running = True
+    ctx = CommandContext(entry=make_registry().get("DFU-01"), kvm=kvm, slot=slot)
+    try:
+        mode = CheckMode.INSPECT if command == "inspect" else CheckMode.CHECK_FINISH
+        reply = asyncio.run(srv._long_poll(ctx, 5, mode))
+        assert reply["error"] == "kvm_connect_failed"
+        assert guard.get_status()["frozen_devices"] == []
+    finally:
+        srv._inspector.shutdown(wait=True)
+
+
+def test_loss_before_new_command_does_not_release_previous_command_verdict():
+    import asyncio
+    from concurrent.futures import Future
+    from device_slot import DeviceSlot
+    from round_check import CheckMode, Reading
+    from tcp_server import CommandContext
+
+    guard = FrameFreezeGuard()
+    slot = DeviceSlot("DFU-01", guard.stream("DFU-01"))
+    verdict = slot.stream.observe("s", 1, None)
+    previous = Future()
+    previous.set_result(Reading.failed("frame_frozen", verdict.message, verdict=verdict))
+    slot.flights["inspect"] = previous
+    srv = TcpJsonServer(device_registry=make_registry(), freeze_guard=guard)
+    srv._is_running = True
+    ctx = CommandContext(entry=make_registry().get("DFU-01"),
+                         kvm=LogSolutionKVM(state="monitoring"), slot=slot)
+    try:
+        reply = asyncio.run(srv._long_poll(ctx, 5, CheckMode.INSPECT))
+        assert reply["error"] == "kvm_connect_failed"
+        # 先前命令在 KVM 存活時鎖定；斷線後 status 顯示方式仍待使用者決定。
+        assert guard.get_status()["frozen_devices"] == ["DFU-01"]
+    finally:
+        srv._inspector.shutdown(wait=True)
