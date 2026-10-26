@@ -26,6 +26,7 @@ INFO_FG = "#1565c0"
 OK_FG = "#2e7d32"
 WARN_FG = "#e65100"
 ERROR_FG = "#c62828"
+OFFLINE_FG = "#B71C1C"  # line 1 of the offline list hint (#140)
 BUTTON_BG = "#e8e8e8"
 ENTRY_BG = "#ffffff"
 TIP_BG = "#fffde7"
@@ -50,7 +51,7 @@ LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED, "grey": 
 ROW_FG = frozenset({"#2E7D32", "#1565C0", "#616161", "#ffffff"})  # status words and colour bar
 ROW_BG = frozenset({"#E8F5E9", "#E3F2FD", "#F5F5F5", "#B71C1C"})
 ALL_BG = frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG}) | ROW_BG | ROW_FG
-ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, LOG_FG}) | ROW_FG
+ALL_FG = frozenset({TEXT_FG, MUTED_FG, INFO_FG, OK_FG, WARN_FG, ERROR_FG, OFFLINE_FG, LOG_FG}) | ROW_FG
 
 
 def apply_light_ttk_style(master: tk.Misc) -> None:

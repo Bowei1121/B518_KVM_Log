@@ -73,6 +73,7 @@ from ui_widgets import (
     LOG_FG,
     LOG_WARN_FG,
     MUTED_FG,
+    OFFLINE_FG,
     OK_FG,
     PANEL_BG,
     PREVIEW_BG,
@@ -949,21 +950,42 @@ class AtlasUI(_BaseTk):
         return "dash_empty" if self._service_ok else "dash_offline"
 
     def _render_empty_hint(self) -> None:
-        """Plain-language hint in place of a blank dashboard (issue #115). Shown only when there are no machines."""
-        if getattr(self, "lbl_empty_hint", None) is not None:
-            self.lbl_empty_hint.destroy()
-        self.lbl_empty_hint = None
+        """Hint in place of a blank dashboard (issues #115, #140). Shown only when there are no machines.
+
+        Offline: two short lines, the first red, with the full reason, the address and who to call in a hover tip.
+        Connected with no machines: one grey line.
+        """
+        if getattr(self, "empty_hint_box", None) is not None:
+            self.empty_hint_box.destroy()
+        self.empty_hint_box = self.lbl_empty_hint = None
+        self.empty_hint_labels: List[tk.Label] = []
+        self.empty_hint_tips: List[Tooltip] = []
+        self._empty_hint_shown = None
         if self._stations:
             return
-        hint = tk.Label(
-            self.station_panel, font=self.f_label, fg=MUTED_FG, bg=WINDOW_BG, anchor="w", justify="left",
-        )
-        bind(hint, lambda: t(self._empty_hint_key()))
-        # The list column is a fixed 200 px at every scaling, but a width in characters grows with the font: fit
-        # the hint to 180 px and wrap there, so the whole sentence stays inside the column (Windows CI, #137).
-        fit_label_to_pixels(hint, 180)
-        hint.pack(fill="x", pady=8, before=self.stations_container)
-        self.lbl_empty_hint = hint
+        key = self._empty_hint_key()
+        lines = ((("dash_offline_title", OFFLINE_FG), ("dash_offline_action", TEXT_FG)) if key == "dash_offline"
+                 else ((key, MUTED_FG),))
+        box = tk.Frame(self.station_panel, bg=WINDOW_BG)
+        for line_key, fg in lines:
+            label = tk.Label(box, font=self.f_label, fg=fg, bg=WINDOW_BG, anchor="w", justify="left")
+            bind(label, line_key)
+            # The list column is a fixed 200 px at every scaling, but a width in characters grows with the font:
+            # fit each line to 180 px and wrap there, so the whole text stays inside the column (Windows CI, #137).
+            fit_label_to_pixels(label, 180)
+            label.pack(fill="x")
+            self.empty_hint_labels.append(label)
+            if key == "dash_offline":
+                self.empty_hint_tips.append(Tooltip(label, self._offline_tip_text))
+        box.pack(fill="x", pady=8, before=self.stations_container)
+        self.empty_hint_box = box
+        self.lbl_empty_hint = self.empty_hint_labels[0]
+        self._empty_hint_shown = key
+
+    def _offline_tip_text(self) -> str:
+        """Hover tip of the offline hint: the full reason, the address it tries, and who to call (#140)."""
+        return "\n".join((t("dash_offline"), t("dash_offline_addr", addr=f"{self.client.host}:{self.client.port}"),
+                          t("dash_offline_call")))
 
     def _station_of(self, device: str) -> str:
         for st in self._stations:
@@ -1054,8 +1076,8 @@ class AtlasUI(_BaseTk):
                 w["state"]["core_connected"] = False
                 self._configure_station_row(w, pres)
                 w["state"]["status"] = "DISCONNECTED"
-        if self.lbl_empty_hint is not None:
-            self.lbl_empty_hint.config(text=t(self._empty_hint_key()))
+        if not self._stations and self._empty_hint_shown != self._empty_hint_key():
+            self._render_empty_hint()  # offline <-> connected: a different hint, not only different words
 
     # --------------------------------------------------------------------------
     # Logging & Threading Queue Plumbing
