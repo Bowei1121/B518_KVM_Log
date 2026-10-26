@@ -666,12 +666,16 @@ class AtlasUI(_BaseTk):
         # and a 16 px hint line right under the list names rows that are off-screen.
         hint_frame = tk.Frame(self.station_panel, height=LIST_HINT_H, bg=WINDOW_BG)
         hint_frame.pack_propagate(False)
-        self._list_hint_font = tkfont.Font(family=self.f_label[0], size=-12, weight="bold")
+        # root=self: without it the font lands in whichever Tk root is the default; this window then does not know
+        # the name and falls back to a 12 pt font that grows with scaling (cut at 200% on Windows CI).
+        self._list_hint_font = tkfont.Font(root=self, family=self.f_label[0], size=-12, weight="bold")
         self.lbl_list_hint = tk.Label(hint_frame, text="", font=self._list_hint_font, anchor="w",
-                                      bg=WINDOW_BG, bd=0, padx=0)
+                                      bg=WINDOW_BG, bd=0, padx=0, pady=0)
         self.lbl_list_hint.pack(fill="both", expand=True)
         # A fixed one-line width, so the #117 width lock leaves it alone (it starts empty and would get 1 char).
         fit_label_to_pixels(self.lbl_list_hint, LIST_HINT_MAX_W + 4, wrap=False)
+        # 16 px, unless the font's line is taller (e.g. a CJK font): never cut the hint (every char visible).
+        hint_frame.configure(height=max(LIST_HINT_H, self.lbl_list_hint.winfo_reqheight()))
         self.station_list_frame = tk.Frame(self.station_panel, bg=WINDOW_BG)
         self.station_list_frame.pack(fill="x")
         hint_frame.pack(fill="x")  # directly under the 728 px list, as in spec shot v5.3-01

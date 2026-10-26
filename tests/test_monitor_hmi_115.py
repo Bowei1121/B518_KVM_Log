@@ -588,3 +588,21 @@ def test_device_settings_has_a_test_button_that_is_not_cut_in_either_language(ma
     finally:
         ui_i18n.set_language("en")
         settings.destroy()
+
+
+@pytest.mark.parametrize(("screen", "scale"), SUPPORTED, ids=SUPPORTED_IDS)
+def test_list_hint_keeps_its_12px_bold_font_and_fits_its_line_at_every_scaling(make_ui, screen, scale):
+    """The off-screen hint (§14.10) uses its own 12 px bold font. Built for another Tk root, the name was unknown
+    here and Tk fell back to a 12 pt font that grows with scaling and was cut at 200% on Windows CI."""
+    app = make_ui(screen, scale)
+    hint = app.lbl_list_hint
+    name = str(hint.cget("font"))
+    assert name in app.tk.splitlist(app.tk.call("font", "names")), name
+    assert int(app.tk.call("font", "configure", name, "-size")) == -12
+    assert app.tk.call("font", "configure", name, "-weight") == "bold"
+    for lang in ("en", "zh"):
+        ui_i18n.set_language(lang)
+        hint.configure(text="DFU-05, BT-02 abnormal" if lang == "en" else "DFU-05、BT-02 異常")
+        app.update_idletasks()
+        assert hint.winfo_reqheight() <= hint.winfo_height(), _context(app, screen, scale, lang)
+        assert hint.winfo_reqwidth() <= hint.winfo_width(), _context(app, screen, scale, lang)
