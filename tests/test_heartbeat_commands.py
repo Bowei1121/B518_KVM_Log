@@ -217,3 +217,25 @@ def test_the_display_is_accepted_again_once_its_heartbeat_moves(serve):
 
     assert resp["status"] == "ok", resp
     assert resp["data"]["kind"] == "waiting"
+
+
+def test_core_status_latches_stopped_heartbeat_until_inspect_observes_a_change(serve):
+    kvm = LogSolutionKVM(state="standby")
+    srv = serve(kvm)
+
+    def station():
+        resp = _send(srv, build_request("core_status", "core-hb", ""))
+        assert resp["status"] == "ok", resp
+        return next(row for row in resp["data"]["stations"] if row["device"] == "DFU-01")
+
+    assert station()["is_heartbeat_stopped"] is False
+    kvm.stop_heartbeat()
+    _assert_heartbeat_stopped(_send(srv, build_request("inspect", "latch-hb", "DFU-01", {"timeout_sec": 5})))
+    assert station()["is_heartbeat_stopped"] is True
+
+    kvm.resume_heartbeat()
+    # Allow a counted observation whose cells differ from the stopped picture.
+    time.sleep(1.0)
+    resp = _send(srv, build_request("inspect", "clear-hb", "DFU-01", {"timeout_sec": 0}))
+    assert resp["status"] == "ok", resp
+    assert station()["is_heartbeat_stopped"] is False

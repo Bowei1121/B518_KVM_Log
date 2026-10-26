@@ -250,7 +250,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 - 任一無效觀察（四格有讀不到、影格過舊、串流凍結、換 stream、定位失敗）清空序列。
 - 連續 3 張有效觀察四格相同 → `log_solution_heartbeat_stopped`，message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。正常時約 2 秒內判定。這不宣稱 App 已當機。
 - 心跳讀不到不是心跳停止：可靠讀數但四格有讀不到，或定位失敗，一律屬 Log Solution 看不到，走 Dock 補救，不回 `log_solution_heartbeat_stopped`。
-- 不鎖定、沒有人工復位指令：之後四格再變化即恢復正常。橋接不自動重試、不重新開測、不取用不確定結果。
+- 各指令仍逐次判斷，既有拒絕規則不變，不因 Core 鎖定狀態額外拒絕指令。Core 的 `stations[].is_heartbeat_stopped` 在任一路徑判定心跳停止後鎖定為 `true`，只有再次計入四格變化才解除；無效觀察、串流凍結、換 stream、tracker 重置及間隔過長只清空判斷序列，不解除鎖定。沒有人工復位指令。橋接不自動重試、不重新開測、不取用不確定結果。
 - 判讀順序：KVM 健康 → 串流凍結（`frame_frozen`）→ 心跳 → 判讀標記與色帶。`check_start`、`check_finish`、`inspect` 長輪詢中途看到心跳停止就立即回覆，不等 `timeout_sec`。
 - `input`、`start_test`、`monitor_start` 送 HID 前（接在凍結檢查之後）：最近 3 秒內見過有效變化即放行；否則主動取樣最多約 2.5 秒。見變化放行；3 張同圖回 `log_solution_heartbeat_stopped`；取樣時間內判不出（讀不到或沒有新影格）則交給各指令既有的流程（`hid_failed`、`monitor_not_ready`、Dock 補救）。三者回此碼時都不送 HID。
 - 已知限制：心跳剛停止、距上一次有效變化未滿 3 秒時，送 HID 前的檢查會放行。
@@ -360,6 +360,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `kvm_pool` | object | `active_connections`、`cached_ips` |
 | `freeze_guard` | object | 凍結檢查狀態 |
 | `stations` | array of object | 各設備的 `station`、`device`、`kvm_ip`、`status`（`BUSY`／`FROZEN`／`IDLE`／`DISCONNECTED`）等 |
+| `stations[].is_heartbeat_stopped` | boolean | Core 鎖定的心跳停止狀態；再次計入四格變化才解除，無效觀察不解除。尚無 slot 時為 `false`；不改變 `status` 或指令拒絕規則 |
 | `stations[].frame_size` | array or null | 最近一次讀取的影格 `[寬, 高]`（像素）。尚無讀取，或設備未連線（`is_connected` 為 `false`）時為 `null` |
 | `stations[].picture_scale` | number or null | 最近一次讀取換算的比例（Log Solution 1.3 基準單位→像素），四捨五入到 0.001。最近一次讀取未定位（無法換算）或尚無讀取為 `null` |
 | `stations[].cell_px` | number or null | 標記小格像素，`picture_scale` × 10，四捨五入到 0.001。`picture_scale` 為 `null` 時也為 `null` |
@@ -393,7 +394,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進，或畫面沒有 PTS（ADR-0005）。`input`、`start_test`、`monitor_start` 送 HID 前檢查，`monitor_start` 等待中也會檢查；這三個指令回此碼時未送出任何 HID | 設備異常，暫停，不得判產品 FAIL |
-| `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。不鎖定，心跳再變化即恢復 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
+| `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。各指令逐次判斷不變；Core 心跳停止狀態鎖定至再次計入四格變化，無效觀察不解除 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
 | `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |

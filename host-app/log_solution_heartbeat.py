@@ -8,7 +8,8 @@ A counted observation is a new frame (sequence differs from the last counted one
 readable, at least STEP_MIN_SEC after the last counted one. Three counted observations in a row with the
 same cells mean the display stopped. A gap above STEP_MAX_SEC restarts the run. Any invalid observation
 (cells unreadable, frozen picture, stale frame, new stream) clears the run and the last-change memory.
-Nothing here locks: the next counted change is normal again.
+Core status latches a stopped display until a counted change; invalid observations and resets keep the latch.
+Command judgement still uses each observation or probe, independently of this status latch.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ class HeartbeatTracker:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._stopped = False
         self._stream_id: Optional[str] = None
         self._sequence: Optional[int] = None  # sequence of the last counted observation
         self._received_at: Optional[float] = None  # received time of the last counted observation
@@ -91,10 +93,18 @@ class HeartbeatTracker:
             self._run = (self._run + [cells])[-STOPPED_RUN:]
             if previous is not None and cells != previous:
                 self._changed_at = received_at
+                self._stopped = False
                 return Step.CHANGED
             if len(self._run) == STOPPED_RUN and all(seen == cells for seen in self._run):
+                self._stopped = True
                 return Step.STOPPED
             return Step.COUNTED
+
+    @property
+    def stopped(self) -> bool:
+        """Whether a stopped display was observed without a subsequent counted change."""
+        with self._lock:
+            return self._stopped
 
     def wants(self, stream_id: Optional[str], sequence: Optional[int], received_at: float) -> bool:
         """False when observe() would not count this frame: a repeated or older frame, or under STEP_MIN_SEC.
