@@ -447,6 +447,7 @@ OFFLINE_FULL = {
     "zh": "尚未連上服務，無法顯示機台清單。請檢查上方位址，或按 🔄 重連。",
 }
 OFFLINE_CALL = {"en": "If retry fails, call the TE engineer.", "zh": "重試仍失敗，請通知 TE 工程師。"}
+OFFLINE_ADDR = {"en": "Address: 127.0.0.1:1", "zh": "位址：127.0.0.1:1"}
 HUNDRED_PERCENT = [s for s in SUPPORTED if round(s[1] * 75) == 100]
 
 
@@ -505,9 +506,7 @@ def test_offline_hint_tooltip_has_the_sentence_the_address_and_who_to_call(make_
         ui_i18n.set_language(lang)
         for tip in app.empty_hint_tips:
             text = tip.current_text()
-            assert OFFLINE_FULL[lang] in text, (lang, text)
-            assert "127.0.0.1:1" in text, (lang, text)  # make_ui's core_host:core_port
-            assert OFFLINE_CALL[lang] in text, (lang, text)
+            assert text.splitlines() == [OFFLINE_FULL[lang], OFFLINE_ADDR[lang], OFFLINE_CALL[lang]], (lang, text)
     ui_i18n.set_language("en")
 
 
@@ -604,7 +603,16 @@ def test_list_hint_keeps_its_12px_bold_font_and_fits_its_line_at_every_scaling(m
         ui_i18n.set_language(lang)
         hint.configure(text="DFU-05, BT-02 abnormal" if lang == "en" else "DFU-05、BT-02 異常")
         app.update_idletasks()
-        # The line's own height, not winfo_height: Tk clamps a window larger than the CI screen, which squeezes rows.
-        line_h = int(str(hint.master.cget("height")))
-        assert hint.winfo_reqheight() <= line_h, _context(app, screen, scale, lang)
+        # Use Tcl for real screen dimensions because winfo_screen* is patched to the simulated screen.
+        real_width = int(app.tk.call("winfo", "screenwidth", "."))
+        real_height = int(app.tk.call("winfo", "screenheight", "."))
+        if app.winfo_reqwidth() > real_width or app.winfo_reqheight() > real_height:
+            pytest.skip(f"{_context(app, screen, scale, lang)}: "
+                        "window larger than the real screen: the OS clamps it, so this is not a layout result")
+        linespace = int(app.tk.call("font", "metrics", app._list_hint_font.name, "-linespace"))
+        assert hint.winfo_height() >= hint.winfo_reqheight(), _context(app, screen, scale, lang)
+        assert hint.winfo_height() >= linespace, _context(app, screen, scale, lang)
+        assert hint.master.winfo_height() >= hint.winfo_reqheight(), _context(app, screen, scale, lang)
+        assert hint.winfo_width() >= hint.winfo_reqwidth(), _context(app, screen, scale, lang)
+        assert int(app.tk.call("font", "measure", app._list_hint_font.name, hint.cget("text"))) <= hint.winfo_width(), _context(app, screen, scale, lang)
         assert hint.cget("font") == app._list_hint_font.name
