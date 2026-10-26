@@ -314,25 +314,36 @@ def test_more_than_twelve_logs_one_info_line(ui, count, monkeypatch):
 # ---------------------------------------------------------------------------------------------------------------
 # §14.10 (d) station-group gaps and (e) abnormal devices both above and below (designer, 2026-10-26)
 # ---------------------------------------------------------------------------------------------------------------
-@pytest.mark.parametrize("lang, full, first, both", [
-    ("en", "▲ DFU-04, DFU-05 · ▼ BT-02 abnormal", "▲ DFU-04 +1 · ▼ BT-02 abnormal", "▲▼ 3 abnormal"),
-    ("zh", "▲ DFU-04、DFU-05 · ▼ BT-02 異常", "▲ DFU-04 等 · ▼ BT-02 異常", "▲▼ 3 台異常"),
-])
-def test_abnormal_above_and_below_names_both_sides_and_shortens_in_order(lang, full, first, both):
+# (e) changed by the user on 2026-10-26: both sides abnormal -> the devices only, no direction (they scroll to find
+# the red rows). Fallbacks in order, never cut: every id, then the first id + the rest, then the count.
+DIRECTION_WORDS = ("▲", "▼", "above", "below", "up", "down", "上方", "下方", "上面", "下面")
+BOTH_SIDES = [
+    # (above, below, abnormal above, abnormal below, {lang: (full, first + rest, count)}): 2, 3 and 6 abnormal
+    (["DFU-05"], ["BT-02"], ["DFU-05"], ["BT-02"],
+     {"en": ("DFU-05, BT-02 abnormal", "DFU-05 +1 abnormal", "2 abnormal"),
+      "zh": ("DFU-05、BT-02 異常", "DFU-05 等 2 台異常", "2 台異常")}),
+    (["DFU-04", "DFU-05"], ["BT-01", "BT-02"], ["DFU-04", "DFU-05"], ["BT-02"],
+     {"en": ("DFU-04, DFU-05, BT-02 abnormal", "DFU-04 +2 abnormal", "3 abnormal"),
+      "zh": ("DFU-04、DFU-05、BT-02 異常", "DFU-04 等 3 台異常", "3 台異常")}),
+    (["DFU-01", "DFU-02", "DFU-03"], ["BT-01", "BT-02", "BT-03"], ["DFU-01", "DFU-02", "DFU-03"],
+     ["BT-01", "BT-02", "BT-03"],
+     {"en": ("DFU-01, DFU-02, DFU-03, BT-01, BT-02, BT-03 abnormal", "DFU-01 +5 abnormal", "6 abnormal"),
+      "zh": ("DFU-01、DFU-02、DFU-03、BT-01、BT-02、BT-03 異常", "DFU-01 等 6 台異常", "6 台異常")}),
+]
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+@pytest.mark.parametrize("case", BOTH_SIDES, ids=["2-abnormal", "3-abnormal", "6-abnormal"])
+def test_abnormal_above_and_below_lists_the_devices_only_and_shortens_in_order(lang, case):
     ui_i18n.set_language(lang)
-    args = (["DFU-04", "DFU-05"], ["BT-01", "BT-02"], ["DFU-04", "DFU-05"], ["BT-02"])
-    for expected in (full, first, both):
+    args, forms = case[:4], case[4][lang]
+    full, first, count = forms
+    assert list_hint_text(*args, lambda s: True) == full
+    for expected in forms:
         assert list_hint_text(*args, lambda s: s == expected) == expected
-    assert list_hint_text(*args, lambda s: False) == both  # never cut: the shortest form
-
-
-@pytest.mark.parametrize("lang, expected", [("en", "▲ DFU-05 · ▼ BT-02 abnormal"), ("zh", "▲ DFU-05 · ▼ BT-02 異常")])
-def test_abnormal_above_and_below_one_each_matches_the_spec(lang, expected):
-    ui_i18n.set_language(lang)
-    assert list_hint_text(["DFU-05"], ["BT-02"], ["DFU-05"], ["BT-02"], lambda s: True) == expected
-    # One id per side: there is nothing to shorten to "first + more"; next comes the count.
-    count = "▲▼ 2 abnormal" if lang == "en" else "▲▼ 2 台異常"
-    assert list_hint_text(["DFU-05"], ["BT-02"], ["DFU-05"], ["BT-02"], lambda s: s == count) == count
+    assert list_hint_text(*args, lambda s: False) == count  # never cut: the shortest form
+    for text in forms:
+        assert not any(word in text for word in DIRECTION_WORDS), text
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
@@ -353,16 +364,41 @@ def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
     wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
     assert view_top(ui) == 120
     assert "DFU-01" in ui._list_above and "BT-08" in ui._list_below
-    assert ui.lbl_list_hint.cget("text") == "▲ DFU-01 · ▼ BT-08 abnormal"
+    assert ui.lbl_list_hint.cget("text") == "DFU-01, BT-08 abnormal"  # devices only, no direction (2026-10-26)
     assert ui.lbl_list_hint.cget("fg") == RED
     ticks = ui.station_track.find_withtag("tick")
     assert len(ticks) == 2
     ys = sorted(ui.station_track.coords(tick)[1] for tick in ticks)
     assert ys[0] < 728 / 2 < ys[1]
     ui.on_toggle_language()
-    assert ui.lbl_list_hint.cget("text") == "▲ DFU-01 · ▼ BT-08 異常"
+    assert ui.lbl_list_hint.cget("text") == "DFU-01、BT-08 異常"
     assert ui.lbl_list_hint.cget("fg") == RED
 
+
+
+@pytest.mark.parametrize("scale", [4 / 3, 5 / 3, 2.0, 8 / 3], ids=["100%", "125%", "150%", "200%"])
+def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui, scale):
+    ui.tk.call("tk", "scaling", scale)
+    frozen = ("DFU-01", "DFU-02", "DFU-03", "BT-06", "BT-07", "BT-08")
+    show(ui, rows(20, frozen=frozen))
+    wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
+    assert view_top(ui) == 120
+    for lang in ("en", "zh"):
+        if ui_i18n.current_language() != lang:
+            ui.on_toggle_language()
+        text = ui.lbl_list_hint.cget("text")
+        assert ui.lbl_list_hint.cget("fg") == RED
+        assert not any(word in text for word in DIRECTION_WORDS), text
+        assert ui._list_hint_font.measure(text) <= ui_app.LIST_HINT_MAX_W, text  # 188 px, one line
+        ui.update_idletasks()
+        hint = ui.lbl_list_hint
+        assert hint.winfo_reqwidth() <= hint.winfo_width() and hint.winfo_reqheight() <= hint.winfo_height(), text
+        ids = [d for d in frozen if d in text]
+        assert ids and text.startswith(ids[0]) or text in ("6 abnormal", "6 台異常"), text
+    ys = [ui.station_track.coords(tick)[1] for tick in ui.station_track.find_withtag("tick")]
+    assert any(y < 728 / 2 for y in ys) and any(y > 728 / 2 for y in ys), ys  # red ticks on both sides stay
+    if ui_i18n.current_language() != "en":
+        ui.on_toggle_language()
 
 def grouped(groups, per_group):
     """Twelve-ish devices in ``groups`` station groups, e.g. A-01, A-02, B-01, ..."""

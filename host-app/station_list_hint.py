@@ -2,8 +2,9 @@
 
 Tk-free. The caller passes ``fits(text)``, which measures the text in the hint font; the longest form that fits
 is used, and the shortest form is used when nothing fits, so characters are never cut off.
-When abnormal devices are hidden on both sides, show each side's ids, then first-of-many ids,
-then the combined abnormal count. If only one side has abnormal devices, show that side alone.
+When abnormal devices are hidden on both sides, name the devices only, with no direction (user, 2026-10-26: the
+operator scrolls to the red rows): every id, then the first id + the rest, then the count. If only one side has
+abnormal devices, show that side alone.
 """
 from typing import Callable, Sequence
 
@@ -12,6 +13,9 @@ from ui_i18n import current_language, t
 # Several abnormal ids shortened to the first one (§14.12): "BT-01 +1" / "BT-01 等". Chinese has no count, so this
 # phrase cannot be a ui_i18n key (every key must carry the same placeholders in both languages, test_monitor_hmi_106).
 _FIRST_OF_MANY = {"en": "{first} +{rest}", "zh": "{first} 等"}
+# Both sides abnormal, shortened (§14.10 (e)): "DFU-05 +1 abnormal" / "DFU-05 等 2 台異常" (English counts the rest,
+# Chinese the total, so this is not a ui_i18n key either).
+_BOTH_FIRST = {"en": "{first} +{rest} abnormal", "zh": "{first} 等 {k} 台異常"}
 
 
 def first_of_many(first: str, rest: int) -> str:
@@ -30,14 +34,10 @@ def list_hint_text(
     if not above and not below:
         return ""
     if abnormal_above and abnormal_below:
-        sides = (abnormal_above, abnormal_below)
-        candidates = [t("list_abnormal_both", above=t("sep_list").join(abnormal_above),
-                        below=t("sep_list").join(abnormal_below))]
-        if any(len(side) > 1 for side in sides):
-            firsts = [first_of_many(side[0], len(side) - 1) if len(side) > 1 else side[0]
-                      for side in sides]
-            candidates.append(t("list_abnormal_both", above=firsts[0], below=firsts[1]))
-        candidates.append(t("list_abnormal_both_count", k=sum(len(side) for side in sides)))
+        ids = list(abnormal_above) + list(abnormal_below)
+        k = len(ids)
+        first = _BOTH_FIRST.get(current_language(), _BOTH_FIRST["en"]).format(first=ids[0], rest=k - 1, k=k)
+        candidates = [t("list_abnormal_both", ids=t("sep_list").join(ids)), first, t("list_abnormal_both_count", k=k)]
         return next((text for text in candidates if fits(text)), candidates[-1])
     if abnormal_above:
         below = ()

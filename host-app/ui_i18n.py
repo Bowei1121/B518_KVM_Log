@@ -269,8 +269,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "list_more_both": "▲ {a} ▼ {b} more",
         "list_abnormal": " · {k} abnormal ({ids})",
         "list_abnormal_only": "{arrow} {k} abnormal ({ids})",
-        "list_abnormal_both": "▲ {above} · ▼ {below} abnormal",
-        "list_abnormal_both_count": "▲▼ {k} abnormal",
+        "list_abnormal_both": "{ids} abnormal",
+        "list_abnormal_both_count": "{k} abnormal",
         "log_list_scroll": "{n} devices configured; list shows 12 rows, scroll for the rest",
     },
     "zh": {
@@ -517,8 +517,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "list_more_both": "▲ {a} 台 ▼ {b} 台",
         "list_abnormal": " · {k} 台異常（{ids}）",
         "list_abnormal_only": "{arrow} {k} 台異常（{ids}）",
-        "list_abnormal_both": "▲ {above} · ▼ {below} 異常",
-        "list_abnormal_both_count": "▲▼ {k} 台異常",
+        "list_abnormal_both": "{ids} 異常",
+        "list_abnormal_both_count": "{k} 台異常",
         "log_list_scroll": "設定了 {n} 台設備；清單一次顯示 12 列，其餘請用捲軸查看",
     },
 }
