@@ -309,3 +309,104 @@ def test_more_than_twelve_logs_one_info_line(ui, count, monkeypatch):
     else:
         assert logged == [("14 devices configured; list shows 12 rows, scroll for the rest",
                            "設定了 14 台設備；清單一次顯示 12 列，其餘請用捲軸查看", "info")]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# §14.10 (d) station-group gaps and (e) abnormal devices both above and below (designer, 2026-10-26)
+# ---------------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("lang, full, first, both", [
+    ("en", "▲ DFU-04, DFU-05 · ▼ BT-02 abnormal", "▲ DFU-04 +1 · ▼ BT-02 abnormal", "▲▼ 3 abnormal"),
+    ("zh", "▲ DFU-04、DFU-05 · ▼ BT-02 異常", "▲ DFU-04 等 · ▼ BT-02 異常", "▲▼ 3 台異常"),
+])
+def test_abnormal_above_and_below_names_both_sides_and_shortens_in_order(lang, full, first, both):
+    ui_i18n.set_language(lang)
+    args = (["DFU-04", "DFU-05"], ["BT-01", "BT-02"], ["DFU-04", "DFU-05"], ["BT-02"])
+    for expected in (full, first, both):
+        assert list_hint_text(*args, lambda s: s == expected) == expected
+    assert list_hint_text(*args, lambda s: False) == both  # never cut: the shortest form
+
+
+@pytest.mark.parametrize("lang, expected", [("en", "▲ DFU-05 · ▼ BT-02 abnormal"), ("zh", "▲ DFU-05 · ▼ BT-02 異常")])
+def test_abnormal_above_and_below_one_each_matches_the_spec(lang, expected):
+    ui_i18n.set_language(lang)
+    assert list_hint_text(["DFU-05"], ["BT-02"], ["DFU-05"], ["BT-02"], lambda s: True) == expected
+    # One id per side: there is nothing to shorten to "first + more"; next comes the count.
+    count = "▲▼ 2 abnormal" if lang == "en" else "▲▼ 2 台異常"
+    assert list_hint_text(["DFU-05"], ["BT-02"], ["DFU-05"], ["BT-02"], lambda s: s == count) == count
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_only_the_abnormal_side_is_shown_when_the_other_side_is_normal(lang):
+    ui_i18n.set_language(lang)
+    t = ui_i18n.t
+    # Normal rows hidden above, an abnormal row below: the hint is the "below" hint alone (red beats grey counts).
+    below = list_hint_text(["DFU-01", "DFU-02"], ["BT-01", "BT-02"], [], ["BT-02"], lambda s: True)
+    assert below == t("list_more_below", n=2) + t("list_abnormal", k=1, ids="BT-02")
+    assert "▲" not in below
+    above = list_hint_text(["DFU-01"], ["BT-01", "BT-02"], ["DFU-01"], [], lambda s: True)
+    assert above == t("list_more_above", n=1) + t("list_abnormal", k=1, ids="DFU-01")
+    assert "▼" not in above
+
+
+def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
+    show(ui, rows(20, frozen=("DFU-01", "BT-08")))
+    wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
+    assert view_top(ui) == 120
+    assert "DFU-01" in ui._list_above and "BT-08" in ui._list_below
+    assert ui.lbl_list_hint.cget("text") == "▲ DFU-01 · ▼ BT-08 abnormal"
+    assert ui.lbl_list_hint.cget("fg") == RED
+    ticks = ui.station_track.find_withtag("tick")
+    assert len(ticks) == 2
+    ys = sorted(ui.station_track.coords(tick)[1] for tick in ticks)
+    assert ys[0] < 728 / 2 < ys[1]
+    ui.on_toggle_language()
+    assert ui.lbl_list_hint.cget("text") == "▲ DFU-01 · ▼ BT-08 異常"
+    assert ui.lbl_list_hint.cget("fg") == RED
+
+
+def grouped(groups, per_group):
+    """Twelve-ish devices in ``groups`` station groups, e.g. A-01, A-02, B-01, ..."""
+    names = ["DFU", "FCT", "BT", "ICT", "AOI", "RUN", "PKG", "OQC"][:groups]
+    ids = [f"{name}-{i:02d}" for name in names for i in range(1, per_group[names.index(name)] + 1)]
+    return [{"device": d, "station": d.split("-")[0], "status": "IDLE"} for d in ids]
+
+
+def row_gaps(ui):
+    tops = [ui._list_row_tops[d] for d in ui._station_widgets if d in ui._list_row_tops]
+    return [b - a - 56 for a, b in zip(tops, tops[1:])]
+
+
+@pytest.mark.parametrize("groups, per_group", [(5, [3, 3, 2, 2, 2]), (6, [2] * 6), (12, [1] * 8)])
+def test_more_than_four_station_groups_drop_the_extra_gap_so_twelve_never_scroll(ui, groups, per_group):
+    stations = grouped(min(groups, 8), per_group)
+    if groups == 12:  # twelve single-device groups
+        stations = [{"device": f"S{i:02d}-01", "station": f"S{i:02d}", "status": "IDLE"} for i in range(1, 13)]
+    assert len(stations) == 12
+    show(ui, stations)
+    assert set(row_gaps(ui)) == {4}
+    last = stations[-1]["device"]
+    assert ui._list_row_tops[last] + 56 <= 728  # the last row is fully visible
+    assert ui._list_content_h <= 728
+    assert not ui.station_track.find_withtag("thumb")
+    assert ui._list_below == [] and ui.lbl_list_hint.cget("text") == ""
+    wheel(ui, ui._station_widgets[stations[0]["device"]]["card"], -120)
+    assert view_top(ui) == 0
+
+
+@pytest.mark.parametrize("groups, per_group", [(3, [10, 1, 1]), (4, [6, 2, 2, 2])])
+def test_four_or_fewer_station_groups_keep_the_extra_gap(ui, groups, per_group):
+    stations = grouped(groups, per_group)
+    show(ui, stations)
+    assert row_gaps(ui).count(8) == groups - 1 and row_gaps(ui).count(4) == 12 - groups
+    assert ui._list_content_h <= 728
+    assert ui._list_row_tops[stations[-1]["device"]] + 56 <= 728
+    assert not ui.station_track.find_withtag("thumb")
+
+
+def test_more_than_four_groups_with_more_than_twelve_devices_also_use_4px(ui):
+    stations = grouped(5, [6, 2, 2, 2, 2])
+    show(ui, stations)
+    assert len(stations) == 14
+    assert set(row_gaps(ui)) == {4}
+    assert ui._list_content_h == 14 * 56 + 13 * 4  # all rows drawn, 4 px apart, none above the first
+    assert ui.station_track.find_withtag("thumb")

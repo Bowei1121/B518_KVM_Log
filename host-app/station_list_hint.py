@@ -2,6 +2,8 @@
 
 Tk-free. The caller passes ``fits(text)``, which measures the text in the hint font; the longest form that fits
 is used, and the shortest form is used when nothing fits, so characters are never cut off.
+When abnormal devices are hidden on both sides, show each side's ids, then first-of-many ids,
+then the combined abnormal count. If only one side has abnormal devices, show that side alone.
 """
 from typing import Callable, Sequence
 
@@ -27,6 +29,20 @@ def list_hint_text(
     """Hint for rows above and below the view; abnormal ids are listed in device-list order."""
     if not above and not below:
         return ""
+    if abnormal_above and abnormal_below:
+        sides = (abnormal_above, abnormal_below)
+        candidates = [t("list_abnormal_both", above=t("sep_list").join(abnormal_above),
+                        below=t("sep_list").join(abnormal_below))]
+        if any(len(side) > 1 for side in sides):
+            firsts = [first_of_many(side[0], len(side) - 1) if len(side) > 1 else side[0]
+                      for side in sides]
+            candidates.append(t("list_abnormal_both", above=firsts[0], below=firsts[1]))
+        candidates.append(t("list_abnormal_both_count", k=sum(len(side) for side in sides)))
+        return next((text for text in candidates if fits(text)), candidates[-1])
+    if abnormal_above:
+        below = ()
+    elif abnormal_below:
+        above = ()
     if above and below:
         full = short = t("list_more_both", a=len(above), b=len(below))
     elif below:

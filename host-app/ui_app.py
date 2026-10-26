@@ -96,7 +96,9 @@ from ui_widgets import (
 import wheel_scroll
 from window_placement import frame_size, open_geometry, placed_area, usable_client_size
 
-# Station list (spec v5.3 §14.10): 12 visible rows of 56 px plus a 4 px gap, a 16 px track beside them.
+# Station list (spec v5.3 §14.10): 12 × 56 px + 11 × 4 px = 716 px, no gap above the first row.
+# Up to four station groups add 4 px per prefix change (at most 728 px); more groups use only 4 px gaps.
+# A 16 px track sits beside the rows.
 ROW_W, ROW_H, ROW_PITCH = 176, 56, 60
 LIST_VIEW_H = 728
 LIST_HINT_H, LIST_HINT_MAX_W = 16, 188
@@ -926,12 +928,16 @@ class AtlasUI(_BaseTk):
             widget.destroy()
         self._station_widgets.clear()
         self._render_empty_hint()
+        prefixes = [str(st.get("device", "")).split("-")[0] for st in self._stations]
+        group_count = bool(prefixes) + sum(a != b for a, b in zip(prefixes, prefixes[1:]))
         previous_prefix = None
         self._list_row_tops = {}
         for index in range(max(12, len(self._stations))):
             st = self._stations[index] if index < len(self._stations) else None
             prefix = str(st.get("device", "")).split("-")[0] if st else previous_prefix
-            gap = 4 + (4 if previous_prefix is not None and prefix != previous_prefix else 0)
+            gap = 0 if index == 0 else 4
+            if group_count <= 4 and previous_prefix is not None and prefix != previous_prefix:
+                gap += 4
             card = tk.Frame(self.stations_container, width=ROW_W, height=ROW_H, bg=WINDOW_BG)
             card.grid(row=index, column=0, padx=0, pady=(gap, 0))
             card.pack_propagate(False)
