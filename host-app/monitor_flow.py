@@ -166,6 +166,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 if not kvm.is_healthy():
                     gate.stream.release_kvm_lost_latch(decision.verdict)
                     raise _kvm_lost_waiting()
+                gate.stream.mark_frozen_delivered()
                 raise FlowError("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
             if decision.kind == "heartbeat_stopped":
                 # The display stopped while waiting: no later reading can count as monitoring.

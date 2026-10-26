@@ -127,9 +127,11 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `devices[].frozen` | boolean | 畫面判定凍結後持續為 true，直到讀取影格的指令觀察到同一設備 PTS 前進才解除（見下方說明），不需人工確認 |
 | `devices[].channels` | number | 設定的測試通道數 |
 
+凍結 latch 保存在記憶體，Core 重啟會清除，但不代表設備已修復。
+
 凍結解除說明：只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，持續輪詢也不會解除。KVM 重連換串流後至少需讀取兩次：首張建立基準，後續影格須有 PTS 前進。LabVIEW 不應只輪詢 `status` 等待 `frozen=false`，應送唯讀的 `inspect` 重新判斷，必要時重複送出。
 
-KVM 斷線不會解除凍結。唯一例外範圍很窄：某次讀取判定 FROZEN，而該次讀取的回覆是 `kvm_connect_failed`（不是 `frame_frozen`；包括讀取超過 inspection timeout、在背景完成時 KVM 已斷線的那次讀取），只撤銷這個判定剛新增的凍結 latch。理由：LabVIEW 從未因這次讀取收到 `frame_frozen`，而且這個凍結判定可能只是 KVM 在讀取途中斷線造成的假象。斷線前就已存在的凍結 latch 一律保留。已鎖定凍結的設備後續 KVM 斷線時，依使用者決定（2026-10-26）繼續顯示凍結：`status` 維持 `frozen=true`、`connected=false`，`core_status` 的 `stations[].status` 為 `FROZEN`、`is_connected=false`；Monitor UI 該列顯示紅色 Frame frozen，連線狀態只放在 tooltip。凍結只在畫面重新前進（PTS 前進）時解除，目的是讓人看得出設備在斷線前已經異常。
+KVM 斷線不會解除凍結。唯一例外範圍很窄：某次讀取判定 FROZEN，而該次讀取的回覆是 `kvm_connect_failed`（不是 `frame_frozen`；包括讀取超過 inspection timeout、在背景完成時 KVM 已斷線的那次讀取），只撤銷這個判定剛新增的凍結 latch。理由：LabVIEW 從未因這次讀取收到 `frame_frozen`，而且這個凍結判定可能只是 KVM 在讀取途中斷線造成的假象。同一 latch 一旦有任何命令已向 LabVIEW 回覆 `frame_frozen`，就不再適用此例外，即使建立 latch 的原讀取後來回覆 `kvm_connect_failed` 也必須保留，直到 PTS 前進。斷線前就已存在的凍結 latch 一律保留。已鎖定凍結的設備後續 KVM 斷線時，依使用者決定（2026-10-26）繼續顯示凍結：`status` 維持 `frozen=true`、`connected=false`，`core_status` 的 `stations[].status` 為 `FROZEN`、`is_connected=false`；Monitor UI 該列顯示紅色 Frame frozen，目前 tooltip 只顯示凍結文字，不顯示 KVM 連線狀態；加入連線狀態須待面板 PR #137 合併後另開後續票，本 PR 不修改 UI。凍結只在畫面重新前進（PTS 前進）時解除，目的是讓人看得出設備在斷線前已經異常。
 
 KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 

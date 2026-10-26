@@ -328,3 +328,47 @@ class TestStatusView:
         assert first is not second
         stream.release_kvm_lost_latch(first)
         assert guard.get_status()["frozen_devices"] == []
+
+
+def test_delivered_latch_cannot_be_released_by_its_own_verdict():
+    stream = FrameStream("DFU-01")
+    verdict = stream.observe_no_frame()
+    stream.mark_frozen_delivered()
+    stream.release_kvm_lost_latch(verdict)
+    assert stream.frozen_now()
+
+
+def test_pts_advance_clears_delivery_flag_for_next_latch():
+    stream = FrameStream("DFU-01")
+    stream.mark_frozen_delivered()  # No latch: must not affect the next one.
+    first = stream.observe_no_frame()
+    stream.release_kvm_lost_latch(first)
+    assert not stream.frozen_now()
+    stream.observe_no_frame()
+    stream.mark_frozen_delivered()
+    stream.observe("s", 1, 10)
+    stream.observe("s", 2, 11)
+    assert not stream.frozen_now()
+    second = stream.observe_no_frame()
+    stream.release_kvm_lost_latch(second)
+    assert not stream.frozen_now()
+
+
+def test_window_expired_latch_clears_on_advancing_read():
+    clock = FakeClock()
+    stream = FrameStream("DFU-01", freeze_threshold=1, clock=clock)
+    sequence = 0
+
+    def read():
+        nonlocal sequence
+        sequence += 1
+        return make_snapshot(None, stream_id=str(sequence), sequence=sequence, pts=10)
+
+    async def tick(seconds):
+        clock.now += seconds
+
+    verdict = asyncio.run(stream.wait_live(read, sleep=tick))
+    assert verdict.reason == "window_expired"
+    assert stream.frozen_now()
+    stream.observe(str(sequence), sequence + 1, 11)
+    assert not stream.frozen_now()

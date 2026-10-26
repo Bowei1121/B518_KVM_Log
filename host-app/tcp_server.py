@@ -540,6 +540,7 @@ class TcpJsonServer:
             stream.release_kvm_lost_latch(verdict)
             return lost()
         if verdict.kind == FROZEN and verdict.reason != "no_frame":
+            stream.mark_frozen_delivered()
             return "frame_frozen", verdict.message
         refusal = await self._heartbeat_refusal(ctx)
         # The probe samples for up to 2.5 s: a KVM that died meanwhile is kvm_connect_failed, not a later error.
@@ -726,6 +727,8 @@ class TcpJsonServer:
                 if code == "frame_frozen" and not kvm.is_healthy():
                     slot.gate.stream.release_kvm_lost_latch(reading.verdict)
                     return _kvm_lost(ctx)
+                if code == "frame_frozen":
+                    slot.stream.mark_frozen_delivered()
                 return check.fail(code, message)
 
             outcome = check.step(reading, time.monotonic())

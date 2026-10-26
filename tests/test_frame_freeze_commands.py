@@ -328,7 +328,10 @@ def test_slow_read_finishing_after_timeout_and_kvm_loss_releases_own_latch(serve
     kvm.latest_frame = slow_dying_read
     resp = _send(srv, build_request(command, "slow-loss", "DFU-01", {"timeout_sec": 5}))
     assert resp["error"] == "kvm_connect_failed"
-    time.sleep(before_loss + after_loss + 0.5)
+    # Wait for the background read itself instead of a fixed sleep.
+    flights = srv._slots["DFU-01"].flights
+    assert len(flights) == 1
+    next(iter(flights.values())).result(timeout=5)
     assert "DFU-01" not in srv.freeze_guard.get_status()["frozen_devices"]
     _assert_not_frozen_in_status(srv)
 
@@ -475,3 +478,141 @@ def test_loss_does_not_release_another_inspects_read_submitted_during_command():
         assert guard.get_status()["frozen_devices"] == ["DFU-01"]
     finally:
         srv._inspector.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("command", ["input", "start_test"])
+def test_other_inspect_delivers_freeze_during_real_heartbeat_sampling(serve, monkeypatch, command):
+    kvm = StaticPtsDfuKVM(FOUR)
+    srv = serve(kvm)
+    probing = threading.Event()
+    delivered = threading.Event()
+    sampled = threading.Event()
+    replies = {}
+    monkeypatch.setattr(kvm, "latest_frame", lambda: None)
+    sample_heartbeat = srv._heartbeat_refusal
+
+    def inspect_b():
+        assert probing.wait(5)
+        replies["b"] = _send(srv, build_request("inspect", "inspect-b", "DFU-01", {"timeout_sec": 5}))
+        delivered.set()
+
+    probe_thread = []
+
+    def probe_read():
+        if not probe_thread:
+            probe_thread.append(threading.get_ident())
+        if threading.get_ident() != probe_thread[0]:
+            return None  # B's real inspect reader sees no frame while A samples.
+        if sampled.is_set():
+            return None
+        probing.set()
+        assert delivered.wait(5)
+        assert replies["b"]["error"] == "frame_frozen"
+        assert kvm.is_healthy()
+        kvm.end_track()
+        sampled.set()
+        return None
+
+    async def during_probe(ctx):
+        assert srv.freeze_guard.stream("DFU-01").last_verdict().reason == "no_frame"
+        monkeypatch.setattr(kvm, "latest_frame", probe_read)
+        return await sample_heartbeat(ctx)
+
+    monkeypatch.setattr(srv, "_heartbeat_refusal", during_probe)
+    thread = threading.Thread(target=inspect_b, daemon=True)
+    thread.start()
+    reply = (_input if command == "input" else _start_test)(srv)
+    thread.join(5)
+    assert sampled.is_set()
+    assert replies["b"]["error"] == "frame_frozen"
+    assert reply["error"] == "kvm_connect_failed"
+    assert "DFU-01" in srv.freeze_guard.get_status()["frozen_devices"]
+    status = _send(srv, build_request("status", "after-delivery", ""))
+    device = next(row for row in status["data"]["devices"] if row["device"] == "DFU-01")
+    assert device["frozen"] is True
+
+
+@pytest.mark.parametrize("b_mode", [None, "inspect", "check_finish", "input", "monitor_start"])
+def test_real_timed_out_inspect_worker_latch_at_loop_top(monkeypatch, b_mode):
+    """Without B this catches removal of submitted.append(future); a B replying frame_frozen protects A1."""
+    import asyncio
+    from device_slot import DeviceSlot
+    from monitor_flow import FlowError, run_monitor_start
+    from round_check import CheckMode
+    from tcp_server import CommandContext
+
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.connected = True
+    guard = FrameFreezeGuard()
+    slot = DeviceSlot("DFU-01", guard.stream("DFU-01"))
+    srv = TcpJsonServer(device_registry=make_registry(), freeze_guard=guard)
+    srv.inspection_timeout_sec = 0.02
+    srv._is_running = True
+    entered = threading.Event()
+    finish = threading.Event()
+    ctx = CommandContext(entry=make_registry().get("DFU-01"), kvm=kvm, slot=slot)
+
+    def slow_no_frame():
+        entered.set()
+        assert finish.wait(5)
+        return None
+
+    read = kvm.latest_frame
+    monkeypatch.setattr(kvm, "latest_frame", slow_no_frame)
+
+    async def between_polls(seconds):
+        assert entered.is_set()
+        future = slot.flights["inspect"]
+        assert not future.done()  # A1 exceeded the real _read_reading timeout.
+        finish.set()
+        reading = future.result(timeout=5)
+        assert reading.error[0] == "frame_frozen"
+        assert kvm.is_healthy()  # Worker finished healthy, so it cannot release the latch.
+        assert guard.get_status()["frozen_devices"] == ["DFU-01"]
+        if b_mode in ("input", "monitor_start"):
+            # B's own frames have no PTS (missing_pts): it replies frame_frozen while the KVM is healthy.
+            kvm.omit_presentation_time = True
+            monkeypatch.setattr(kvm, "latest_frame", read)
+            if b_mode == "input":
+                assert (await srv._picture_refusal(ctx))[0] == "frame_frozen"
+            else:
+                kvm.show("preparing")
+                with pytest.raises(FlowError) as raised:
+                    await run_monitor_start(kvm, slot.gate, "DFU-01", template_root=srv._template_root(),
+                                            start_timeout_sec=5, log=lambda *_: None)
+                assert raised.value.code == "frame_frozen"
+        elif b_mode is not None:
+            monkeypatch.setattr(kvm, "latest_frame", lambda: None)
+            submit = srv._inspector.submit
+
+            def completed_submit(*args, **kwargs):
+                future = submit(*args, **kwargs)
+                future.result(timeout=5)
+                return future
+
+            # Complete B on its real worker before the await, keeping this interleaving deterministic.
+            monkeypatch.setattr(srv._inspector, "submit", completed_submit)
+            mode = CheckMode.INSPECT if b_mode == "inspect" else CheckMode.CHECK_FINISH
+            b = await srv._long_poll(ctx, 5, mode)
+            assert b["error"] == "frame_frozen"
+        kvm.end_track()
+
+    monkeypatch.setattr("tcp_server.asyncio.sleep", between_polls)
+    try:
+        reply = asyncio.run(srv._long_poll(ctx, 5, CheckMode.INSPECT))
+        assert reply["error"] == "kvm_connect_failed"
+        assert guard.get_status()["frozen_devices"] == (["DFU-01"] if b_mode else [])
+    finally:
+        finish.set()
+        srv._inspector.shutdown(wait=True)
+
+
+def test_inspect_pts_advance_clears_server_status_latch(serve):
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.omit_presentation_time = True
+    srv = serve(kvm)
+    assert _send(srv, build_request("inspect", "freeze", "DFU-01", {"timeout_sec": 5}))["error"] == "frame_frozen"
+    kvm.omit_presentation_time = False
+    reply = _send(srv, build_request("inspect", "advance", "DFU-01", {"timeout_sec": 5}))
+    assert reply.get("error") != "frame_frozen"
+    _assert_not_frozen_in_status(srv)

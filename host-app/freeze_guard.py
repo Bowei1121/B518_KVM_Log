@@ -35,9 +35,8 @@ class FrameFreezeGuard:
 
     def get_status(self) -> Dict[str, Any]:
         """Devices stay frozen in status until PTS advances, including after a stream switch."""
-        now = self.clock()
         streams = list(self._streams.items())
-        frozen_devices = [key for key, stream in streams if stream.frozen_now(now)]
+        frozen_devices = [key for key, stream in streams if stream.frozen_now()]
         return {
             "freeze_threshold": self.freeze_threshold,
             "require_pts": True,  # the server always requires PTS (ADR-0005 2026-10-20 第 2 點)
