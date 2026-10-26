@@ -34,3 +34,9 @@ Accepted
 3. 凍結檢查擴及送 HID 的指令：`input`、`start_test`、`monitor_start` 送 HID 前檢查一次，凍結時回 `frame_frozen` 且不送 HID。
 4. PTS 只證明串流活著，無法偵測測試電腦或 Log Solution 當機（HDMI 仍持續輸出、PTS 仍前進）；該情境由「Log Solution 心跳」處理（見 CONTEXT.md、1.2 建議 C8）。
 
+## 修訂（2026-10-26）
+1. 移除凍結判定超過 5 秒即不再顯示 FROZEN 的規則。設備一旦判定畫面凍結，`core_status` 與 `status` 持續保留該設備的凍結狀態，直到同一設備再次觀察到 PTS 前進才解除，不需人工確認。
+2. 換串流仍重置 PTS 比較基準，但不解除狀態回報中的凍結。新串流首張影格只建立基準，第一次 PTS 前進才解除凍結。
+3. 送 HID 前的主動窗口（`FrameStream.wait_live`）、`FrameStream.is_frozen` 與輪次閘門的判斷規則不變；本次修訂只調整狀態回報的凍結保留方式。
+
+原文保留，不刪除原規定。

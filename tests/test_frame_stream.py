@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from fake_kvm import make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from frame_stream import (  # noqa: E402
-    FROZEN, LIVE, PENDING, STATUS_VERDICT_MAX_AGE_SEC, FrameStream,
+    FROZEN, LIVE, PENDING, FrameStream,
 )
 
 
@@ -239,7 +239,7 @@ class TestActiveWindow:
 
 
 class TestStatusView:
-    def test_frozen_device_is_listed_until_the_verdict_is_stale(self):
+    def test_frozen_device_stays_listed_until_pts_advances(self):
         clock = FakeClock()
         guard = FrameFreezeGuard(freeze_threshold=1.0, clock=clock)
         stream = guard.stream("BT-01")
@@ -249,11 +249,30 @@ class TestStatusView:
 
         assert guard.get_status()["frozen_devices"] == ["BT-01"]
 
-        clock.advance(STATUS_VERDICT_MAX_AGE_SEC + 0.1)
+        clock.advance(3600)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        stream.observe("s", 3, 10.1)
         status = guard.get_status()
         assert status["frozen_devices"] == []
         assert status["frozen_devices_count"] == 0
         assert status["tracked_devices_count"] == 1
+
+    def test_frozen_device_stays_listed_until_new_stream_pts_advances(self):
+        clock = FakeClock()
+        guard = FrameFreezeGuard(freeze_threshold=1.0, clock=clock)
+        stream = guard.stream("BT-01")
+        stream.observe("old", 1, 100.0)
+        clock.advance(1.5)
+        stream.observe("old", 2, 100.0)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        stream.observe("new", 1, 1.0)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        clock.advance(0.1)
+        stream.observe("new", 2, 1.1)
+        assert guard.get_status()["frozen_devices"] == []
 
     def test_one_stream_per_device(self):
         guard = FrameFreezeGuard(freeze_threshold=1.0, clock=FakeClock())

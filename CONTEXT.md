@@ -16,7 +16,7 @@
 - **JSON Protocol**: 換行符分隔（Newline-Delimited）的 JSON 格式協定。包含 Request ID，取代原先易碎的逗號分隔純字串協定，無向後相容包袱。
 - **Long Polling**: 用於耗時測試的 TCP 等待機制。LabVIEW 對 `check` 送出長 Timeout 請求，Core Service 卡住該 TCP 連線在背景監聽，直到結果出現才回傳，降低頻寬浪費。
 - **Frame Freeze Guard**: 畫面凍結防呆機制。強制檢查 JetKVM 底層回傳影格的時間戳 (Presentation Timestamp)，確保測試機 HDMI 畫面活躍，避免因當機誤判前次結果。只能證明 JetKVM 串流在送畫面；Mac 或 Log Solution 當機時 HDMI 仍持續輸出、PTS 仍前進，須由「Log Solution 心跳」判斷。觀察串流不算消耗輪次：唯讀的 `inspect` 也會更新凍結狀態。
-- **FrameStream**: 每台設備一份的畫面串流活性狀態（串流編號、序號順序、PTS 靜止），是 Frame Freeze Guard 唯一的判斷來源（`host-app/frame_stream.py`，ADR-0005 2026-10-20 修訂）。被動追蹤（每次讀取）與一次性指令的主動窗口共用同一份狀態；只有 PTS 實際前進才算活著，首張影格不算。判定超過 5 秒不顯示 FROZEN，設備顯示為 IDLE／DISCONNECTED（協定無 UNKNOWN）。
+- **FrameStream**: 每台設備一份的畫面串流活性狀態（串流編號、序號順序、PTS 靜止），是 Frame Freeze Guard 唯一的判斷來源（`host-app/frame_stream.py`，ADR-0005 2026-10-20 修訂）。被動追蹤（每次讀取）與一次性指令的主動窗口共用同一份狀態；只有 PTS 實際前進才算活著，首張影格不算。設備一旦判定凍結，狀態持續顯示 FROZEN，直到同一設備再次觀察到 PTS 前進才解除；換串流的首張影格不解除，須等新串流第一次 PTS 前進（ADR-0005 2026-10-26 修訂），不需人工確認。
 
 ## 協作角色
 

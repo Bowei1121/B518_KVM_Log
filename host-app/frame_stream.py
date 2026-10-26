@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 
 FREEZE_THRESHOLD_SEC = 1.0  # PTS static this long is a frozen picture
 FRESHNESS_PENDING = "freshness_pending"  # reading not judged: PTS has not been seen to move yet
-STATUS_VERDICT_MAX_AGE_SEC = 5.0  # a frozen verdict older than this is not shown as FROZEN in status
 
 LIVE = "live"
 PENDING = "pending"  # PTS static, but not yet for the threshold: not judged
@@ -71,6 +70,7 @@ class FrameStream:
         self._advanced = False  # the last reading moved PTS forward (a first frame does not count)
         self._generation = 0
         self._verdict: Optional[Verdict] = None
+        self._status_frozen = False  # stays frozen until PTS advances on this device
 
     @property
     def is_frozen(self) -> bool:
@@ -78,12 +78,8 @@ class FrameStream:
         return verdict is not None and verdict.kind == FROZEN
 
     def frozen_now(self, now: Optional[float] = None) -> bool:
-        """Last verdict is FROZEN and recent enough to show. Reads without the lock and takes no sample."""
-        verdict = self._verdict
-        if verdict is None or verdict.kind != FROZEN:
-            return False
-        now = self.clock() if now is None else float(now)
-        return now - verdict.at <= STATUS_VERDICT_MAX_AGE_SEC
+        """Status stays frozen until PTS advances. Reads without the lock and takes no sample."""
+        return self._status_frozen
 
     def last_verdict(self) -> Optional[Verdict]:
         return self._verdict
@@ -185,5 +181,9 @@ class FrameStream:
             await sleep(poll_interval)
 
     def _record(self, verdict: Verdict) -> Verdict:
+        if verdict.kind == FROZEN:
+            self._status_frozen = True
+        elif verdict.advanced:
+            self._status_frozen = False
         self._verdict = replace(verdict, generation=self._generation)
         return self._verdict

@@ -124,7 +124,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `devices[].station` | string | `DFU`／`FCT`／`BT` |
 | `devices[].connected` | boolean | KVM 連線池中是否已連線 |
 | `devices[].busy` | boolean | 是否有上鎖指令執行中 |
-| `devices[].frozen` | boolean | 畫面凍結檢查是否判定凍結 |
+| `devices[].frozen` | boolean | 畫面一旦判定凍結即持續為 true，直到同一設備再次觀察到 PTS 前進；換串流首張影格不解除，須等新串流第一次 PTS 前進，不需人工確認 |
 | `devices[].channels` | number | 設定的測試通道數 |
 
 KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。

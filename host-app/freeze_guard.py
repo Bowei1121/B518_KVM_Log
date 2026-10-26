@@ -1,7 +1,7 @@
 """Per-device FrameStream registry: the server's seam for picture freshness (ADR-0005).
 
 The freeze rule itself lives in frame_stream.FrameStream. This module only hands out one
-FrameStream per device and summarises their last verdicts for status.
+FrameStream per device and summarises their latched frozen states for status.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class FrameFreezeGuard:
         return stream
 
     def get_status(self) -> Dict[str, Any]:
-        """Frozen devices by their last verdict; a verdict older than the status window is not FROZEN."""
+        """Devices stay frozen in status until PTS advances, including after a stream switch."""
         now = self.clock()
         streams = list(self._streams.items())
         frozen_devices = [key for key, stream in streams if stream.frozen_now(now)]
