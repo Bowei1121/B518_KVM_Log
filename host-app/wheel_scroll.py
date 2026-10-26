@@ -18,9 +18,9 @@ _FLAG = "_wheel_target"
 _INSTALLED = "_wheel_installed"
 
 
-def register(widget: Any) -> Any:
-    """Let ``widget`` (a Text, Listbox or Canvas with a scroll region) take the wheel when the pointer is over it."""
-    setattr(widget, _FLAG, True)
+def register(widget: Any, scrolls: Any = None) -> Any:
+    """Route the wheel over ``widget`` to ``scrolls`` (defaults to the widget itself)."""
+    setattr(widget, _FLAG, widget if scrolls is None else scrolls)
     return widget
 
 
@@ -49,7 +49,7 @@ def target_under(root: tk.Misc, x_root: int, y_root: int) -> Any:
         return None
     while widget is not None:
         if registered(widget):
-            return widget
+            return getattr(widget, _FLAG)
         widget = widget.master
     return None
 

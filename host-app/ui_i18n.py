@@ -261,6 +261,17 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "pt_saved": "Template saved: {path}",
         "pt_more": "; you can make another type now.",
         "pt_saved_title": "Template saved",
+        # Station list scroll hint and log (spec v5.3 §14.10, §14.12; issue #126)
+        "list_more_below": "▼ {n} more below",
+        "list_more_above": "▲ {n} more above",
+        "list_more_down": "▼ {n} more",
+        "list_more_up": "▲ {n} more",
+        "list_more_both": "▲ {a} ▼ {b} more",
+        "list_abnormal": " · {k} abnormal ({ids})",
+        "list_abnormal_only": "{arrow} {k} abnormal ({ids})",
+        "list_abnormal_both": "{ids} abnormal",
+        "list_abnormal_both_count": "{k} abnormal",
+        "log_list_scroll": "{n} devices configured; list shows 12 rows, scroll for the rest",
     },
     "zh": {
         "station_connected": "已連線",
@@ -498,8 +509,20 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "pt_saved": "已儲存模板：{path}",
         "pt_more": "；可繼續選擇其他種類製作。",
         "pt_saved_title": "模板已儲存",
+        # Station list scroll hint and log (spec v5.3 §14.10, §14.12; issue #126)
+        "list_more_below": "▼ 下方還有 {n} 台",
+        "list_more_above": "▲ 上方還有 {n} 台",
+        "list_more_down": "▼ 還有 {n} 台",
+        "list_more_up": "▲ 還有 {n} 台",
+        "list_more_both": "▲ {a} 台 ▼ {b} 台",
+        "list_abnormal": " · {k} 台異常（{ids}）",
+        "list_abnormal_only": "{arrow} {k} 台異常（{ids}）",
+        "list_abnormal_both": "{ids} 異常",
+        "list_abnormal_both_count": "{k} 台異常",
+        "log_list_scroll": "設定了 {n} 台設備；清單一次顯示 12 列，其餘請用捲軸查看",
     },
 }
+
 
 _current = DEFAULT_LANGUAGE
 _listeners: List[Callable[[], None]] = []

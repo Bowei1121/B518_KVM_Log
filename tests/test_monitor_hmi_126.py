@@ -52,18 +52,19 @@ def test_twelve_fixed_cells_are_visible_without_scrolling(ui, count):
     ui._update_status_ui({"status": "ok", "stations": devices})
     ui.geometry("960x1010")
     ui.update()
-    panel = ui.stations_container.master
+    panel = ui.station_panel
     cells = ui.stations_container.winfo_children()
     assert panel.winfo_width() == 200
     assert len(cells) == 12
-    assert ui.stations_container.winfo_reqheight() <= ui.stations_container.winfo_height()
+    assert ui.stations_container.winfo_reqheight() <= ui.station_canvas.winfo_height()
     for cell in cells:
         assert cell.winfo_viewable()
-        assert (cell.winfo_width(), cell.winfo_height()) == (186, 56)
+        assert (cell.winfo_width(), cell.winfo_height()) == (176, 56)
         assert cell.winfo_rooty() + cell.winfo_height() <= panel.winfo_rooty() + panel.winfo_height()
     assert not any(w.winfo_class() in ("Scrollbar", "TScrollbar") for w in walk(panel))
-    assert not any(w.winfo_class() == "Canvas" and (w.cget("yscrollcommand") or w.cget("scrollregion"))
-                   for w in walk(panel))
+    before = ui.station_canvas.yview()
+    ui.station_canvas.yview_scroll(1, "units")
+    assert ui.station_canvas.yview() == before
     assert list(ui._station_widgets) == [r["device"] for r in devices]
     for cell in cells[count:]:
         assert not cell.winfo_children()
