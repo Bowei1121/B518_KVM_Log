@@ -18,7 +18,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Coroutine, Dict, Mapping, Optional, Set, Tuple
 
 try:
@@ -40,6 +40,11 @@ try:
     from device_registry import DeviceRegistry
 except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
+
+try:
+    from device_health import DeviceHealth, build_health
+except ImportError:
+    from .device_health import DeviceHealth, build_health  # type: ignore[import-not-found,no-redef]
 
 try:
     from monitor_flow import MONITOR_CONFIRM_SEC
@@ -266,6 +271,14 @@ class TcpJsonServer:
             device_registry if device_registry is not None else DeviceRegistry([])
         )
 
+        # Runtime records are read/written only on the asyncio event-loop thread.
+        # _device_health has no await, so readers never see a partial update.
+        # Future worker-thread updates must add an internal lock, not the Device Lock.
+        self._health: dict[str, DeviceHealth] = {
+            record.device: record
+            for record in build_health(self.device_registry.entries(), [], [], [])
+        }
+
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -333,50 +346,41 @@ class TcpJsonServer:
     async def _handle_ping(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         return {"pong": True, "core_version": CORE_VERSION}
 
+    def _device_health(self) -> list[DeviceHealth]:
+        """Update stored health records and return copies in registry order.
+
+        Reads Device Lock, Freeze Guard and the pool once each. Reads no frame and takes no device lock.
+        Both core_status and LabVIEW status are built from these records.
+        """
+        active = set(self.lock_manager.get_active_devices())
+        frozen = set(self.freeze_guard.get_status().get("frozen_devices", []))
+        connected = set(self.kvm_pool.get_active_ips())
+        for record in self._health.values():
+            record.refresh(active, frozen, connected)
+        return [replace(record) for record in self._health.values()]
+
     def _station_rows(self) -> list[Dict[str, Any]]:
         """Real-time status of every configured test station (the ``stations`` list of core_status).
 
         Reads no frame and takes no device lock: the reading fields are whatever readings already recorded.
         """
-        active_devices = set(self.lock_manager.get_active_devices())
-        fg_status = self.freeze_guard.get_status()
-        frozen_devices = set(fg_status.get("frozen_devices", []))
-        active_ips = set(self.kvm_pool.get_active_ips())
-
         stations_list: list[Dict[str, Any]] = []
-        for entry in self.device_registry.entries():
-            st_name = entry.station
-            dev_id = entry.device_id
-            kvm_ip = entry.kvm_ip
-
-            is_busy = dev_id in active_devices
-            is_frozen = dev_id in frozen_devices
-            is_connected = kvm_ip in active_ips
-
-            if is_busy:
-                status_str = "BUSY"
-            elif is_frozen:
-                status_str = "FROZEN"
-            elif is_connected:
-                status_str = "IDLE"
-            else:
-                status_str = "DISCONNECTED"
-
+        for h in self._device_health():
             # Reading statistics come from the slot's recorded readings. A device without a slot has none yet.
-            slot = self._slots.get(str(dev_id))
+            slot = self._slots.get(str(h.device))
             reading = slot.stats.report() if slot is not None else empty_report()
-            if not is_connected:
+            if not h.connected:
                 # The last frame size belongs to a picture that is gone: a disconnected device has no output size.
                 reading["frame_size"] = None
 
             stations_list.append({
-                "station": st_name,
-                "device": dev_id,
-                "kvm_ip": kvm_ip,
-                "status": status_str,
-                "is_busy": is_busy,
-                "is_frozen": is_frozen,
-                "is_connected": is_connected,
+                "station": h.station,
+                "device": h.device,
+                "kvm_ip": h.kvm_ip,
+                "status": h.status,
+                "is_busy": h.busy,
+                "is_frozen": h.frozen,
+                "is_connected": h.connected,
                 **reading,
             })
         return stations_list
@@ -384,18 +388,15 @@ class TcpJsonServer:
     async def _handle_status(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """LabVIEW status: Core uptime and per-device state. KVM IPs are never returned."""
         uptime = time.time() - self._start_time if self._start_time else 0.0
-        active_devices = set(self.lock_manager.get_active_devices())
-        frozen_devices = set(self.freeze_guard.get_status().get("frozen_devices", []))
-        active_ips = set(self.kvm_pool.get_active_ips())
         devices: list[Dict[str, Any]] = []
-        for entry in self.device_registry.entries():
+        for h in self._device_health():
             devices.append({
-                "device": entry.device_id,
-                "station": entry.station,
-                "connected": entry.kvm_ip in active_ips,
-                "busy": entry.device_id in active_devices,
-                "frozen": entry.device_id in frozen_devices,
-                "channels": entry.channels,
+                "device": h.device,
+                "station": h.station,
+                "connected": h.connected,
+                "busy": h.busy,
+                "frozen": h.frozen,
+                "channels": h.channels,
             })
         return {"core_uptime_sec": int(uptime), "devices": devices}
 
