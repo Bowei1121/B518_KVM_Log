@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 from fake_kvm import make_snapshot  # noqa: E402
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from frame_stream import (  # noqa: E402
-    FROZEN, LIVE, PENDING, STATUS_VERDICT_MAX_AGE_SEC, FrameStream,
+    FROZEN, LIVE, PENDING, FrameStream,
 )
 
 
@@ -239,7 +239,7 @@ class TestActiveWindow:
 
 
 class TestStatusView:
-    def test_frozen_device_is_listed_until_the_verdict_is_stale(self):
+    def test_frozen_device_stays_listed_until_pts_advances(self):
         clock = FakeClock()
         guard = FrameFreezeGuard(freeze_threshold=1.0, clock=clock)
         stream = guard.stream("BT-01")
@@ -249,11 +249,34 @@ class TestStatusView:
 
         assert guard.get_status()["frozen_devices"] == ["BT-01"]
 
-        clock.advance(STATUS_VERDICT_MAX_AGE_SEC + 0.1)
+        clock.advance(3600)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        stream.observe("s", 3, 10.1)
         status = guard.get_status()
         assert status["frozen_devices"] == []
         assert status["frozen_devices_count"] == 0
         assert status["tracked_devices_count"] == 1
+
+    def test_frozen_device_stays_listed_until_new_stream_pts_advances(self):
+        clock = FakeClock()
+        guard = FrameFreezeGuard(freeze_threshold=1.0, clock=clock)
+        stream = guard.stream("BT-01")
+        stream.observe("old", 1, 100.0)
+        clock.advance(1.5)
+        stream.observe("old", 2, 100.0)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        stream.observe("new", 1, 1.0)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        clock.advance(0.1)
+        assert stream.observe("new", 2, 1.0).kind == PENDING
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+        clock.advance(0.1)
+        stream.observe("new", 3, 1.1)
+        assert guard.get_status()["frozen_devices"] == []
 
     def test_one_stream_per_device(self):
         guard = FrameFreezeGuard(freeze_threshold=1.0, clock=FakeClock())
@@ -269,3 +292,83 @@ class TestStatusView:
         before = stream.last_verdict()
         guard.get_status()
         assert stream.last_verdict() is before
+
+    def test_kvm_lost_releases_new_latch_and_tracking_continues(self):
+        clock = FakeClock()
+        guard = FrameFreezeGuard(freeze_threshold=1.0, clock=clock)
+        stream = guard.stream("BT-01")
+        stream.observe("s", 1, 10.0)
+        clock.advance(1.0)
+        verdict = stream.observe("s", 2, 10.0)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+        stream.release_kvm_lost_latch(verdict)
+        assert guard.get_status()["frozen_devices"] == []
+        assert stream.last_verdict() is verdict
+        assert stream.is_frozen is True
+        assert stream.observe("s", 3, 10.1).advanced is True
+        assert guard.get_status()["frozen_devices"] == []
+        clock.advance(1.0)
+        assert stream.observe("s", 4, 10.1).kind == FROZEN
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+    def test_kvm_loss_keeps_latch_from_an_earlier_verdict(self):
+        guard = FrameFreezeGuard(clock=FakeClock())
+        stream = guard.stream("BT-01")
+        first = stream.observe("s", 1, None)
+        second = stream.observe("s", 2, None)
+        assert first.kind == second.kind == FROZEN
+        stream.release_kvm_lost_latch(second)
+        assert guard.get_status()["frozen_devices"] == ["BT-01"]
+
+    def test_kvm_loss_releases_own_latch_after_another_lane_records(self):
+        guard = FrameFreezeGuard(clock=FakeClock())
+        stream = guard.stream("BT-01")
+        first = stream.observe("s", 1, None)
+        second = stream.observe("s", 2, None)
+        assert first is not second
+        stream.release_kvm_lost_latch(first)
+        assert guard.get_status()["frozen_devices"] == []
+
+
+def test_delivered_latch_cannot_be_released_by_its_own_verdict():
+    stream = FrameStream("DFU-01")
+    verdict = stream.observe_no_frame()
+    stream.mark_frozen_delivered()
+    stream.release_kvm_lost_latch(verdict)
+    assert stream.frozen_now()
+
+
+def test_pts_advance_clears_delivery_flag_for_next_latch():
+    stream = FrameStream("DFU-01")
+    stream.mark_frozen_delivered()  # No latch: must not affect the next one.
+    first = stream.observe_no_frame()
+    stream.release_kvm_lost_latch(first)
+    assert not stream.frozen_now()
+    stream.observe_no_frame()
+    stream.mark_frozen_delivered()
+    stream.observe("s", 1, 10)
+    stream.observe("s", 2, 11)
+    assert not stream.frozen_now()
+    second = stream.observe_no_frame()
+    stream.release_kvm_lost_latch(second)
+    assert not stream.frozen_now()
+
+
+def test_window_expired_latch_clears_on_advancing_read():
+    clock = FakeClock()
+    stream = FrameStream("DFU-01", freeze_threshold=1, clock=clock)
+    sequence = 0
+
+    def read():
+        nonlocal sequence
+        sequence += 1
+        return make_snapshot(None, stream_id=str(sequence), sequence=sequence, pts=10)
+
+    async def tick(seconds):
+        clock.now += seconds
+
+    verdict = asyncio.run(stream.wait_live(read, sleep=tick))
+    assert verdict.reason == "window_expired"
+    assert stream.frozen_now()
+    stream.observe(str(sequence), sequence + 1, 11)
+    assert not stream.frozen_now()

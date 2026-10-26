@@ -89,7 +89,7 @@ class RoundFrameGate:
             self.round.lose_continuity()
             if self.heartbeat is not None:
                 self.heartbeat.reset()
-            return TakeDecision("frozen", self.device_id, reason="frame_frozen", detail=verdict.message)
+            return TakeDecision("frozen", self.device_id, reason="frame_frozen", detail=verdict.message, verdict=verdict)
         if not verdict.fresh:
             self.round.activity.clear_active()
             return TakeDecision("waiting", self.device_id, reason="duplicate_or_out_of_order_frame")
@@ -119,6 +119,8 @@ def observe_latest_round_frame(kvm, gate, now=None):
     snapshot = kvm.latest_frame()
     now = gate.clock() if now is None else now
     verdict = gate.stream.observe_snapshot(snapshot, now)
+    if verdict.kind == FROZEN and not kvm.is_healthy():
+        gate.stream.release_kvm_lost_latch(verdict)
     if snapshot is None:
         return gate.decide(verdict, None, None, None)
     return gate.decide(verdict, snapshot.image, snapshot.sequence, snapshot.received_monotonic,

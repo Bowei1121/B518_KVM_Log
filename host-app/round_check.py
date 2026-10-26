@@ -24,7 +24,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from device_round import MANUAL_VERIFICATION_REQUIRED, MONITOR_NOT_READY
-from frame_stream import FRESHNESS_PENDING
+from frame_stream import FRESHNESS_PENDING, Verdict
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import FINISHED_STATES, reportable_active
 
@@ -62,20 +62,23 @@ class Reading:
     finished: bool = False  # the Log Solution is on a finished screen (inspect ends on it)
     error: Optional[Tuple[str, str]] = None  # (code, message): frame_frozen, round_lost, internal_error
 
+    verdict: Optional[Verdict] = None  # originating FROZEN read; never in wire replies
+
     @classmethod
     def unknown(cls, reason: str) -> "Reading":
         return cls(reason=reason)
 
     @classmethod
-    def failed(cls, code: str, message: str) -> "Reading":
-        return cls(error=(code, message))
+    def failed(cls, code: str, message: str, verdict: Optional[Verdict] = None) -> "Reading":
+        return cls(error=(code, message), verdict=verdict)
 
     @classmethod
     def from_decision(cls, decision: Any, activity_rows: Optional[Any] = None) -> "Reading":
         """A DeviceRound decision. ``activity_rows`` (check_start only) gives the started channels
         of a waiting screen."""
         if decision.kind == "frozen" or decision.reason == "frame_frozen":
-            return cls.failed("frame_frozen", decision.detail or "Log Solution frame stream is frozen")
+            return cls.failed("frame_frozen", decision.detail or "Log Solution frame stream is frozen",
+                              verdict=decision.verdict)
         if decision.kind == "heartbeat_stopped":
             return cls.failed(HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE)
         if decision.kind == "round_lost":
@@ -98,7 +101,7 @@ class Reading:
     def from_inspect(cls, reply: Dict[str, Any], state: Any) -> "Reading":
         """An inspect reply from tcp_server._inspect_round, with the Log Solution state it read."""
         if "error" in reply:
-            return cls.failed(reply["error"], reply.get("message", ""))
+            return cls.failed(reply["error"], reply.get("message", ""), verdict=reply.get("verdict"))
         return cls(kind=reply["kind"], state=reply["state"], reason=reply["reason"], capacity=reply["capacity"],
                    active=reply["active"], results=reply["results"], finished=state in FINISHED_STATES)
 

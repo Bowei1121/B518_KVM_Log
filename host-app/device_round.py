@@ -8,6 +8,8 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from frame_stream import Verdict
+
 from log_solution_reader import (
     ActivityTracker, CONFIRMATION_REQUIRED, MarkerState, ScreenKind, screen_kind,
 )
@@ -29,6 +31,7 @@ class TakeDecision:
     results: Tuple[Tuple[int, str], ...] = ()
     reason: str = ""
     detail: str = ""  # human-readable message for frozen (why the picture was judged frozen)
+    verdict: Optional[Verdict] = None  # originating FROZEN read
 
 
 class DeviceRound:
