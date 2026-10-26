@@ -102,6 +102,7 @@ from window_placement import frame_size, open_geometry, placed_area, usable_clie
 # A 16 px track sits beside the rows.
 ROW_W, ROW_H, ROW_PITCH = 176, 56, 60
 LIST_VIEW_H = 728
+STATION_PANEL_MIN_H = 780
 LIST_HINT_H, LIST_HINT_MAX_W = 16, 188
 TRACK_W, THUMB_W, THUMB_MIN_H = 16, 13, 40
 TRACK_BG, TRACK_EDGE, THUMB_BG, THUMB_ACTIVE = "#ECEFF1", "#CFD8DC", "#90A4AE", "#607D8B"
@@ -622,9 +623,9 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         body = tk.Frame(self, bg=WINDOW_BG)
         body.pack(fill="both", expand=True, padx=PADX, pady=GAP)
-        # Height 780: title, the 728 px list and the 16 px hint line, so the measured window always fits them.
+        # Height is computed below from the title insets, list and hint line, with a 780 px floor.
         self.station_panel = tk.LabelFrame(
-            body, font=self.f_bold, width=200, height=780, padx=2, pady=4,
+            body, font=self.f_bold, width=200, height=STATION_PANEL_MIN_H, padx=2, pady=4,
             bg=WINDOW_BG, fg=TEXT_FG,
         )
         bind(self.station_panel, "dash_title")
@@ -676,6 +677,12 @@ class AtlasUI(_BaseTk):
         fit_label_to_pixels(self.lbl_list_hint, LIST_HINT_MAX_W + 4, wrap=False)
         # 16 px, unless the font's line is taller (e.g. a CJK font): never cut the hint (every char visible).
         hint_frame.configure(height=max(LIST_HINT_H, self.lbl_list_hint.winfo_reqheight()))
+        title_linespace = int(self.tk.call("font", "metrics", self.station_panel.cget("font"), "-linespace"))
+        panel_bd = self.station_panel.winfo_pixels(self.station_panel.cget("bd"))
+        panel_pady = self.station_panel.winfo_pixels(self.station_panel.cget("pady"))
+        needed = (max(panel_bd, title_linespace + 2) + panel_pady + LIST_VIEW_H
+                  + int(hint_frame.cget("height")) + panel_pady + panel_bd)
+        self.station_panel.configure(height=max(STATION_PANEL_MIN_H, needed))
         self.station_list_frame = tk.Frame(self.station_panel, bg=WINDOW_BG)
         self.station_list_frame.pack(fill="x")
         hint_frame.pack(fill="x")  # directly under the 728 px list, as in spec shot v5.3-01

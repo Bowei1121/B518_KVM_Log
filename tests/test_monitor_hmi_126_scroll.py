@@ -69,7 +69,16 @@ import ui_app  # noqa: E402
 
 
 @pytest.fixture
-def ui(monkeypatch):
+def ui(monkeypatch, request):
+    scale = getattr(request, "param", 4 / 3)
+    old = _probe.tk.call("tk", "scaling")
+
+    def apply(root):
+        root.wm_maxsize(10000, 10000)
+        root.tk.call("tk", "scaling", scale)
+        return scale
+
+    monkeypatch.setattr(ui_app, "apply_windows_tk_scaling", apply)
     monkeypatch.setattr(ui_app.AtlasUI, "on_capture_snapshot", lambda self: None)
     monkeypatch.setattr(ui_app, "PatternCropper", object)
     app = ui_app.AtlasUI(core_host="127.0.0.1", core_port=1)
@@ -81,6 +90,7 @@ def ui(monkeypatch):
         app._is_closing = True
         app._file_log.close()
         app.destroy()
+        _probe.tk.call("tk", "scaling", old)
         del app
         gc.collect()
 
@@ -376,9 +386,8 @@ def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
 
 
 
-@pytest.mark.parametrize("scale", [4 / 3, 5 / 3, 2.0, 8 / 3], ids=["100%", "125%", "150%", "200%"])
-def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui, scale):
-    ui.tk.call("tk", "scaling", scale)
+@pytest.mark.parametrize("ui", [4 / 3, 5 / 3, 2.0, 8 / 3], indirect=True, ids=["100%", "125%", "150%", "200%"])
+def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui):
     frozen = ("DFU-01", "DFU-02", "DFU-03", "BT-06", "BT-07", "BT-08")
     show(ui, rows(20, frozen=frozen))
     wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
@@ -392,6 +401,10 @@ def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui, sca
         assert ui._list_hint_font.measure(text) <= ui_app.LIST_HINT_MAX_W, text  # 188 px, one line
         ui.update_idletasks()
         hint = ui.lbl_list_hint
+        if ui.winfo_reqwidth() > ui.winfo_screenwidth() or ui.winfo_reqheight() > ui.winfo_screenheight():
+            pytest.skip(f"requested {ui.winfo_reqwidth()}x{ui.winfo_reqheight()}, "
+                        f"screen {ui.winfo_screenwidth()}x{ui.winfo_screenheight()}: "
+                        "the OS clamps the window to the screen, so rows are squeezed; not a layout result")
         assert hint.winfo_reqwidth() <= hint.winfo_width() and hint.winfo_reqheight() <= hint.winfo_height(), text
         ids = [d for d in frozen if d in text]
         assert ids and text.startswith(ids[0]) or text in ("6 abnormal", "6 台異常"), text
