@@ -982,10 +982,10 @@ class AtlasUI(_BaseTk):
         self.lbl_empty_hint = self.empty_hint_labels[0]
         self._empty_hint_shown = key
 
-    def _offline_tip_text(self) -> str:
-        """Hover tip of the offline hint: the full reason, the address it tries, and who to call (#140)."""
-        return "\n".join((t("dash_offline"), t("dash_offline_addr", addr=f"{self.client.host}:{self.client.port}"),
-                          t("dash_offline_call")))
+    def _offline_tip_text(self, lang: Optional[str] = None) -> str:
+        """Hover tip of the offline hint: the full reason, the address it tries, and who to call (#140, §14.14)."""
+        addr = f"{self.client.host}:{self.client.port}"
+        return "\n".join((t("dash_offline", lang), t("dash_offline_addr", lang, addr=addr), t("dash_offline_call", lang)))
 
     def _station_of(self, device: str) -> str:
         for st in self._stations:
@@ -1071,6 +1071,8 @@ class AtlasUI(_BaseTk):
                 msg = status_res.get("message") or status_res.get("error")
                 error = (str(msg), str(msg)) if msg else pair("err_conn_lost")
                 self._log_key("log_core_down", level="error", error=error)
+                # §14.14: the explanation behind the short offline hint goes into the Log too, on one line.
+                self._append_log(*(self._offline_tip_text(lang).replace("\n", " ") for lang in ("en", "zh")), level="warn")
             for w in self._station_widgets.values():
                 pres = present_station(w["state"]["row"], core_connected=False)
                 w["state"]["core_connected"] = False
