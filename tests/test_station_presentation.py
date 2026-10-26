@@ -11,12 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host-app"))
 
 import ui_i18n  # noqa: E402
-from station_presentation import (  # noqa: E402
-    StationPresentation,
-    present_station,
-)
+from station_presentation import StationPresentation, present_station  # noqa: E402
 from ui_i18n import station_light_tip_key  # noqa: E402
-from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
+from ui_widgets import light_for_status  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -28,7 +25,7 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
                 text_key="light_idle",
                 light="green",
                 blink=False,
-                row_bg="#f0f0f0",
+                row_bg="#E8F5E9", status_key="station_connected", fg="#2E7D32", online=True,
                 row_red=False,
                 in_banner=False,
             ),
@@ -39,7 +36,7 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
                 text_key="light_idle",
                 light="green",
                 blink=False,
-                row_bg="#f0f0f0",
+                row_bg="#E8F5E9", status_key="station_connected", fg="#2E7D32", online=True,
                 row_red=False,
                 in_banner=False,
             ),
@@ -50,7 +47,7 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
                 text_key="light_busy",
                 light="yellow",
                 blink=False,
-                row_bg="#f0f0f0",
+                row_bg="#E3F2FD", status_key="station_busy", fg="#1565C0", online=True,
                 row_red=False,
                 in_banner=False,
             ),
@@ -61,7 +58,7 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
                 text_key="light_busy",
                 light="yellow",
                 blink=False,
-                row_bg="#f0f0f0",
+                row_bg="#E3F2FD", status_key="station_busy", fg="#1565C0", online=True,
                 row_red=False,
                 in_banner=False,
             ),
@@ -71,9 +68,9 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
             StationPresentation(
                 text_key="light_frozen",
                 light="red",
-                blink=True,
-                row_bg="#f0f0f0",
-                row_red=False,
+                blink=False,
+                row_bg="#B71C1C", status_key="station_frozen", fg="#ffffff", online=True,
+                row_red=True,
                 in_banner=False,
             ),
         ),
@@ -81,9 +78,9 @@ from ui_widgets import WINDOW_BG, light_for_status  # noqa: E402
             "DISCONNECTED",
             StationPresentation(
                 text_key="light_disc",
-                light="red",
+                light="grey",
                 blink=False,
-                row_bg="#f0f0f0",
+                row_bg="#F5F5F5", status_key="station_offline", fg="#616161", online=False,
                 row_red=False,
                 in_banner=False,
             ),
@@ -110,20 +107,20 @@ def test_station_presentation_is_frozen():
 @pytest.mark.parametrize(
     ("status", "expected_key", "expected_light", "expected_blink"),
     [
-        ("", "light_disc", "red", False),
-        ("WEIRD", "light_disc", "red", False),
-        (None, "light_disc", "red", False),
+        ("", "light_disc", "grey", False),
+        ("WEIRD", "light_disc", "grey", False),
+        (None, "light_disc", "grey", False),
         ("idle", "light_idle", "green", False),
         ("  busy  ", "light_busy", "yellow", False),
         ("testing", "light_busy", "yellow", False),
-        ("frozen", "light_frozen", "red", True),
-        ("disconnected", "light_disc", "red", False),
-        ("UNKNOWN_STATUS", "light_disc", "red", False),
-        ("NOT_OK", "light_disc", "red", False),
-        ("LOOKING", "light_disc", "red", False),
-        ("IDLE_BUSY", "light_disc", "red", False),
-        ("BUSY_FROZEN", "light_disc", "red", False),
-        ("FROZEN?", "light_disc", "red", False),
+        ("frozen", "light_frozen", "red", False),
+        ("disconnected", "light_disc", "grey", False),
+        ("UNKNOWN_STATUS", "light_disc", "grey", False),
+        ("NOT_OK", "light_disc", "grey", False),
+        ("LOOKING", "light_disc", "grey", False),
+        ("IDLE_BUSY", "light_disc", "grey", False),
+        ("BUSY_FROZEN", "light_disc", "grey", False),
+        ("FROZEN?", "light_disc", "grey", False),
     ],
 )
 def test_unknown_and_normalised_strings(status, expected_key, expected_light, expected_blink):
@@ -131,8 +128,8 @@ def test_unknown_and_normalised_strings(status, expected_key, expected_light, ex
     assert res.text_key == expected_key
     assert res.light == expected_light
     assert res.blink == expected_blink
-    assert res.row_bg == "#f0f0f0"
-    assert res.row_red is False
+    assert res.row_bg == {"green": "#E8F5E9", "yellow": "#E3F2FD", "red": "#B71C1C", "grey": "#F5F5F5"}[res.light]
+    assert res.row_red is (res.light == "red")
     assert res.in_banner is False
 
 
@@ -161,9 +158,9 @@ def test_core_disconnected_overrides_every_status(status):
     disc = present_station({"status": "DISCONNECTED"}, core_connected=True)
     assert res == disc
     assert res.text_key == "light_disc"
-    assert res.light == "red"
+    assert res.light == "grey"
     assert res.blink is False
-    assert res.row_bg == "#f0f0f0"
+    assert res.row_bg == "#F5F5F5"
     assert res.row_red is False
     assert res.in_banner is False
 
@@ -175,18 +172,18 @@ def test_core_disconnected_overrides_every_status(status):
         ('en', 'OK', 'Green: idle and ready to use.'),
         ('en', 'BUSY', 'Yellow: testing now.'),
         ('en', 'TESTING', 'Yellow: testing now.'),
-        ('en', 'FROZEN', 'Blinking red: the picture is frozen (stuck).'),
-        ('en', 'DISCONNECTED', 'Red: disconnected.'),
-        ('en', 'WEIRD', 'Red: disconnected.'),
-        ('en', 'CORE_DOWN', 'Red: disconnected.'),
+        ('en', 'FROZEN', 'Red: the picture is frozen (stuck).'),
+        ('en', 'DISCONNECTED', 'Grey: offline (not connected).'),
+        ('en', 'WEIRD', 'Grey: offline (not connected).'),
+        ('en', 'CORE_DOWN', 'Grey: offline (not connected).'),
         ('zh', 'IDLE', '綠燈：閒置，可以使用。'),
         ('zh', 'OK', '綠燈：閒置，可以使用。'),
         ('zh', 'BUSY', '黃燈：測試中。'),
         ('zh', 'TESTING', '黃燈：測試中。'),
-        ('zh', 'FROZEN', '紅燈閃爍：畫面卡住不動。'),
-        ('zh', 'DISCONNECTED', '紅燈：斷線。'),
-        ('zh', 'WEIRD', '紅燈：斷線。'),
-        ('zh', 'CORE_DOWN', '紅燈：斷線。'),
+        ('zh', 'FROZEN', '紅燈：畫面卡住不動。'),
+        ('zh', 'DISCONNECTED', '灰燈：未連線。'),
+        ('zh', 'WEIRD', '灰燈：未連線。'),
+        ('zh', 'CORE_DOWN', '灰燈：未連線。'),
     ],
 )
 def test_hint_text_matches_literal_translation(lang, case, expected_text):
@@ -226,10 +223,12 @@ def test_equivalence_with_light_for_status_and_station_light_tip_key(status):
     assert station_light_tip_key(status) == pres.text_key
 
 
-def test_row_background_is_todays_window_background():
-    for status in ("IDLE", "BUSY", "FROZEN", "DISCONNECTED", "WEIRD"):
-        assert present_station({"status": status}).row_bg == WINDOW_BG
-        assert present_station({"status": status}, core_connected=False).row_bg == WINDOW_BG
+@pytest.mark.parametrize("status", ["BUSY", "DISCONNECTED"])
+def test_frozen_flag_overrides_busy_and_disconnected(status):
+    row = {"status": status, "is_frozen": True, "is_busy": True, "is_connected": False}
+    pres = present_station(row)
+    assert (pres.light, pres.blink, pres.row_bg, pres.row_red, pres.online) == ("red", False, "#B71C1C", True, False)
+    assert present_station(row, core_connected=False) == present_station({"status": "DISCONNECTED"})
 
 
 @pytest.mark.parametrize("row", [None, {}])

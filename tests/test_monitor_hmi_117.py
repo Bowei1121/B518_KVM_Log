@@ -362,14 +362,15 @@ def test_wheel_up_moves_the_log_back(make_ui):
     assert app.log_text.yview()[0] < top
 
 
-def test_machine_list_scrolls_with_the_wheel(make_ui):
+def test_machine_list_does_not_scroll_with_the_wheel(make_ui):
     app = make_ui((1920, 1080), 4 / 3)
-    stations = [{"device": f"DFU-{n:02d}", "station": "DFU", "status": "IDLE"} for n in range(1, 31)]
+    stations = [{"device": f"DFU-{n:02d}", "station": "DFU", "status": "IDLE"} for n in range(1, 13)]
     app._update_status_ui({"status": "ok", "stations": stations})
     app.update_idletasks()
-    top = app._dash_canvas.yview()[0]
-    _wheel(app._dash_canvas, -120)
-    assert app._dash_canvas.yview()[0] > top
+    cards = [w["card"] for w in app._station_widgets.values()]
+    before = [(w.winfo_rootx(), w.winfo_rooty()) for w in cards]
+    _wheel(app.stations_container, -120)
+    assert [(w.winfo_rootx(), w.winfo_rooty()) for w in cards] == before
 
 
 def test_settings_table_scrolls_down_and_sideways_with_shift(make_ui, tmp_path):

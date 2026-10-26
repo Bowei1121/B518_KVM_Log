@@ -25,6 +25,12 @@ LANGUAGE_NAMES = {"en": "English", "zh": "中文"}
 
 STRINGS: Dict[str, Dict[str, str]] = {
     "en": {
+        "station_connected": "Connected",
+        "station_busy": "Busy",
+        "station_offline": "Offline",
+        "station_frozen": "Frame frozen",
+        "station_online_lamp": "Online",
+        "station_offline_lamp": "Offline",
         # ---- main window: top bar
         "win_title": "ATE - LabVIEW Bridge Monitor v{version}",
         "top_title": "Core Service connection",
@@ -53,8 +59,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_label": "Station: {station}",
         "light_idle": "Green: idle and ready to use.",
         "light_busy": "Yellow: testing now.",
-        "light_disc": "Red: disconnected.",
-        "light_frozen": "Blinking red: the picture is frozen (stuck).",
+        "light_disc": "Grey: offline (not connected).",
+        "light_frozen": "Red: the picture is frozen (stuck).",
         "tip_select": "Show this machine in the picture and controls below.",
         # ---- live picture
         "view_title": "Live view",
@@ -252,6 +258,12 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "pt_saved_title": "Template saved",
     },
     "zh": {
+        "station_connected": "已連線",
+        "station_busy": "執行指令中",
+        "station_offline": "未連線",
+        "station_frozen": "畫面凍結",
+        "station_online_lamp": "已連線",
+        "station_offline_lamp": "未連線",
         # ---- main window: top bar
         "win_title": "ATE - LabVIEW Bridge Monitor v{version}",
         "top_title": "Core Service 連線設定",
@@ -280,8 +292,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_label": "站別：{station}",
         "light_idle": "綠燈：閒置，可以使用。",
         "light_busy": "黃燈：測試中。",
-        "light_disc": "紅燈：斷線。",
-        "light_frozen": "紅燈閃爍：畫面卡住不動。",
+        "light_disc": "灰燈：未連線。",
+        "light_frozen": "紅燈：畫面卡住不動。",
         "tip_select": "把下方的畫面和操作切換到這台機台。",
         # ---- live picture
         "view_title": "即時畫面監控",

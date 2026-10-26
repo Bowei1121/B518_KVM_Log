@@ -237,11 +237,11 @@ def test_check_failure_label_is_short_and_points_to_the_log(ui):
 def test_station_light_tooltip_and_metrics_follow_the_language(ui):
     ui._update_status_ui({"status": "ok", "stations": [{"device": "DFU-01", "station": "DFU", "status": "IDLE"}]})
     entry = ui._station_widgets["DFU-01"]
-    assert str(entry["device"].cget("text")) == "Station: DFU"
-    assert "Frame" in str(entry["metrics"].cget("text"))
+    assert "Station: DFU" in entry["row_tip"].current_text()
+    assert "Frame" in entry["row_tip"].current_text()
     ui.on_toggle_language()
-    assert str(entry["device"].cget("text")) == "站別：DFU"
-    assert "影格" in str(entry["metrics"].cget("text"))
+    assert "站別：DFU" in entry["row_tip"].current_text()
+    assert "影格" in entry["row_tip"].current_text()
 
 
 def test_match_results_read_both_note_shapes(ui, tmp_path):
