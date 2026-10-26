@@ -413,6 +413,32 @@ def test_empty_hint_goes_away_once_machines_are_shown(make_ui):
     assert app.lbl_empty_hint is not None
 
 
+def _scalable_font(app, size):
+    """A font this Tk really grows with the scaling. Tk without Xft falls back to a bitmap font that never grows."""
+    for family in (app.f_label[0], "helvetica", "times", "courier"):
+        if int(app.tk.call("font", "actual", (family, size), "-size")) == size:
+            return (family, size)
+    pytest.skip("no font here grows with Tk scaling")
+
+
+@pytest.mark.parametrize(("screen", "scale"), SUPPORTED, ids=SUPPORTED_IDS)
+def test_offline_hint_wraps_inside_the_list_column_at_every_scaling(make_ui, screen, scale):
+    # Windows CI caught the hint cut off at 125%/150%/200%; a Linux Tk without Xft never grew the font, so it passed.
+    app = make_ui(screen, scale)
+    app.f_label = _scalable_font(app, app.f_label[1])
+    app._render_empty_hint()  # built again with the scalable font
+    hint = app.lbl_empty_hint
+    for lang in ("en", "zh"):
+        ui_i18n.set_language(lang)
+        app.update_idletasks()
+        context = (_context(app, screen, scale, lang), hint.winfo_width(), hint.winfo_reqwidth())
+        assert hint.cget("text") == ui_i18n.t("dash_offline"), context  # the whole sentence, no "…"
+        assert hint.winfo_reqwidth() <= hint.winfo_width(), context
+        assert hint.winfo_reqheight() <= hint.winfo_height(), context
+        assert hint.winfo_x() + hint.winfo_width() <= app.station_panel.winfo_width(), context
+    ui_i18n.set_language("en")
+
+
 @pytest.mark.parametrize(("screen", "scale"), [((2880, 1800), 8 / 3), ((1920, 1080), 4 / 3)],
                          ids=["2880x1800@200%", "1920x1080@100%"])
 def test_nine_machines_keep_six_log_lines_and_every_light(make_ui, screen, scale):
