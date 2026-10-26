@@ -410,3 +410,13 @@ def test_more_than_four_groups_with_more_than_twelve_devices_also_use_4px(ui):
     assert set(row_gaps(ui)) == {4}
     assert ui._list_content_h == 14 * 56 + 13 * 4  # all rows drawn, 4 px apart, none above the first
     assert ui.station_track.find_withtag("thumb")
+
+
+def test_thumb_never_shrinks_below_40px_and_still_reaches_both_ends(ui):
+    show(ui, rows(250, frozen=()))
+    x0, y0, x1, y1 = ui.station_track.coords("thumb")
+    assert (y0, y1 - y0) == (0, 40)
+    ui.station_canvas.yview_moveto(1.0)
+    ui.update()
+    x0, y0, x1, y1 = ui.station_track.coords("thumb")
+    assert (y1 - y0, y1) == (40, 728)
