@@ -396,7 +396,7 @@ def test_empty_dashboard_says_what_to_do_in_both_languages(make_ui):
     app = make_ui()
     # Not connected yet: the hint explains why the list is blank.
     assert app._stations == []
-    assert app.lbl_empty_hint.cget("text").startswith("Not connected")
+    assert app.lbl_empty_hint.cget("text") == "⚠ Service offline"  # short two-line hint since #140
     # Connected with no machines: the hint tells the operator to add one with the gear.
     app._update_status_ui({"status": "ok", "stations": []})
     assert app.lbl_empty_hint.cget("text") == "No machines yet. Press ⚙ at the top right to add one."
@@ -427,15 +427,87 @@ def test_offline_hint_wraps_inside_the_list_column_at_every_scaling(make_ui, scr
     app = make_ui(screen, scale)
     app.f_label = _scalable_font(app, app.f_label[1])
     app._render_empty_hint()  # built again with the scalable font
-    hint = app.lbl_empty_hint
     for lang in ("en", "zh"):
         ui_i18n.set_language(lang)
         app.update_idletasks()
-        context = (_context(app, screen, scale, lang), hint.winfo_width(), hint.winfo_reqwidth())
-        assert hint.cget("text") == ui_i18n.t("dash_offline"), context  # the whole sentence, no "…"
-        assert hint.winfo_reqwidth() <= hint.winfo_width(), context
-        assert hint.winfo_reqheight() <= hint.winfo_height(), context
-        assert hint.winfo_x() + hint.winfo_width() <= app.station_panel.winfo_width(), context
+        lines = app.empty_hint_labels
+        assert [w.cget("text") for w in lines] == [ui_i18n.t("dash_offline_title"), ui_i18n.t("dash_offline_action")]
+        for hint in lines:
+            context = (_context(app, screen, scale, lang), str(hint), hint.winfo_width(), hint.winfo_reqwidth())
+            assert hint.winfo_reqwidth() <= hint.winfo_width(), context
+            assert hint.winfo_reqheight() <= hint.winfo_height(), context
+            assert hint.winfo_rootx() + hint.winfo_width() <= \
+                app.station_panel.winfo_rootx() + app.station_panel.winfo_width(), context
+    ui_i18n.set_language("en")
+
+
+OFFLINE_SHORT = {"en": ["⚠ Service offline", "Press 🔄 to retry"], "zh": ["⚠ 未連上服務", "請按 🔄 重試"]}
+OFFLINE_FULL = {
+    "en": "Not connected to the service, so the machine list cannot be shown. Check the address above, or press 🔄.",
+    "zh": "尚未連上服務，無法顯示機台清單。請檢查上方位址，或按 🔄 重連。",
+}
+OFFLINE_CALL = {"en": "If retry fails, call the TE engineer.", "zh": "重試仍失敗，請通知 TE 工程師。"}
+HUNDRED_PERCENT = [s for s in SUPPORTED if round(s[1] * 75) == 100]
+
+
+def _measures_cjk(app):
+    """Tk without Xft has no CJK font: it measures 未 narrower than 0 and wraps CJK at random places."""
+    font = app.f_label
+    return int(app.tk.call("font", "measure", font, "未")) > int(app.tk.call("font", "measure", font, "0"))
+
+
+def _is_one_line(label):
+    """The label is as tall as the same text that cannot wrap. Font metrics alone miss fallback glyphs (CJK, 🔄)."""
+    unwrapped = tk.Label(label.master, text=label.cget("text"), font=label.cget("font"))
+    try:
+        return label.winfo_reqheight() == unwrapped.winfo_reqheight()
+    finally:
+        unwrapped.destroy()
+
+
+@pytest.mark.parametrize(("screen", "scale"), HUNDRED_PERCENT, ids=[f"{w}x{h}@100%" for (w, h), _ in HUNDRED_PERCENT])
+def test_offline_hint_is_exactly_two_short_lines_at_100_percent(make_ui, screen, scale):
+    # #140: a two-line hint in the list column; the long sentence moved to the hover tip.
+    app = make_ui(screen, scale)
+    for lang in ("en", "zh"):
+        ui_i18n.set_language(lang)
+        app.update_idletasks()
+        lines = app.empty_hint_labels
+        assert [w.cget("text") for w in lines] == OFFLINE_SHORT[lang]
+        if lang == "zh" and not _measures_cjk(app):
+            ui_i18n.set_language("en")
+            pytest.skip("this Tk has no CJK font to measure (bitmap fallback); Windows CI checks zh")
+        for line in lines:
+            width = int(line.tk.call("font", "measure", line.cget("font"), line.cget("text")))
+            assert width <= int(str(line.cget("wraplength"))), (lang, line.cget("text"), width)  # never wraps
+            assert _is_one_line(line), (lang, line.cget("text"))
+            assert line.winfo_reqheight() <= line.winfo_height()
+    ui_i18n.set_language("en")
+
+
+def test_offline_hint_line_one_is_red_and_line_two_is_normal_text(make_ui):
+    from ui_widgets import TEXT_FG
+
+    app = make_ui()
+    first, second = app.empty_hint_labels
+    assert str(first.cget("fg")).upper() == "#B71C1C"
+    assert str(second.cget("fg")).upper() == TEXT_FG.upper()
+    # connected but no machines: the old one-line grey hint, no red
+    app._update_status_ui({"status": "ok", "stations": []})
+    assert [w.cget("text") for w in app.empty_hint_labels] == ["No machines yet. Press ⚙ at the top right to add one."]
+    assert str(app.empty_hint_labels[0].cget("fg")).upper() != "#B71C1C"
+
+
+def test_offline_hint_tooltip_has_the_sentence_the_address_and_who_to_call(make_ui):
+    app = make_ui()
+    assert len(app.empty_hint_tips) == len(app.empty_hint_labels) == 2  # hovering either line shows it
+    for lang in ("en", "zh"):
+        ui_i18n.set_language(lang)
+        for tip in app.empty_hint_tips:
+            text = tip.current_text()
+            assert OFFLINE_FULL[lang] in text, (lang, text)
+            assert "127.0.0.1:1" in text, (lang, text)  # make_ui's core_host:core_port
+            assert OFFLINE_CALL[lang] in text, (lang, text)
     ui_i18n.set_language("en")
 
 
