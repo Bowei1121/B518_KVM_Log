@@ -413,6 +413,32 @@ def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui):
     if ui_i18n.current_language() != "en":
         ui.on_toggle_language()
 
+
+@pytest.mark.parametrize("ui", [4 / 3, 5 / 3, 2.0, 8 / 3], indirect=True, ids=["100%", "125%", "150%", "200%"])
+def test_station_panel_is_as_tall_as_tk_needs_for_title_list_and_hint(ui):
+    """The panel has a fixed size (pack_propagate off). If it is shorter than
+    its title, the 728 px list and the hint line, pack squeezes the hint line
+    (15 of 18 px at 150% with Noto Sans CJK, #139 review r4). Ask Tk itself
+    what the panel needs, so this holds on any screen, also when the OS clamps
+    the window (Windows CI).
+    """
+    show(ui, rows(20, frozen=("DFU-01", "BT-08")))
+    for lang in ("en", "zh"):
+        if ui_i18n.current_language() != lang:
+            ui.on_toggle_language()
+        panel = ui.station_panel
+        configured = int(str(panel.cget("height")))
+        panel.pack_propagate(True)
+        ui.update_idletasks()
+        needed = panel.winfo_reqheight()
+        panel.pack_propagate(False)
+        panel.configure(height=configured)
+        ui.update_idletasks()
+        assert needed <= configured, (lang, needed, configured)
+    if ui_i18n.current_language() != "en":
+        ui.on_toggle_language()
+
+
 def grouped(groups, per_group):
     """Twelve-ish devices in ``groups`` station groups, e.g. A-01, A-02, B-01, ..."""
     names = ["DFU", "FCT", "BT", "ICT", "AOI", "RUN", "PKG", "OQC"][:groups]
