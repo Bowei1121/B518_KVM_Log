@@ -11,7 +11,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ windows-2025, windows-2022 ]
-        defender: [ 'on', 'off' ]
+        defender: [ 'on' ]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -39,14 +39,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r host-app/requirements.txt pytest
-      - name: Stress Tcl/Tk (A read loop, B create loop, C create loop with threads)
-        shell: bash
-        run: python diag140/tk_stress.py ${{ matrix.os }}-defender-${{ matrix.defender }}
-      - name: Real Windows test step, 5 times
+      - name: Deterministic repro (fd churn vs control)
         shell: bash
         run: |
-          for i in 1 2 3 4 5; do
-            python -m pytest -o faulthandler_timeout=120 -q -p no:cacheprovider tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py > out_$i.txt 2>&1 || true
-            echo "PYTEST140 ${{ matrix.os }} defender=${{ matrix.defender }} run=$i: $(tail -1 out_$i.txt) tk_errors=$(grep -cE '^(ERROR|FAILED) .*(init.tcl|tk.tcl|tcl_findLibrary)' out_$i.txt)"
-            grep -E '^(ERROR|FAILED) .*(init.tcl|tk.tcl|tcl_findLibrary)' out_$i.txt | cut -c1-160 || true
-          done
+          python diag140/std_handle_repro.py control
+          python diag140/std_handle_repro.py churn
+      - name: Real Windows test step, 8x default capture vs 8x --capture=sys
+        shell: bash
+        run: |
+          for cap in fd sys; do for i in 1 2 3 4 5 6 7 8; do
+            python -m pytest -o faulthandler_timeout=120 -q -p no:cacheprovider --capture=$cap tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py > out.txt 2>&1 || true
+            echo "PYTEST140 ${{ matrix.os }} capture=$cap run=$i: $(tail -1 out.txt) tk_errors=$(grep -cE '(init.tcl|tk.tcl|tcl_findLibrary)' out.txt)"
+          done; done
