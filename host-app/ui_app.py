@@ -1115,7 +1115,8 @@ class AtlasUI(_BaseTk):
         if not banner.winfo_manager():
             banner.pack(fill="x", after=self.top_frame)
         kinds = [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
-        width = self._banner_text_width(len(kinds))
+        shapes = alarm_banner.shapes(kinds)
+        width = self._banner_text_width(len(shapes))
         above, below = self._alarm_off_screen
         key = (tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
         if key == self._banner_key:
@@ -1133,9 +1134,9 @@ class AtlasUI(_BaseTk):
         else:
             self.lbl_alarm_l3.pack_forget()
         self.alarm_icon.delete("all")
-        self.alarm_icon.configure(width=BANNER_ICON * len(kinds))
-        for index, kind in enumerate(kinds):  # one icon per shape present, in category order
-            draw = draw_alarm_heart if kind == "heartbeat" else draw_alarm_triangle
+        self.alarm_icon.configure(width=BANNER_ICON * len(shapes))
+        for index, shape in enumerate(shapes):  # one icon per distinct shape present, in category order
+            draw = draw_alarm_heart if shape == "♥" else draw_alarm_triangle
             draw(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
 
     def _on_alarm_banner_click(self, _event: Any = None) -> None:
@@ -1192,11 +1193,12 @@ class AtlasUI(_BaseTk):
         # The ▲ covers the light in the same 16 px box; both stay placed, so a status change never moves a child.
         widgets["row_red"] = pres.row_red  # the alarm banner reads this instead of presenting every row again
         widgets["alarm_kind"] = pres.alarm_kind
-        if widgets.get("icon_kind") != pres.alarm_kind:  # redraw the shape inside the same 16 px box; it never moves
+        heart = pres.alarm_kind in ("heartbeat", "heartbeat_not_found")
+        if widgets.get("icon_kind") != heart:  # redraw the shape inside the same 16 px box; it never moves
             widgets["icon"].delete("all")
-            draw = draw_alarm_heart if pres.alarm_kind == "heartbeat" else draw_alarm_triangle
+            draw = draw_alarm_heart if heart else draw_alarm_triangle
             draw(widgets["icon"], 16, family=self.f_label[0])
-            widgets["icon_kind"] = pres.alarm_kind
+            widgets["icon_kind"] = heart
         stack = "raise" if pres.row_red else "lower"  # widget stacking (Canvas.lift/lower are item methods)
         self.tk.call(stack, widgets["icon"], widgets["light"])
         widgets["status_label"].configure(text=t(pres.status_key))

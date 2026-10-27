@@ -22,7 +22,7 @@ class StationPresentation:
     status_key: str = "station_offline"
     fg: str = "#616161"
     online: bool = False
-    alarm_kind: str = field(default="", compare=False)  # banner category of a red row: "frozen" / "heartbeat"
+    alarm_kind: str = field(default="", compare=False)  # banner category of a red row: "frozen" / "heartbeat" / "heartbeat_not_found"
 
 
 _IDLE = StationPresentation("light_idle", "green", False, "#E8F5E9",
@@ -33,6 +33,8 @@ _FROZEN = StationPresentation("light_frozen", "red", False, "#B71C1C", row_red=T
                               status_key="station_frozen", fg="#ffffff", online=True,
                               alarm_kind="frozen")
 _HEARTBEAT = replace(_FROZEN, text_key="light_heartbeat", status_key="station_heartbeat", alarm_kind="heartbeat")
+_HEARTBEAT_NOT_FOUND = replace(_FROZEN, text_key="light_heartbeat_not_found", status_key="station_heartbeat_not_found",
+                               alarm_kind="heartbeat_not_found")  # spec v5.3 §14.1; issue #130
 _DISCONNECTED = StationPresentation("light_disc", "grey", False)
 _LOOKUP = {"IDLE": _IDLE, "OK": _IDLE, "BUSY": _BUSY, "TESTING": _BUSY,
            "FROZEN": _FROZEN, "DISCONNECTED": _DISCONNECTED}
@@ -48,10 +50,12 @@ def present_station(
     status = str(row.get("status") or "").strip().upper()
     if status == "DISCONNECTED" and row.get("is_connected"):
         status = "IDLE"
-    if row.get("is_frozen"):  # Frame frozen > Heartbeat stopped > the status itself
+    if row.get("is_frozen"):  # Frame frozen > Heartbeat stopped > Heartbeat not found > the status itself
         pres = _FROZEN
     elif row.get("is_heartbeat_stopped"):
         pres = _HEARTBEAT
+    elif row.get("is_heartbeat_not_found"):
+        pres = _HEARTBEAT_NOT_FOUND
     else:
         pres = _LOOKUP.get(status, _DISCONNECTED)
     online = bool(row["is_connected"]) if "is_connected" in row else status in (

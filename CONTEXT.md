@@ -117,6 +117,9 @@ Log Solution 偵測到需由人員處理的衝突、警報或啟動失敗；橋�
 **Log Solution 心跳**：
 Log Solution 在狀態標記正右側同列、與狀態標記同尺寸的 2×2 黑白方塊（16 態計數，每 0.5 秒前進一次，一圈 8 秒），只要 App 活著、任何狀態都在跳。橋接只比對前後觀察的 4 格黑白圖案是否變化，不解碼數值：連續 3 張有效觀察（彼此相隔 0.8～3 秒、皆為新影格且四格可讀）圖案相同即 `log_solution_heartbeat_stopped`（畫面心跳停止，交人員檢查測試電腦與 App；不等於證實當機）；任一無效觀察清空序列；讀不到算 Log Solution 不可見，走 Dock 補救。各指令仍逐次判斷，不因鎖定狀態額外拒絕指令；Core status 會鎖定心跳停止狀態，直到再次觀察到四格變化才解除，無效觀察不會解除。不同於 Frame Freeze Guard（串流問題）。Log Solution ADR0012；畫面無此方塊時橋接跳過檢查。
 
+**找不到心跳框**（Heartbeat not found）：
+影格在前進（PTS 前進）但「Log Solution 心跳」的 2×2 方塊讀不到的紅色異常（#125 稱 heartbeat unreadable）。Core 鎖定此狀態，只有再次讀到心跳框才解除，並以 `core_status` 的 `stations[].is_heartbeat_not_found` 告訴 Monitor UI（欄位定義見 `docs/PROTOCOL.md`，2026-10-27 使用者決定）。和心跳停止是不同狀態，可同時存在；Monitor UI 優先序為畫面凍結 > 心跳停止 > 找不到心跳框 > 執行指令中／已連線。影格不動屬畫面凍結，不算本狀態。各指令的判讀不變：讀不到仍算 Log Solution 不可見，走 Dock 補救。
+
 **本輪經過時間**：
 Log Solution 畫面上給人看的計時，本輪受理起算（含來源準備）、停止收集時停止，不含停止後人工確認；與監控狀態同一行的固定顯示區。Log Solution 定為開始已受理的輔助證據，但不取代監控就緒；本版橋接不讀。
 
