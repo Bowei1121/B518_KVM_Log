@@ -10,8 +10,9 @@ from typing import Callable, List, Sequence, Tuple
 from ui_i18n import t
 
 # Abnormal categories in click / list order (§13.4): kind -> (icon, status words key, hint key).
-# Heartbeat stopped comes before Frame frozen; connection failure (■✕) comes with its own ticket.
+# Heartbeat stopped, Heartbeat not found (issue #130), Frame frozen; connection failure (■✕) comes with its own ticket.
 KINDS = {"heartbeat": ("♥", "station_heartbeat", "alarm_hint_heartbeat"),
+         "heartbeat_not_found": ("♥", "station_heartbeat_not_found", "alarm_hint_heartbeat_not_found"),
          "frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
 GAP = "　"  # full-width space between categories and between the scroll prompt and the hints
 
@@ -22,6 +23,15 @@ def sort_abnormal(abnormal: Abnormal) -> List[Tuple[str, str]]:
     """Category order first, device-list order inside a category (the sort is stable)."""
     order = list(KINDS)
     return sorted(abnormal, key=lambda item: order.index(item[1]))
+
+
+def shapes(kinds: Sequence[str]) -> List[str]:
+    """Distinct icon shapes of ``kinds`` in category order (♥ is shared by both heartbeat categories)."""
+    found: List[str] = []
+    for kind in KINDS:
+        if kind in kinds and KINDS[kind][0] not in found:
+            found.append(KINDS[kind][0])
+    return found
 
 
 def _groups(abnormal: Abnormal) -> List[Tuple[str, List[str]]]:

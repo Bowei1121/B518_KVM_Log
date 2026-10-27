@@ -384,6 +384,7 @@ class TcpJsonServer:
                 "is_frozen": h.frozen,
                 "is_connected": h.connected,
                 "is_heartbeat_stopped": slot.heartbeat.stopped if slot is not None else False,
+                "is_heartbeat_not_found": False,  # detection belongs to #125; the field is fixed for the UI (#130)
                 **reading,
             })
         return stations_list
