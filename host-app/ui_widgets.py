@@ -142,6 +142,15 @@ def measure_all_languages(window: tk.Misc, languages: Tuple[str, ...], get_langu
 FIXED_WIDTH_MARGIN = 1.25  # widths are fixed with this much room over the widest measured text (#117)
 
 
+def draw_alarm_triangle(canvas: tk.Canvas, size: int, x: int = 0, family: str = "TkDefaultFont") -> None:
+    """White ▲ with a red "!" in a ``size`` px box at ``x`` (Frame frozen icon, spec v5.3 §13.3, §14.1)."""
+    s = size
+    canvas.create_polygon(x + s * 0.5, s * 0.08, x + s * 0.95, s * 0.9, x + s * 0.05, s * 0.9,
+                          fill="#ffffff", outline="#ffffff", tags="icon")
+    canvas.create_text(x + s * 0.5, s * 0.66, text="!", fill="#B71C1C", font=(family, -round(s * 0.5), "bold"),
+                       tags="icon")
+
+
 def iter_widgets(widget: tk.Misc):
     """``widget`` and every widget below it, parents first."""
     yield widget

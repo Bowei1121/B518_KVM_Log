@@ -1,0 +1,101 @@
+"""Text of the red alarm banner under the top bar (spec v5.3 §13, §14.4, §14.10 (c)(e), §14.12; issue #127).
+
+Tk-free. The caller passes ``fits_main(text)`` and ``fits_line(text)``, which measure the text in the 40 px and the
+20 px banner font; the longest form that fits is used, and the shortest form is used when nothing fits, so
+characters are never cut off and lines never wrap.
+"""
+from typing import Callable, List, Sequence, Tuple
+
+from ui_i18n import t
+
+# Abnormal categories in click / list order (§13.4): kind -> (icon, status words key, hint key).
+# Only Frame frozen exists today; connection failure (■✕) and heartbeat (♥) come with their own tickets.
+KINDS = {"frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
+GAP = "　"  # full-width space between categories and between the scroll prompt and the hints
+
+Abnormal = Sequence[Tuple[str, str]]  # (device, kind) in device-list order
+
+
+def sort_abnormal(abnormal: Abnormal) -> List[Tuple[str, str]]:
+    """Category order first, device-list order inside a category (the sort is stable)."""
+    order = list(KINDS)
+    return sorted(abnormal, key=lambda item: order.index(item[1]))
+
+
+def _groups(abnormal: Abnormal) -> List[Tuple[str, List[str]]]:
+    groups: List[Tuple[str, List[str]]] = []
+    for kind in KINDS:
+        ids = [device for device, k in abnormal if k == kind]
+        if ids:
+            groups.append((kind, ids))
+    return groups
+
+
+def _first_fit(candidates: List[str], fits: Callable[[str], bool]) -> str:
+    return next((text for text in candidates if fits(text)), candidates[-1])
+
+
+def _list_line(abnormal: Abnormal, fits: Callable[[str], bool]) -> str:
+    sep = t("sep_list")
+    full = GAP.join(t("alarm_list_cat", icon=KINDS[kind][0], kind=t(KINDS[kind][1]), ids=sep.join(ids))
+                    for kind, ids in _groups(abnormal))
+    candidates = [full]
+    for keep in range(len(abnormal), -1, -1):  # all ids with icons only, then fewer ids and a count
+        parts = [f"{KINDS[kind][0]} {sep.join(ids)}" for kind, ids in _groups(abnormal[:keep])]
+        if keep < len(abnormal):
+            parts.append(t("alarm_more", n=len(abnormal) - keep))
+        candidates.append(GAP.join(parts))
+    return _first_fit(candidates, fits)
+
+
+def _scroll_prompts(above: Sequence[str], below: Sequence[str]) -> List[str]:
+    sep = t("sep_list")
+
+    def one(key: str, ids: Sequence[str]) -> str:
+        return t(f"alarm_{key}_{'one' if len(ids) == 1 else 'many'}", ids=sep.join(ids))
+
+    if above and below:
+        every = list(above) + list(below)
+        return [one("up", above) + GAP + one("down", below), t("alarm_scroll_both", ids=sep.join(every)),
+                t("alarm_scroll_count", n=len(every))]
+    if above:
+        return [one("up", above)]
+    if below:
+        return [one("down", below)]
+    return []
+
+
+def _hint_line(above: Sequence[str], below: Sequence[str], hints: List[str], fits: Callable[[str], bool]) -> str:
+    """Scroll prompt first (it has priority), then the category hints, shortened to a count of the rest."""
+    shortened = []
+    for keep in range(len(hints), -1, -1):
+        rest = [t("alarm_hint_more", n=len(hints) - keep)] if keep < len(hints) else []
+        shortened.append(GAP.join(hints[:keep] + rest))
+    prompts = _scroll_prompts(above, below)
+    if not prompts:
+        return _first_fit(shortened, fits)
+    for prompt in prompts:  # the longest prompt that still leaves room for at least the count of hints
+        if fits(prompt + GAP + shortened[-1]):
+            return _first_fit([prompt + GAP + text for text in shortened], fits)
+    return prompts[-1] + GAP + shortened[-1]
+
+
+def banner_lines(
+    abnormal: Abnormal,
+    above: Sequence[str],
+    below: Sequence[str],
+    fits_main: Callable[[str], bool],
+    fits_line: Callable[[str], bool],
+) -> Tuple[str, str, str]:
+    """(main line, second line, third line) of the banner; ``above`` / ``below`` are off-screen abnormal ids."""
+    abnormal = sort_abnormal(abnormal)
+    if not abnormal:
+        return "", "", ""
+    if len(abnormal) == 1:  # icon + id + kind, then the hint line (with the scroll prompt)
+        device, kind = abnormal[0]
+        icon, word, hint = KINDS[kind]
+        main = _first_fit([f"{icon} {device} {t(word)}", f"{icon} {device}"], fits_main)
+        return main, _hint_line(above, below, [t(hint)], fits_line), ""
+    hints = [f"{KINDS[kind][0]} {t(KINDS[kind][2])}" for kind, _ids in _groups(abnormal)]
+    return (t("alarm_devices", n=len(abnormal)), _list_line(abnormal, fits_line),
+            _hint_line(above, below, hints, fits_line))
