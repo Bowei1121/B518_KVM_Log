@@ -44,12 +44,15 @@ LED_RED = "#e53935"
 LED_GREY = "#9e9e9e"
 LED_RED_DIM = "#ffcdd2"  # off-phase of a blinking red light
 
-LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED, "grey": LED_GREY}
+LED_ORANGE = "#EF6C00"  # Retry after a failed connection (issue #134)
+
+LED_COLORS = {"green": LED_GREEN, "yellow": LED_YELLOW, "red": LED_RED, "grey": LED_GREY, "orange": LED_ORANGE}
 
 # Every colour a Monitor widget may use, for the palette test.
 # Station row colours (spec v5.2 §14.1, issue #126); the table itself lives in station_presentation.
-ROW_FG = frozenset({"#2E7D32", "#1565C0", "#616161", "#ffffff"})  # status words and colour bar
-ROW_BG = frozenset({"#E8F5E9", "#E3F2FD", "#F5F5F5", "#B71C1C"})
+ROW_FG = frozenset({"#2E7D32", "#1565C0", "#616161", "#ffffff", "#EF6C00"})  # status words and colour bar
+ROW_BLINK_DIM = "#6A0F0F"  # dim phase of a flashing Connection failure row (lit phase is #B71C1C, spec v5.2 §4.1)
+ROW_BG = frozenset({"#E8F5E9", "#E3F2FD", "#F5F5F5", "#B71C1C", "#FFF3E0", ROW_BLINK_DIM})
 LIST_TRACK_BG = "#ECEFF1"  # station list scroll track (spec v5.3 §14.10)
 ALL_BG = (frozenset({WINDOW_BG, PANEL_BG, BUTTON_BG, ENTRY_BG, TIP_BG, PREVIEW_BG, LOG_BG, LIST_TRACK_BG})
           | ROW_BG | ROW_FG)
@@ -155,6 +158,15 @@ def draw_alarm_heart(canvas: tk.Canvas, size: int, x: int = 0, family: str = "Tk
     """White ♥ in a ``size`` px box at ``x`` (Heartbeat stopped icon, spec v5.3 §14.1, §14.4)."""
     canvas.create_text(x + size * 0.5, size * 0.5, text="♥", fill="#ffffff",
                        font=(family, -round(size * 0.9), "bold"), tags="icon")
+
+
+def draw_alarm_square_x(canvas: tk.Canvas, size: int, x: int = 0, family: str = "TkDefaultFont") -> None:
+    """White square with a red ✕ in a ``size`` px box at ``x`` (Connection failure icon, spec v5.2 §14.1, §14.4)."""
+    s = size
+    canvas.create_rectangle(x + s * 0.08, s * 0.08, x + s * 0.92, s * 0.92, fill="#ffffff", outline="#ffffff",
+                            tags="icon")
+    canvas.create_text(x + s * 0.5, s * 0.5, text="✕", fill="#B71C1C", font=(family, -round(s * 0.6), "bold"),
+                       tags="icon")
 
 
 def iter_widgets(widget: tk.Misc):

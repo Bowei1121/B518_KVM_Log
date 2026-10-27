@@ -50,7 +50,7 @@ jobs:
         # Guarded by tests/test_windows_ci_capture_140.py (static workflow check)
         # and the win32 capture check in tests/conftest.py.
         # tests/capture_default_140.py (pytest.ini addopts) also makes sys the Windows default for local runs.
-        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py
+        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py tests/test_connect_failures_134.py tests/test_kvm_pool_connect_failures_134.py tests/test_core_status_134.py tests/test_station_presentation_134.py tests/test_monitor_hmi_134.py
 
   build:
     runs-on: windows-latest

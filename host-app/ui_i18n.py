@@ -31,6 +31,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_frozen": "Frame frozen",
         "station_heartbeat": "Heartbeat stopped",
         "station_heartbeat_not_found": "Heartbeat not found",
+        "station_connect_failed": "Conn. failure",
+        "station_retry_in": "Retry in {s}s ({n}/{total})",
+        "station_retrying": "Retrying ({n}/{total})",
         "station_online_lamp": "Online",
         "station_offline_lamp": "Offline",
         "station_na_lamp": "N/A",
@@ -74,6 +77,13 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "light_frozen": "Red: the picture is frozen (stuck).",
         "light_heartbeat": "Red: the heartbeat on the test PC screen stopped changing.",
         "light_heartbeat_not_found": "Red: heartbeat box not found. The Log Solution window may be covered, moved or minimized. Bring it to the front so the heartbeat box is visible; the alarm clears once the heartbeat is read again. If it stays red, notify an engineer.",
+        "light_connect_failed": "Red, blinking: connection failure — 3 connection failures within 60 s. LabVIEW gets this device as abnormal from status and alarms the PLC (this screen cannot confirm the alarm). Core retries every 10 s and clears it on success. Notify an engineer; first check JetKVM power and network cable.",
+        "light_retry": "Orange: connection failed; Core retries automatically, no action needed. 3 failures within 60 s = Connection failure.",
+        "row_tip_conn_count": "Connection failures: {n} / {total}",
+        "row_tip_first_fail": "First failure: {time}",
+        "row_tip_last_error": "Last error: {code}",
+        "row_tip_next_retry": "Next retry in {s}s",
+        "row_tip_next_step": "Notify an engineer; first check JetKVM power and network cable",
         "tip_select": "Show this machine in the picture and controls below.",
         # ---- live picture
         "view_title": "Live view",
@@ -282,6 +292,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "log_list_scroll": "{n} devices configured; list shows 12 rows, scroll for the rest",
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} devices abnormal",
+        "alarm_connect_failed": "Connection failure",
         "alarm_hint_frozen": "Check JetKVM",
         "alarm_hint_heartbeat": "Check test PC and Log Solution",
         "alarm_hint_heartbeat_not_found": "Check Log Solution window is visible",
@@ -309,6 +320,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_frozen": "畫面凍結",
         "station_heartbeat": "心跳停止",
         "station_heartbeat_not_found": "找不到心跳框",
+        "station_connect_failed": "連線失敗異常",
+        "station_retry_in": "{s} 秒後重試（{n}/{total}）",
+        "station_retrying": "重試中（{n}/{total}）",
         "station_online_lamp": "已連線",
         "station_offline_lamp": "未連線",
         "station_na_lamp": "未知",
@@ -351,6 +365,13 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "light_frozen": "紅燈：畫面卡住不動。",
         "light_heartbeat": "紅燈：測試電腦畫面上的心跳停止變化。",
         "light_heartbeat_not_found": "紅燈：找不到心跳框。Log Solution 視窗可能被遮住、移走或縮小。請把它拉到最上層，讓心跳框露出來；重新讀到心跳就會自動解除。還是紅色就請通知工程師。",
+        "light_connect_failed": "紅色閃爍：連線失敗異常，60 秒內連續 3 次連線失敗。LabVIEW 查詢狀態時會收到此設備異常並通知 PLC 報警（本畫面無法確認是否已報警）。Core 每 10 秒自動重試，連線成功即自動解除。請通知工程師；可先檢查 JetKVM 電源和網路線。",
+        "light_retry": "橘燈：連線失敗，Core 會自動重試，無需操作。60 秒內連續 3 次失敗才判定連線失敗異常。",
+        "row_tip_conn_count": "連續失敗 {n} / {total}",
+        "row_tip_first_fail": "首次失敗 {time}",
+        "row_tip_last_error": "最後錯誤 {code}",
+        "row_tip_next_retry": "下次重試 {s} 秒後",
+        "row_tip_next_step": "請通知工程師；可先檢查 JetKVM 電源和網路線",
         "tip_select": "把下方的畫面和操作切換到這台機台。",
         # ---- live picture
         "view_title": "即時畫面監控",
@@ -559,6 +580,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "log_list_scroll": "設定了 {n} 台設備；清單一次顯示 12 列，其餘請用捲軸查看",
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} 台設備異常",
+        "alarm_connect_failed": "連線失敗異常",
         "alarm_hint_frozen": "請檢查 JetKVM",
         "alarm_hint_heartbeat": "請檢查測試電腦和 Log Solution",
         "alarm_hint_heartbeat_not_found": "請確認 Log Solution 視窗沒有被遮住",
@@ -601,6 +623,11 @@ def t(key: str, lang: Optional[str] = None, **kwargs: Any) -> str:
     if text is None:
         text = STRINGS[DEFAULT_LANGUAGE].get(key, key)
     return text.format(**kwargs) if kwargs else text
+
+
+def station_status_text(pres: Any, seconds_left: int = 0, lang: Optional[str] = None) -> str:
+    """Status words of a row; the Retry words carry the attempt count and the seconds left (issue #134)."""
+    return t(pres.status_key, lang, s=max(0, int(seconds_left)), **pres.status_args)
 
 
 def pair(key: str, **kwargs: Any) -> Tuple[str, str]:

@@ -15,6 +15,7 @@ import datetime
 import io
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import queue
@@ -91,7 +92,9 @@ from ui_widgets import (
     fix_text_widths,
     measure_all_languages,
     bind_clamped,
+    ROW_BLINK_DIM,
     draw_alarm_heart,
+    draw_alarm_square_x,
     draw_alarm_triangle,
     full_text,
     reserve_text_width,
@@ -231,6 +234,25 @@ def format_reading_metrics(station: Dict[str, Any], lang: Optional[str] = None) 
     else:
         lines.append(t("rd_ratio_none", lang))
     return "\n".join(lines)
+
+
+def connect_failure_tip(station: Dict[str, Any], pres: Any, seconds_left: Optional[int],
+                        lang: Optional[str] = None) -> str:
+    """Row tooltip lines of a Retry / Connection failure row, each ending in a newline (issue #134); else ''."""
+    if pres.alarm_kind != "connect_failed" and pres.light != "orange":
+        return ""
+    lines = [t("row_tip_conn_count", lang, n=int(station.get("connect_fail_count") or 0),
+               total=pres.status_args.get("total", station.get("retry_threshold") or 3))]
+    if station.get("first_fail_at") is not None:
+        lines.append(t("row_tip_first_fail", lang,
+                       time=time.strftime("%H:%M:%S", time.localtime(float(station["first_fail_at"])))))
+    if station.get("last_connect_error"):
+        lines.append(t("row_tip_last_error", lang, code=station["last_connect_error"]))
+    if seconds_left is not None:
+        lines.append(t("row_tip_next_retry", lang, s=seconds_left))
+    if pres.alarm_kind == "connect_failed":  # plain text: a tooltip cannot be red (its red styling is deferred)
+        lines.append(t("row_tip_next_step", lang))
+    return "\n".join(lines) + "\n"
 
 
 # ==============================================================================
@@ -538,6 +560,10 @@ class AtlasUI(_BaseTk):
         self._stations: List[Dict[str, Any]] = []
         self._rendered_device_ids: List[str] = []
         self._station_widgets: Dict[str, Dict[str, Any]] = {}
+        self._clock = time.monotonic  # the Retry countdown reads it (tests replace it)
+        self._row_blink_job: Optional[str] = None  # ONE shared 0.5 s job for every Connection failure row (#134)
+        self._row_blink_lit = True
+        self._retry_countdown_job: Optional[str] = None  # ONE 1 s job while a Retry row is waiting (#134)
 
         # Core Service state: None until the first poll answers; True/False after that.
         self._service_ok: Optional[bool] = None
@@ -965,7 +991,8 @@ class AtlasUI(_BaseTk):
                 continue
             dev_id = str(st.get("device", ""))
             state = {"station": str(st.get("station", "")), "row": dict(st),
-                     "status": str(st.get("status", "DISCONNECTED")).upper(), "core_connected": True}
+                     "status": str(st.get("status", "DISCONNECTED")).upper(), "core_connected": True,
+                     "retry_base": (self._clock(), st.get("retry_in_sec"))}
             fam, mono = self.f_label[0], self.f_mono[0]
             bar = tk.Frame(card, bg=WINDOW_BG)
             bar.place(x=0, y=0, width=8, height=56)
@@ -994,6 +1021,7 @@ class AtlasUI(_BaseTk):
                 return (t("station_label", station=state["station"]) + "\n"
                         + t("row_tip_kvm_unknown" if not state["core_connected"] else
                             ("row_tip_kvm_connected" if pres.online else "row_tip_kvm_disconnected")) + "\n"
+                        + connect_failure_tip(state["row"], pres, self._retry_left(state))
                         + format_reading_metrics(state["row"]))
             row_tip = Tooltip(card, row_text)
             Tooltip(title, row_text)
@@ -1005,6 +1033,7 @@ class AtlasUI(_BaseTk):
             self._station_widgets[dev_id] = widgets
             self._configure_station_row(widgets, present_station(st), core_connected=state["core_connected"])
 
+        self._sync_row_timers()  # the old cards are gone: stop the timers that no row needs any more
         self.update_idletasks()
         self._list_row_tops = {dev: w["card"].winfo_y() for dev, w in self._station_widgets.items()}
         self._list_content_h = self.stations_container.winfo_reqheight()
@@ -1136,7 +1165,7 @@ class AtlasUI(_BaseTk):
         self.alarm_icon.delete("all")
         self.alarm_icon.configure(width=BANNER_ICON * len(shapes))
         for index, shape in enumerate(shapes):  # one icon per distinct shape present, in category order
-            draw = draw_alarm_heart if shape == "♥" else draw_alarm_triangle
+            draw = {"■✕": draw_alarm_square_x, "♥": draw_alarm_heart}.get(shape, draw_alarm_triangle)
             draw(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
 
     def _on_alarm_banner_click(self, _event: Any = None) -> None:
@@ -1193,15 +1222,22 @@ class AtlasUI(_BaseTk):
         # The ▲ covers the light in the same 16 px box; both stay placed, so a status change never moves a child.
         widgets["row_red"] = pres.row_red  # the alarm banner reads this instead of presenting every row again
         widgets["alarm_kind"] = pres.alarm_kind
-        heart = pres.alarm_kind in ("heartbeat", "heartbeat_not_found")
-        if widgets.get("icon_kind") != heart:  # redraw the shape inside the same 16 px box; it never moves
+        shape = ("heart" if pres.alarm_kind in ("heartbeat", "heartbeat_not_found")
+                 else "square_x" if pres.alarm_kind == "connect_failed" else "triangle")
+        if widgets.get("icon_kind") != shape:  # redraw the shape inside the same 16 px box; it never moves
             widgets["icon"].delete("all")
-            draw = draw_alarm_heart if heart else draw_alarm_triangle
+            draw = {"heart": draw_alarm_heart, "square_x": draw_alarm_square_x}.get(shape, draw_alarm_triangle)
             draw(widgets["icon"], 16, family=self.f_label[0])
-            widgets["icon_kind"] = heart
+            widgets["icon_kind"] = shape
         stack = "raise" if pres.row_red else "lower"  # widget stacking (Canvas.lift/lower are item methods)
         self.tk.call(stack, widgets["icon"], widgets["light"])
-        widgets["status_label"].configure(text=t(pres.status_key))
+        widgets["row_blink"] = pres.row_blink
+        widgets["retry_wait"] = pres.status_key == "station_retry_in"
+        if pres.row_blink and not self._row_blink_lit:  # join the shared phase, never restart it
+            self._paint_row(widgets, ROW_BLINK_DIM)
+        widgets["status_label"].configure(text=ui_i18n.station_status_text(
+            pres, self._retry_left(widgets["state"]) or 0))
+        self._sync_row_timers()
         widgets["online"].configure(text=t("station_na_lamp" if not core_connected else
                                             ("station_online_lamp" if pres.online else "station_offline_lamp")))
         lamp = widgets["online_lamp"]
@@ -1211,6 +1247,65 @@ class AtlasUI(_BaseTk):
             return
         lamp.itemconfigure(widgets["lamp_dot"], dash="", fill="#2E7D32" if pres.online else ("" if pres.row_red else "#ffffff"),
                            outline="#ffffff" if pres.row_red else ("#2E7D32" if pres.online else "#9E9E9E"))
+
+    def _retry_left(self, state: Dict[str, Any]) -> Optional[int]:
+        """Seconds until the next retry: what Core said at the last poll, counted down; None when Core gave none."""
+        base = state.get("retry_base")
+        if not base or base[1] is None:
+            return None
+        return max(0, math.ceil(float(base[1]) - (self._clock() - base[0])))
+
+    @staticmethod
+    def _paint_row(widgets: Dict[str, Any], bg: str) -> None:
+        """Background of a flashing row: the card and every child except the white left bar."""
+        widgets["card"].configure(bg=bg)
+        for child in widgets["card"].winfo_children():
+            if child is not widgets["bar"] and child.winfo_class() != "Toplevel":  # a Toplevel is a hover tip
+                child.configure(bg=bg)
+
+    def _sync_row_timers(self) -> None:
+        """Run the shared row timers only while a row needs them (one flashing job, one countdown job)."""
+        rows = list(self._station_widgets.values())
+        if any(w.get("row_blink") for w in rows):
+            if self._row_blink_job is None:
+                self._row_blink_job = self.after(500, self._row_blink_tick)
+        elif self._row_blink_job is not None:
+            self.after_cancel(self._row_blink_job)
+            self._row_blink_job = None
+            self._row_blink_lit = True
+        if any(w.get("retry_wait") for w in rows):
+            if self._retry_countdown_job is None:
+                self._retry_countdown_job = self.after(1000, self._retry_countdown_tick)
+        elif self._retry_countdown_job is not None:
+            self.after_cancel(self._retry_countdown_job)
+            self._retry_countdown_job = None
+
+    def _row_blink_tick(self) -> None:
+        """Flip every Connection failure row between #B71C1C and the dim red together (spec v5.2 §4.1)."""
+        if self._row_blink_job is not None:
+            self.after_cancel(self._row_blink_job)
+        self._row_blink_job = None
+        if self._is_closing:
+            return
+        self._row_blink_lit = not self._row_blink_lit
+        for w in self._station_widgets.values():
+            if w.get("row_blink") and w["card"].winfo_exists():
+                self._paint_row(w, "#B71C1C" if self._row_blink_lit else ROW_BLINK_DIM)
+        self._sync_row_timers()
+
+    def _retry_countdown_tick(self) -> None:
+        """Count the Retry words down once per second until the next poll replaces them."""
+        if self._retry_countdown_job is not None:
+            self.after_cancel(self._retry_countdown_job)
+        self._retry_countdown_job = None
+        if self._is_closing:
+            return
+        for w in self._station_widgets.values():
+            if w.get("retry_wait") and w["card"].winfo_exists():
+                pres = present_station(w["state"]["row"], core_connected=w["state"]["core_connected"])
+                w["status_label"].configure(text=ui_i18n.station_status_text(
+                    pres, self._retry_left(w["state"]) or 0))
+        self._sync_row_timers()
 
     def _empty_hint_key(self) -> str:
         """Why the dashboard is empty: not connected (nothing to show yet) or connected with no machines."""
@@ -1327,6 +1422,7 @@ class AtlasUI(_BaseTk):
                     if w:
                         pres = present_station(st)
                         w["state"]["row"] = dict(st)
+                        w["state"]["retry_base"] = (self._clock(), st.get("retry_in_sec"))
                         w["state"]["core_connected"] = True
                         self._configure_station_row(w, pres, core_connected=w["state"]["core_connected"])
                         w["state"]["status"] = str(st.get("status", "DISCONNECTED")).upper()

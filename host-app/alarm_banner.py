@@ -10,8 +10,9 @@ from typing import Callable, List, Sequence, Tuple
 from ui_i18n import t
 
 # Abnormal categories in click / list order (§13.4): kind -> (icon, status words key, hint key).
-# Heartbeat stopped, Heartbeat not found (issue #130), Frame frozen; connection failure (■✕) comes with its own ticket.
-KINDS = {"heartbeat": ("♥", "station_heartbeat", "alarm_hint_heartbeat"),
+# Connection failure (■✕, issue #134, no hint line), Heartbeat stopped, Heartbeat not found (issue #130), Frame frozen.
+KINDS = {"connect_failed": ("■✕", "alarm_connect_failed", ""),
+         "heartbeat": ("♥", "station_heartbeat", "alarm_hint_heartbeat"),
          "heartbeat_not_found": ("♥", "station_heartbeat_not_found", "alarm_hint_heartbeat_not_found"),
          "frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
 GAP = "　"  # full-width space between categories and between the scroll prompt and the hints
@@ -96,10 +97,10 @@ def _hint_line(above: Sequence[str], below: Sequence[str], hints: List[str], fit
     prompts = _scroll_prompts(above, below) or [""]
     for text in variants:
         for prompt in prompts:  # longest prompt first
-            line = prompt + GAP + text if prompt else text
+            line = GAP.join(part for part in (prompt, text) if part)
             if fits(line):
                 return line
-    return prompts[-1] + GAP + variants[-1] if prompts[-1] else variants[-1]
+    return GAP.join(part for part in (prompts[-1], variants[-1]) if part)
 
 
 def banner_lines(
@@ -117,7 +118,7 @@ def banner_lines(
         device, kind = abnormal[0]
         icon, word, hint = KINDS[kind]
         main = _first_fit([f"{icon} {device} {t(word)}", f"{icon} {device}"], fits_main)
-        return main, _hint_line(above, below, [t(hint)], fits_line), ""
-    hints = [f"{KINDS[kind][0]} {t(KINDS[kind][2])}" for kind, _ids in _groups(abnormal)]
+        return main, _hint_line(above, below, [t(hint)] if hint else [], fits_line), ""
+    hints = [f"{KINDS[kind][0]} {t(KINDS[kind][2])}" for kind, _ids in _groups(abnormal) if KINDS[kind][2]]
     return (t("alarm_devices", n=len(abnormal)), _list_line(abnormal, fits_line),
             _hint_line(above, below, hints, fits_line))
