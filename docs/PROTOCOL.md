@@ -131,7 +131,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 
 凍結 latch 保存在記憶體，Core 重啟會清除，但不代表設備已修復。
 
-連線失敗異常說明：只有「建立新連線」失敗才計次（來源不限：LabVIEW 指令、Monitor UI、Core 背景重連）；重用既有連線、閒置淘汰、心跳判定不健康被淘汰、使用中連線中斷都不計次。每次失敗後 Core 等 10 秒自動背景重連（只建立連線，不送 HID、不拿設備鎖、不讀畫面，每次最多 10 秒，逾時算失敗）；最近連續 3 次失敗的第 1 次到第 3 次相隔 ≤ 60 秒即 `connect_failed = true`，異常後仍每 10 秒重試。次數、時間窗、間隔、逾時是 Core 啟動參數（預設 3／60／10／10），計數保存在記憶體，Core 重啟歸零。`protocol_version` 不變、回覆 `status` 仍為 `ok`，欄位不含 KVM IP；舊版 LabVIEW typedef 缺少這兩欄時視為預設值（`false`／`0`）。
+連線失敗異常說明：只有「建立新連線」失敗才計次（來源不限：LabVIEW 指令、Monitor UI、Core 背景重連）；重用既有連線、閒置淘汰、心跳判定不健康被淘汰、使用中連線中斷都不計次。每次失敗後 Core 等 10 秒自動背景重連（只建立連線，不送 HID、不拿設備鎖、不讀畫面，Core 背景重連每次最多 10 秒，逾時算失敗；指令路徑（LabVIEW／UI）的建立連線沒有 10 秒上限，待使用者決定）；最近連續 3 次失敗的第 1 次到第 3 次相隔 ≤ 60 秒即 `connect_failed = true`，異常後仍每 10 秒重試。次數、時間窗、間隔、逾時為固定預設 3／60／10／10（程式內的建構子參數，部署時沒有啟動選項或設定檔可調整），計數保存在記憶體，Core 重啟歸零。`protocol_version` 不變、回覆 `status` 仍為 `ok`，欄位不含 KVM IP；舊版 LabVIEW typedef 缺少這兩欄時視為預設值（`false`／`0`）。
 
 凍結解除說明：只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，持續輪詢也不會解除。KVM 重連換串流後至少需讀取兩次：首張建立基準，後續影格須有 PTS 前進。LabVIEW 不應只輪詢 `status` 等待 `frozen=false`，應送唯讀的 `inspect` 重新判斷，必要時重複送出。
 
