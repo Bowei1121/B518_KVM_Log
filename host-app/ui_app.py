@@ -55,6 +55,7 @@ _HOST_APP_DIR = Path(__file__).resolve().parent
 if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
+import alarm_banner
 from app_info import about_text, asset_path, is_ci_build, version
 from core_channel import CoreChannel, channel_name_for
 from core_protocol import flatten_reply
@@ -90,6 +91,7 @@ from ui_widgets import (
     fix_text_widths,
     measure_all_languages,
     bind_clamped,
+    draw_alarm_triangle,
     full_text,
     reserve_text_width,
     pin_light_appearance,
@@ -107,6 +109,8 @@ LIST_HINT_H, LIST_HINT_MAX_W = 16, 188
 TRACK_W, THUMB_W, THUMB_MIN_H = 16, 13, 40
 TRACK_BG, TRACK_EDGE, THUMB_BG, THUMB_ACTIVE = "#ECEFF1", "#CFD8DC", "#90A4AE", "#607D8B"
 ALARM_RED, HINT_GREY = "#B71C1C", "#546E7A"
+# Alarm banner (spec v5.3 §13.3): 120 px high, 72 px icon, 24 px side padding, 22 px icon-to-text gap.
+BANNER_H, BANNER_ICON, BANNER_PAD, BANNER_GAP = 120, 72, 24, 22
 
 # Smallest live view, as a share of its DPI size, when the usable height is short (user decision, issue #117 comment
 # 6342904432): 70%, so 200% gives 672×378. Shared with tests/test_monitor_hmi_115.py; do not loosen it elsewhere.
@@ -587,7 +591,7 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Top Bar: Core Service Connection
         # ----------------------------------------------------------------------
-        top_frame = tk.LabelFrame(self, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
+        top_frame = self.top_frame = tk.LabelFrame(self, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
         bind(top_frame, "top_title")
         top_frame.pack(fill="x", padx=PADX, pady=(GAP, GAP))
 
@@ -621,7 +625,8 @@ class AtlasUI(_BaseTk):
         # ----------------------------------------------------------------------
         # Body: fixed 200 px station panel on the left (issue #126), live view, controls and Log on the right
         # ----------------------------------------------------------------------
-        body = tk.Frame(self, bg=WINDOW_BG)
+        self._build_alarm_banner()  # hidden until a device is abnormal; shown between the top bar and the body
+        body = self.body = tk.Frame(self, bg=WINDOW_BG)
         body.pack(fill="both", expand=True, padx=PADX, pady=GAP)
         # Height is computed below from the title insets, list and hint line, with a 780 px floor.
         self.station_panel = tk.LabelFrame(
@@ -965,6 +970,9 @@ class AtlasUI(_BaseTk):
             bar.place(x=0, y=0, width=8, height=56)
             light = StatusLight(card, diameter=12, bg=WINDOW_BG)
             light.place(x=12, y=7, width=16, height=16)
+            icon = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)  # Frame frozen: ▲, not the light
+            draw_alarm_triangle(icon, 16, family=fam)
+            icon.place(x=12, y=7, width=16, height=16)
             title = tk.Label(card, text=dev_id, font=(mono, -22, "bold"),
                              bg=WINDOW_BG, fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
             title.place(x=30, y=0, width=76, height=28)
@@ -979,6 +987,8 @@ class AtlasUI(_BaseTk):
             status.place(x=12, y=29, width=162, height=26)
             tip = Tooltip(light, lambda state=state: t(
                 present_station(state["row"], core_connected=state["core_connected"]).text_key))
+            Tooltip(icon, lambda state=state: t(
+                present_station(state["row"], core_connected=state["core_connected"]).text_key))
             def row_text(state=state):
                 pres = present_station(state["row"], core_connected=state["core_connected"])
                 return (t("station_label", station=state["station"]) + "\n"
@@ -989,7 +999,7 @@ class AtlasUI(_BaseTk):
             Tooltip(title, row_text)
             for widget in (card, *card.winfo_children()):
                 widget.bind("<Button-1>", lambda _e, device=dev_id: self._select_device(device))
-            widgets = {"card": card, "light": light, "tip": tip, "row_tip": row_tip,
+            widgets = {"card": card, "light": light, "icon": icon, "tip": tip, "row_tip": row_tip,
                        "title": title, "bar": bar, "online_lamp": lamp, "lamp_dot": lamp_dot, "online": online,
                        "status_label": status, "state": state}
             self._station_widgets[dev_id] = widgets
@@ -1040,6 +1050,98 @@ class AtlasUI(_BaseTk):
         text = list_hint_text(self._list_above, self._list_below, abnormal_above, abnormal_below,
                               lambda candidate: self._list_hint_font.measure(candidate) <= LIST_HINT_MAX_W)
         self.lbl_list_hint.configure(text=text, fg=ALARM_RED if abnormal_above or abnormal_below else HINT_GREY)
+        self._alarm_off_screen = (abnormal_above, abnormal_below)
+        self._refresh_alarm_banner()
+
+    # --------------------------------------------------------------------------
+    # Alarm banner (spec v5.3 §13, §14.4; issue #127)
+    # --------------------------------------------------------------------------
+    def _build_alarm_banner(self) -> None:
+        """Create the banner hidden; ``_refresh_alarm_banner`` packs it under the top bar and unpacks it again."""
+        family = self.f_label[0]
+        self._banner_main_font = tkfont.Font(root=self, family=family, size=-40, weight="bold")
+        self._banner_line_font = tkfont.Font(root=self, family=family, size=-20, weight="bold")
+        banner = self.alarm_banner = tk.Frame(self, bg=ALARM_RED, height=BANNER_H)
+        banner.pack_propagate(False)
+        self.alarm_icon = tk.Canvas(banner, width=BANNER_ICON, height=BANNER_ICON, bg=ALARM_RED, highlightthickness=0)
+        self.alarm_icon.pack(side="left", padx=(BANNER_PAD, BANNER_GAP))
+        text = tk.Frame(banner, bg=ALARM_RED)
+        text.pack(side="left", anchor="w")
+        options = dict(bg=ALARM_RED, fg="#ffffff", anchor="w", bd=0, padx=0, pady=0)
+        self.lbl_alarm_main = tk.Label(text, font=self._banner_main_font, **options)
+        self.lbl_alarm_l2 = tk.Label(text, font=self._banner_line_font, **options)
+        self.lbl_alarm_l3 = tk.Label(text, font=self._banner_line_font, **options)
+        self.lbl_alarm_main.pack(anchor="w")
+        self.lbl_alarm_l2.pack(anchor="w")
+        for widget in (banner, self.alarm_icon, text, self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
+            widget.bind("<Button-1>", self._on_alarm_banner_click)
+        banner.bind("<Configure>", lambda _e: self._refresh_alarm_banner())  # the width decides what fits
+        self._banner_count = 0
+        self._banner_key: Optional[tuple] = None
+        self._banner_redraws = 0
+        self._alarm_off_screen: Tuple[List[str], List[str]] = ([], [])
+
+    def _abnormal_devices(self) -> List[Tuple[str, str]]:
+        """(device, kind) of every abnormal row in banner order, whether or not it is on screen."""
+        found = []
+        for dev, widgets in self._station_widgets.items():
+            if widgets.get("row_red"):  # Frame frozen is the only red state today
+                found.append((dev, "frozen"))
+        return alarm_banner.sort_abnormal(found)
+
+    def _banner_text_width(self, icons: int) -> int:
+        width = self.alarm_banner.winfo_width()
+        if width <= 1:
+            width = self.winfo_width()
+        if width <= 1:
+            width = 960
+        return width - BANNER_PAD - icons * BANNER_ICON - BANNER_GAP - BANNER_PAD
+
+    def _refresh_alarm_banner(self) -> None:
+        """Show, hide or redraw the banner; the content is rebuilt only when what it shows has changed."""
+        if not hasattr(self, "alarm_banner"):
+            return
+        banner = self.alarm_banner
+        abnormal = self._abnormal_devices()
+        # While Core is down the status is unknown, not cleared: keep the count and log nothing until it is back.
+        if self._service_ok is not False and len(abnormal) != self._banner_count:  # one Log line per event
+            self._banner_count = len(abnormal)
+            self._log_key("log_alarm_shown" if abnormal else "log_alarm_cleared", n=len(abnormal))
+        if not abnormal:
+            self._banner_key = None
+            if banner.winfo_manager():
+                banner.pack_forget()
+            return
+        if not banner.winfo_manager():
+            banner.pack(fill="x", after=self.top_frame)
+        kinds = [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
+        width = self._banner_text_width(len(kinds))
+        above, below = self._alarm_off_screen
+        key = (tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
+        if key == self._banner_key:
+            return
+        self._banner_key = key
+        self._banner_redraws += 1
+        lines = alarm_banner.banner_lines(
+            abnormal, above, below,
+            lambda text: self._banner_main_font.measure(text) <= width,
+            lambda text: self._banner_line_font.measure(text) <= width)
+        for label, text in zip((self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3), lines):
+            label.configure(text=text)
+        if lines[2]:
+            self.lbl_alarm_l3.pack(anchor="w")
+        else:
+            self.lbl_alarm_l3.pack_forget()
+        self.alarm_icon.delete("all")
+        self.alarm_icon.configure(width=BANNER_ICON * len(kinds))
+        for index, _kind in enumerate(kinds):  # only the ▲ shape exists today
+            draw_alarm_triangle(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
+
+    def _on_alarm_banner_click(self, _event: Any = None) -> None:
+        """Select the first abnormal device (category order, then list order). Never scrolls the list."""
+        abnormal = self._abnormal_devices()
+        if abnormal:
+            self._select_device(abnormal[0][0])
 
     def _station_track_press(self, event: Any) -> None:
         thumb = self.station_track.coords("thumb")
@@ -1086,6 +1188,10 @@ class AtlasUI(_BaseTk):
         widgets["status_label"].configure(fg=pres.fg)
         widgets["bar"].configure(bg=pres.fg)
         widgets["light"].set_light(pres.light, pres.blink)
+        # The ▲ covers the light in the same 16 px box; both stay placed, so a status change never moves a child.
+        widgets["row_red"] = pres.row_red  # the alarm banner reads this instead of presenting every row again
+        stack = "raise" if pres.row_red else "lower"  # widget stacking (Canvas.lift/lower are item methods)
+        self.tk.call(stack, widgets["icon"], widgets["light"])
         widgets["status_label"].configure(text=t(pres.status_key))
         widgets["online"].configure(text=t("station_na_lamp" if not core_connected else
                                             ("station_online_lamp" if pres.online else "station_offline_lamp")))
