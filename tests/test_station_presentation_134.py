@@ -147,3 +147,36 @@ def test_banner_two_connection_failures_have_an_empty_hint_line():
     main, second, third = banner_lines([("A-01", "connect_failed"), ("A-02", "connect_failed")], [], [], always, always)
     assert second == "■✕ Connection failure: A-01, A-02" or second.startswith("■✕ Connection failure: A-01")
     assert third == ""
+
+
+@pytest.mark.parametrize("count", [3, 4])
+@pytest.mark.parametrize("retrying", [False, True])
+def test_beyond_window_and_above_threshold_never_shows_n_above_total(count, retrying):
+    # fail_count >= threshold but connect_failed is False: the failures were more than 60 s apart
+    res = present_station(down(connect_fail_count=count, connect_failed=False, retrying=retrying, retry_in_sec=10))
+    assert res.light == "orange"
+    assert res.alarm_kind == ""
+    assert res.status_args["total"] == 3
+    assert res.status_args["n"] <= res.status_args["total"]
+    text = ui_i18n.station_status_text(res, 10)
+    assert text == ("Retrying (3/3)" if retrying else "Retry in 10s (3/3)")
+
+
+def test_connect_failure_tooltip_clamps_consecutive_count_and_shows_cumulative_count():
+    pytest.importorskip("tkinter")
+    import ui_app  # noqa: E402
+
+    station = {"status": "DISCONNECTED", "is_connected": False, "connect_fail_count": 10, "connect_failed": True,
+               "retrying": False, "retry_threshold": 3}
+    pres = present_station(station)
+    tip = ui_app.connect_failure_tip(station, pres, 5, "en")
+    lines = tip.splitlines()
+    assert "Connection failures: 3 / 3" in lines
+    assert "Total failures: 10" in lines
+    assert not any("10 / 3" in line for line in lines)
+    zh = ui_app.connect_failure_tip(station, pres, 5, "zh").splitlines()
+    assert "連續失敗 3 / 3" in zh
+    assert "累計失敗 10 次" in zh
+    # within the threshold there is no cumulative line
+    ok = ui_app.connect_failure_tip({**station, "connect_fail_count": 3}, pres, 5, "en")
+    assert "Total failures" not in ok

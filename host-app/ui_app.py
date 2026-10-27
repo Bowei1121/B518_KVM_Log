@@ -241,8 +241,11 @@ def connect_failure_tip(station: Dict[str, Any], pres: Any, seconds_left: Option
     """Row tooltip lines of a Retry / Connection failure row, each ending in a newline (issue #134); else ''."""
     if pres.alarm_kind != "connect_failed" and pres.light != "orange":
         return ""
-    lines = [t("row_tip_conn_count", lang, n=int(station.get("connect_fail_count") or 0),
-               total=pres.status_args.get("total", station.get("retry_threshold") or 3))]
+    count = int(station.get("connect_fail_count") or 0)
+    total = int(pres.status_args.get("total", station.get("retry_threshold") or 3))
+    lines = [t("row_tip_conn_count", lang, n=min(count, total), total=total)]
+    if count > total:  # the consecutive line is capped at the threshold; show the cumulative count apart
+        lines.append(t("row_tip_conn_total", lang, n=count))
     if station.get("first_fail_at") is not None:
         lines.append(t("row_tip_first_fail", lang,
                        time=time.strftime("%H:%M:%S", time.localtime(float(station["first_fail_at"])))))
@@ -250,7 +253,7 @@ def connect_failure_tip(station: Dict[str, Any], pres: Any, seconds_left: Option
         lines.append(t("row_tip_last_error", lang, code=station["last_connect_error"]))
     if seconds_left is not None:
         lines.append(t("row_tip_next_retry", lang, s=seconds_left))
-    if pres.alarm_kind == "connect_failed":  # plain text: a tooltip cannot be red (its red styling is deferred)
+    if pres.alarm_kind == "connect_failed":  # plain text: a tooltip cannot be red (its red styling is deferred to #150)
         lines.append(t("row_tip_next_step", lang))
     return "\n".join(lines) + "\n"
 

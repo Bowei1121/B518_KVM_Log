@@ -83,7 +83,8 @@ def present_station(
     elif _fail_count(row) >= 1:
         count = _fail_count(row)
         retrying = bool(row.get("retrying"))
-        args = {"n": count + 1 if retrying else count, "total": _retry_total(row)}
+        total = _retry_total(row)
+        args = {"n": min(count + 1 if retrying else count, total), "total": total}
         pres = replace(_RETRY, status_key="station_retrying" if retrying else "station_retry_in", status_args=args)
     else:
         pres = _LOOKUP.get(status, _DISCONNECTED)
