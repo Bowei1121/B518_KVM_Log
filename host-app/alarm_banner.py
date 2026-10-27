@@ -67,17 +67,17 @@ def _scroll_prompts(above: Sequence[str], below: Sequence[str]) -> List[str]:
 
 def _hint_line(above: Sequence[str], below: Sequence[str], hints: List[str], fits: Callable[[str], bool]) -> str:
     """Scroll prompt first (it has priority), then the category hints, shortened to a count of the rest."""
-    shortened = []
-    for keep in range(len(hints), -1, -1):
-        rest = [t("alarm_hint_more", n=len(hints) - keep)] if keep < len(hints) else []
-        shortened.append(GAP.join(hints[:keep] + rest))
-    prompts = _scroll_prompts(above, below)
-    if not prompts:
-        return _first_fit(shortened, fits)
-    for prompt in prompts:  # the longest prompt that still leaves room for at least the count of hints
-        if fits(prompt + GAP + shortened[-1]):
-            return _first_fit([prompt + GAP + text for text in shortened], fits)
-    return prompts[-1] + GAP + shortened[-1]
+    # All hints whole first; then fewer hints + "…另 N 項", but the first hint is always kept whole (never cut).
+    variants = [GAP.join(hints)]
+    for keep in range(len(hints) - 1, 0, -1):
+        variants.append(GAP.join(hints[:keep] + [t("alarm_hint_more", n=len(hints) - keep)]))
+    prompts = _scroll_prompts(above, below) or [""]
+    for text in variants:
+        for prompt in prompts:  # longest prompt first
+            line = prompt + GAP + text if prompt else text
+            if fits(line):
+                return line
+    return prompts[-1] + GAP + variants[-1] if prompts[-1] else variants[-1]
 
 
 def banner_lines(

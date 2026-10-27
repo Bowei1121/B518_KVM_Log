@@ -76,7 +76,7 @@ def test_hints_shorten_to_a_count_of_the_rest(monkeypatch):
         hint = f"▲ {t('alarm_hint_frozen')}"
         assert banner_lines(abnormal, [], [], always, always)[2] == hint + GAP + f"■ {t('alarm_hint_frozen')}"
         assert banner_lines(abnormal, [], [], always, limit(len(hint + GAP + more)))[2] == hint + GAP + more
-        assert banner_lines(abnormal, [], [], always, never)[2] == t("alarm_hint_more", n=2)
+        assert banner_lines(abnormal, [], [], always, never)[2] == hint + GAP + more  # the first hint is never reduced to the count alone
 
 
 @pytest.mark.parametrize("lang,down,up,both,count", [
@@ -97,11 +97,12 @@ def test_scroll_prompt_forms(lang, down, up, both, count):
     assert third([], ["BT-02"]) == down + GAP + "▲ " + hint
     full_both = up + GAP + down
     assert third(["DFU-05"], ["BT-02"]) == full_both + GAP + "▲ " + hint
-    more = ui_i18n.t("alarm_hint_more", n=1)
-    for expected, shorter in ((full_both, both), (both, count)):
-        assert third(["DFU-05"], ["BT-02"], limit(len(expected + GAP + more))).startswith(expected)
-        assert third(["DFU-05"], ["BT-02"], limit(len(expected + GAP + more) - 1)).startswith(shorter)
-    assert third(["DFU-05"], ["BT-02"], never) == count + GAP + more  # the shortest form, never cut
+    tail = GAP + "▲ " + hint
+    # the hint stays whole; the scroll prompt gives way first: full -> "▲▼ ids" -> "▲▼ N"
+    assert third(["DFU-05"], ["BT-02"], limit(len(full_both + tail))) == full_both + tail
+    assert third(["DFU-05"], ["BT-02"], limit(len(full_both + tail) - 1)) == both + tail
+    assert third(["DFU-05"], ["BT-02"], limit(len(both + tail) - 1)) == count + tail
+    assert third(["DFU-05"], ["BT-02"], never) == count + tail  # the shortest form, never cut
 
 
 def test_scroll_prompt_for_several_ids_on_one_side():
@@ -115,10 +116,62 @@ def test_scroll_prompt_for_several_ids_on_one_side():
 def test_hint_shortens_after_the_scroll_prompt_has_priority():
     ui_i18n.set_language("en")
     prompt = "▼ BT-02: scroll down to see it"
-    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 12))[1] == prompt + GAP + "… +1 more"
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 12))[1] == prompt + GAP + "Check JetKVM"  # the hint is kept whole
     ui_i18n.set_language("zh")
     prompt = "▼ BT-02：請往下捲動查看"
-    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 8))[1] == prompt + GAP + "…另 1 項"
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 8))[1] == prompt + GAP + "請檢查 JetKVM"
+
+
+def _two_way(lang):
+    ui_i18n.set_language(lang)
+    t = ui_i18n.t
+    above, below = ["DFU-01", "DFU-02"], ["BT-02", "BT-03"]
+    ids = "、" if lang == "zh" else ", "
+    full = t("alarm_up_many", ids=ids.join(above)) + GAP + t("alarm_down_many", ids=ids.join(below))
+    both = t("alarm_scroll_both", ids=ids.join(above + below))
+    count = t("alarm_scroll_count", n=4)
+    return above, below, full, both, count, "▲ " + t("alarm_hint_frozen")
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_hint_stays_whole_while_the_scroll_prompt_shortens_first(lang):
+    above, below, full, both, count, hint = _two_way(lang)
+    four = frozen("DFU-01", "DFU-02", "BT-02", "BT-03")
+    third = lambda fits: banner_lines(four, above, below, always, fits)[2]  # noqa: E731
+    assert third(always) == full + GAP + hint
+    assert third(limit(len(full + GAP + hint))) == full + GAP + hint
+    assert third(limit(len(full + GAP + hint) - 1)) == both + GAP + hint  # the "▲▼ ids" form + hint still fits
+    assert third(limit(len(both + GAP + hint) - 1)) == count + GAP + hint
+    assert third(never) == count + GAP + hint
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_never_fits_gives_the_count_prompt_and_the_whole_first_hint(lang):
+    ui_i18n.set_language(lang)
+    count = ui_i18n.t("alarm_scroll_count", n=2)
+    hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
+    two = frozen("DFU-05", "BT-02")
+    assert banner_lines(two, ["DFU-05"], ["BT-02"], always, never)[2] == count + GAP + hint
+    if lang == "zh":
+        assert count + GAP + hint == "▲▼ 2 台：請捲動查看　▲ 請檢查 JetKVM"
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_hints_shorten_only_after_every_scroll_prompt_failed_and_keep_the_first_whole(lang, monkeypatch):
+    monkeypatch.setitem(alarm_banner.KINDS, "conn", ("■", "station_offline", "alarm_hint_frozen"))
+    ui_i18n.set_language(lang)
+    t = ui_i18n.t
+    count = t("alarm_scroll_count", n=2)
+    hint = "▲ " + t("alarm_hint_frozen")
+    more = t("alarm_hint_more", n=1)
+    abnormal = [("A-01", "frozen"), ("B-01", "conn")]
+    third = lambda fits: banner_lines(abnormal, ["A-01"], ["B-01"], always, fits)[2]  # noqa: E731
+    both_hints = hint + GAP + f"■ {t('alarm_hint_frozen')}"
+    assert third(limit(len(count + GAP + both_hints))).endswith(count + GAP + both_hints)
+    assert third(limit(len(count + GAP + both_hints) - 1)) == count + GAP + hint + GAP + more
+    assert third(never) == count + GAP + hint + GAP + more
+    # no scroll prompt: the first hint is likewise kept whole
+    assert banner_lines(abnormal, [], [], always, never)[2] == hint + GAP + more
 
 
 def test_no_abnormal_gives_no_lines():
@@ -238,8 +291,7 @@ def test_abnormal_above_and_below_gives_the_two_way_prompt(ui):
     ui.update()
     assert ui._list_above == ["DFU-01"] and ui._list_below == ["BT-02"]
     third = labels(ui)[2]
-    assert third.startswith(("▲ DFU-01: scroll up to see it" + GAP + "▼ BT-02: scroll down to see it",
-                             "▲▼ DFU-01, BT-02: scroll to see them", "▲▼ 2 abnormal: scroll to see"))
+    assert third == "▲ DFU-01: scroll up to see it" + GAP + "▼ BT-02: scroll down to see it" + GAP + "▲ Check JetKVM"
     assert ui._banner_line_font.measure(third) <= ui._banner_text_width(1)
     ui.station_canvas.yview_moveto(0)
     ui.update()
@@ -323,6 +375,79 @@ def test_core_disconnect_hides_the_banner(ui):
     ui._update_status_ui({"status": "error"})
     ui.update()
     assert not ui.alarm_banner.winfo_ismapped()
+
+
+def test_two_way_prompt_with_real_font_width_keeps_the_hint_whole(ui):
+    ui_i18n.set_language("zh")
+    font = ui._banner_line_font
+    above, below, full, both, count, hint = _two_way("zh")
+    four = frozen("DFU-01", "DFU-02", "BT-02", "BT-03")
+    fits = lambda s: font.measure(s) <= 818  # noqa: E731
+    third = banner_lines(four, above, below, fits, fits)[2]
+    candidates = [full + GAP + hint, both + GAP + hint, count + GAP + hint]
+    assert third == next((c for c in candidates if fits(c)), candidates[-1])
+    assert third.endswith(GAP + hint) and "…另" not in third
+    assert third == both + GAP + hint
+
+
+def _banner_log_lines(ui, monkeypatch):
+    calls = []
+    original = ui._append_log
+
+    def record(en, zh="", level="info"):
+        calls.append((en, zh))
+        return original(en, zh, level)
+
+    monkeypatch.setattr(ui, "_append_log", record)
+    return lambda: [c for c in calls if "larm banner" in c[0]]
+
+
+SHOWN_1 = ("Alarm banner shown (1 abnormal)", "顯示警示橫幅（1 台異常）")
+CLEARED = ("All abnormal states cleared; alarm banner hidden", "所有異常已解除，警示橫幅已隱藏")
+
+
+def _core_down(ui):
+    ui._update_status_ui({"status": "error"})
+    ui.update()
+
+
+def test_core_disconnect_and_reconnect_do_not_log_cleared_or_shown_again(ui, monkeypatch):
+    lines = _banner_log_lines(ui, monkeypatch)
+    show(ui, ("BT-02",))
+    assert lines() == [SHOWN_1]
+    _core_down(ui)
+    assert not ui.alarm_banner.winfo_ismapped()  # cannot see status: hidden, but not "cleared"
+    assert lines() == [SHOWN_1]
+    _core_down(ui)
+    assert lines() == [SHOWN_1]
+    show(ui, ("BT-02",))  # Core is back and BT-02 is still frozen
+    assert ui.alarm_banner.winfo_ismapped()
+    assert lines() == [SHOWN_1]
+
+
+def test_core_reconnect_with_nothing_frozen_logs_cleared_once(ui, monkeypatch):
+    lines = _banner_log_lines(ui, monkeypatch)
+    show(ui, ("BT-02",))
+    _core_down(ui)
+    show(ui, ())
+    assert lines() == [SHOWN_1, CLEARED]
+    show(ui, ())
+    assert lines() == [SHOWN_1, CLEARED]
+
+
+def test_core_reconnect_with_a_different_count_logs_shown(ui, monkeypatch):
+    lines = _banner_log_lines(ui, monkeypatch)
+    show(ui, ("BT-02",))
+    _core_down(ui)
+    show(ui, ("BT-01", "BT-02"))
+    assert lines() == [SHOWN_1, ("Alarm banner shown (2 abnormal)", "顯示警示橫幅（2 台異常）")]
+
+
+def test_count_decreasing_logs_shown_with_the_new_count(ui, monkeypatch):
+    lines = _banner_log_lines(ui, monkeypatch)
+    show(ui, ("BT-01", "BT-02"))
+    show(ui, ("BT-02",))
+    assert lines()[-1] == SHOWN_1 and len(lines()) == 2
 
 
 def _is_red(colour):

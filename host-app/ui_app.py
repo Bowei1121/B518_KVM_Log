@@ -1103,7 +1103,8 @@ class AtlasUI(_BaseTk):
             return
         banner = self.alarm_banner
         abnormal = self._abnormal_devices()
-        if len(abnormal) != self._banner_count:  # one Log line per event: shown / count changed / all cleared
+        # While Core is down the status is unknown, not cleared: keep the count and log nothing until it is back.
+        if self._service_ok is not False and len(abnormal) != self._banner_count:  # one Log line per event
             self._banner_count = len(abnormal)
             self._log_key("log_alarm_shown" if abnormal else "log_alarm_cleared", n=len(abnormal))
         if not abnormal:
