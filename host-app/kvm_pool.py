@@ -17,7 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
+
+try:
+    from connect_failures import CONNECT_FAILED_ERROR, ConnectFailures
+except ImportError:
+    from .connect_failures import CONNECT_FAILED_ERROR, ConnectFailures  # type: ignore[import-not-found,no-redef]
 
 logger = logging.getLogger("KVMConnectionPool")
 
@@ -91,6 +96,13 @@ class KVMConnectionPool:
         idle_timeout: float = 600.0,
         heartbeat_interval: float = 5.0,
         client_factory: Optional[Callable[..., Any]] = None,
+        connect_fail_threshold: int = 3,
+        connect_fail_window_sec: float = 60.0,
+        connect_retry_interval_sec: float = 10.0,
+        connect_timeout_sec: float = 10.0,
+        clock: Optional[Callable[[], float]] = None,
+        connect_failures: Optional[ConnectFailures] = None,
+        retry_tick_sec: float = 1.0,
     ) -> None:
         self.idle_timeout = float(idle_timeout)
         self.heartbeat_interval = float(heartbeat_interval)
@@ -102,6 +114,29 @@ class KVMConnectionPool:
 
         self._worker_task: Optional[asyncio.Task] = None
         self._is_running = False
+
+        # Connection failure counting (#134) and the background reconnect that follows each failure.
+        # A background attempt is bounded by connect_timeout_sec; command-path connects are not.
+        if connect_failures is None:
+            connect_failures = ConnectFailures(
+                connect_fail_threshold, connect_fail_window_sec, connect_retry_interval_sec, clock=clock)
+        self.connect_failures = connect_failures
+        self.connect_timeout_sec = float(connect_timeout_sec)
+        self.retry_tick_sec = float(retry_tick_sec)
+        self._passwords: Dict[str, str] = {}
+        self._retry_worker_task: Optional[asyncio.Task] = None
+        self._retry_tasks: Set[asyncio.Task] = set()
+
+    def configure_connect_failures(
+        self,
+        threshold: int,
+        window_sec: float,
+        retry_interval_sec: float,
+        connect_timeout_sec: float,
+    ) -> None:
+        """Apply the Core Service's connection failure parameters; counting state is kept."""
+        self.connect_failures.configure(threshold, window_sec, retry_interval_sec)
+        self.connect_timeout_sec = float(connect_timeout_sec)
 
     @property
     def is_running(self) -> bool:
@@ -151,7 +186,9 @@ class KVMConnectionPool:
         if entry.in_use == 0 and not entry.client.is_healthy():
             await self._evict_or_defer(entry, "released while unhealthy", "釋放時判定不健康")
 
-    async def _get_connection(self, ip: str, password: str, lease: bool) -> Any:
+    async def _get_connection(
+        self, ip: str, password: str, lease: bool, connect_timeout: Optional[float] = None
+    ) -> Any:
         canonical_ip = normalize_kvm_ip(ip)
         ip_lock = self._get_ip_lock(canonical_ip)
 
@@ -180,15 +217,79 @@ class KVMConnectionPool:
                 return entry.client
 
             logger.info("Connecting to KVM '%s'...", canonical_ip, extra={"zh": "正在連線 KVM '%s'..."})
+            self._passwords[canonical_ip] = password
             client = self._client_factory(canonical_ip, password=password)
-            await client.connect()
+            try:
+                if connect_timeout is None:
+                    await client.connect()
+                else:
+                    await asyncio.wait_for(client.connect(), timeout=connect_timeout)
+            except Exception as exc:
+                # Only a failed attempt to establish a new connection counts (#134).
+                if connect_timeout is not None:
+                    await self._discard_client(canonical_ip, client)
+                self.connect_failures.record_failure(canonical_ip, CONNECT_FAILED_ERROR)
+                logger.warning("Connecting to KVM '%s' failed (%s)", canonical_ip, type(exc).__name__,
+                               extra={"zh": "連線 KVM '%s' 失敗 (%s)"})
+                raise
 
             entry = PooledKVMConnection(canonical_ip, client)
             entry.in_use = 1 if lease else 0
             self._pool[canonical_ip] = entry
+            self.connect_failures.record_success(canonical_ip)
             logger.info("KVM connection established and pooled for '%s'", canonical_ip,
                         extra={"zh": "KVM 連線已建立並放入連線池 '%s'"})
             return client
+
+    async def _discard_client(self, ip: str, client: Any) -> None:
+        """Close a half-made client, best effort."""
+        try:
+            await client.close()
+        except Exception as exc:
+            logger.warning("Error closing KVM client '%s': %s", ip, exc,
+                           extra={"zh": "關閉 KVM 用戶端 '%s' 失敗: %s"})
+
+    async def _retry_one(self, ip: str) -> None:
+        """One background attempt: establish the connection through the normal path, unleased."""
+        try:
+            await self._get_connection(
+                ip, self._passwords.get(ip, ""), lease=False, connect_timeout=self.connect_timeout_sec)
+        except Exception:
+            pass  # a failed attempt was counted by _get_connection
+        finally:
+            self.connect_failures.set_retrying(ip, False)
+
+    def _start_retries(self) -> List[asyncio.Task]:
+        """Start an attempt for every IP whose retry time has come; the IPs are marked retrying at once."""
+        loop = asyncio.get_running_loop()
+        tasks: List[asyncio.Task] = []
+        for ip in self.connect_failures.due():
+            self.connect_failures.set_retrying(ip, True)
+            task = loop.create_task(self._retry_one(ip))
+            self._retry_tasks.add(task)
+            task.add_done_callback(self._retry_tasks.discard)
+            tasks.append(task)
+        return tasks
+
+    async def retry_due_connections(self) -> None:
+        """Retry, in parallel, every KVM whose background retry is due, and wait for the attempts to finish."""
+        tasks = self._start_retries()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _retry_worker(self) -> None:
+        """Background worker that starts due reconnect attempts; an attempt never blocks the next tick."""
+        try:
+            while self._is_running:
+                await asyncio.sleep(self.retry_tick_sec)
+                if not self._is_running:
+                    break
+                self._start_retries()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Unexpected error in KVM pool reconnect worker",
+                             extra={"zh": "KVM 連線池重連工作發生未預期錯誤"})
 
     async def perform_heartbeat(self) -> int:
         """Ask every pooled connection whether it is still healthy; evict or defer the ones that are not.
@@ -292,6 +393,7 @@ class KVMConnectionPool:
         self._is_running = True
         loop = asyncio.get_running_loop()
         self._worker_task = loop.create_task(self._maintenance_worker())
+        self._retry_worker_task = loop.create_task(self._retry_worker())
 
     async def stop(self) -> None:
         """Stop the background maintenance worker."""
@@ -303,6 +405,16 @@ class KVMConnectionPool:
             except asyncio.CancelledError:
                 pass
             self._worker_task = None
+        pending = list(self._retry_tasks)
+        if self._retry_worker_task is not None:
+            pending.append(self._retry_worker_task)
+            self._retry_worker_task = None
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._retry_tasks.clear()
 
     async def close_all(self) -> None:
         """Stop worker and close all active connections cleanly."""

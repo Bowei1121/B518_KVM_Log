@@ -126,8 +126,12 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `devices[].busy` | boolean | 是否有上鎖指令執行中 |
 | `devices[].frozen` | boolean | 畫面判定凍結後持續為 true，直到讀取影格的指令觀察到同一設備 PTS 前進才解除（見下方說明），不需人工確認 |
 | `devices[].channels` | number | 設定的測試通道數 |
+| `devices[].connect_failed` | boolean | 連線失敗異常：60 秒內連續 3 次建立連線失敗。每筆一律出現，預設 `false`；LabVIEW 看到 `true` 即依既有流程通知 PLC 報警。只有 KVM 連線成功才解除，Core 會自行每 10 秒背景重連，失敗的重試不會解除 |
+| `devices[].connect_fail_count` | number | 目前連續建立連線失敗次數。每筆一律出現，預設 `0`；連線成功後歸零 |
 
 凍結 latch 保存在記憶體，Core 重啟會清除，但不代表設備已修復。
+
+連線失敗異常說明：只有「建立新連線」失敗才計次（來源不限：LabVIEW 指令、Monitor UI、Core 背景重連）；重用既有連線、閒置淘汰、心跳判定不健康被淘汰、使用中連線中斷都不計次。每次失敗後 Core 等 10 秒自動背景重連（只建立連線，不送 HID、不拿設備鎖、不讀畫面，每次最多 10 秒，逾時算失敗）；最近連續 3 次失敗的第 1 次到第 3 次相隔 ≤ 60 秒即 `connect_failed = true`，異常後仍每 10 秒重試。次數、時間窗、間隔、逾時是 Core 啟動參數（預設 3／60／10／10），計數保存在記憶體，Core 重啟歸零。`protocol_version` 不變、回覆 `status` 仍為 `ok`，欄位不含 KVM IP；舊版 LabVIEW typedef 缺少這兩欄時視為預設值（`false`／`0`）。
 
 凍結解除說明：只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，持續輪詢也不會解除。KVM 重連換串流後至少需讀取兩次：首張建立基準，後續影格須有 PTS 前進。LabVIEW 不應只輪詢 `status` 等待 `frozen=false`，應送唯讀的 `inspect` 重新判斷，必要時重複送出。
 
@@ -368,6 +372,13 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `stations` | array of object | 各設備的 `station`、`device`、`kvm_ip`、`status`（`BUSY`／`FROZEN`／`IDLE`／`DISCONNECTED`）等 |
 | `stations[].is_heartbeat_stopped` | boolean | Core 鎖定的心跳停止狀態；再次計入四格變化才解除，無效觀察不解除。尚無 slot 時為 `false`；不改變 `status` 或指令拒絕規則 |
 | `stations[].is_heartbeat_not_found` | boolean | Core 鎖定的「找不到心跳框」狀態（Heartbeat not found；#125 稱 heartbeat unreadable）：影格在前進但心跳框讀不到。處理方式同 `is_heartbeat_stopped`：判定後鎖定為 `true`，只有心跳框再次讀得到才解除，其他無效觀察不解除；尚無 slot 時為 `false`；不改變 `status` 或指令拒絕規則；可與 `is_heartbeat_stopped` 同時為 `true`。偵測由 #125 實作，實作前 Core 一律送 `false`。Monitor UI 以此顯示紅色「Heartbeat not found／找不到心跳框」列（#130） |
+| `stations[].connect_fail_count` | number | 連續建立連線失敗次數，連線成功歸零；與 LabVIEW `status` 的 `devices[].connect_fail_count` 來自同一筆設備健康紀錄 |
+| `stations[].connect_failed` | boolean | 連線失敗異常（60 秒內連續 3 次建立連線失敗），由 Core 判定，UI 不必知道門檻；與 `devices[].connect_failed` 相同 |
+| `stations[].retrying` | boolean | Core 背景重連正在進行 |
+| `stations[].retry_in_sec` | number or null | 距下一次背景重連的整數秒（進位、不為負）；無待重連或正在重連為 `null` |
+| `stations[].retry_threshold` | number | 判定異常的連續失敗次數（預設 3），讓 UI 顯示「n/3」不必寫死 |
+| `stations[].first_fail_at` | number or null | 這一串連續失敗的第一次時間（epoch 秒）；無失敗為 `null` |
+| `stations[].last_connect_error` | string or null | 最後一次失敗的錯誤碼（如 `kvm_connect_failed`），不含 IP 或訊息；無失敗為 `null` |
 | `stations[].frame_size` | array or null | 最近一次讀取的影格 `[寬, 高]`（像素）。尚無讀取，或設備未連線（`is_connected` 為 `false`）時為 `null` |
 | `stations[].picture_scale` | number or null | 最近一次讀取換算的比例（Log Solution 1.3 基準單位→像素），四捨五入到 0.001。最近一次讀取未定位（無法換算）或尚無讀取為 `null` |
 | `stations[].cell_px` | number or null | 標記小格像素，`picture_scale` × 10，四捨五入到 0.001。`picture_scale` 為 `null` 時也為 `null` |
@@ -426,7 +437,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | --- | --- |
 | `Envelope` | 第 3 節除 `data` 外欄位 |
 | `PingResp` | Envelope + `data{pong, core_version}` |
-| `StatusResp` | Envelope + `data{core_uptime_sec, devices[]}` |
+| `StatusResp` | Envelope + `data{core_uptime_sec, devices[]{device, station, connected, busy, frozen, channels, connect_failed, connect_fail_count}}`；`connect_failed` 缺少時視為 `false`，`connect_fail_count` 缺少時視為 `0` |
 | `SnapshotResp` | Envelope + `data{width, height, format, image_base64}` |
 | `CheckStartResp` | Envelope + `data{kind, state, reason, capacity, active[]{slot, evidence}, results[]{slot, status}}` |
 | `CheckFinishResp` | 與 `CheckStartResp` 相同；`active` 成功時為空陣列，且不會出現 `kind = "started"` |
@@ -459,9 +470,9 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0002","device":"","cmd":"status",
  "status":"ok","error":"","message":"","elapsed_sec":0.0,
  "data":{"core_uptime_sec":3600,"devices":[
-   {"device":"DFU-01","station":"DFU","connected":true,"busy":false,"frozen":false,"channels":4},
-   {"device":"FCT-01","station":"FCT","connected":false,"busy":false,"frozen":false,"channels":4},
-   {"device":"BT-01","station":"BT","connected":true,"busy":true,"frozen":false,"channels":4}]}}
+   {"device":"DFU-01","station":"DFU","connected":true,"busy":false,"frozen":false,"channels":4,"connect_failed":false,"connect_fail_count":0},
+   {"device":"FCT-01","station":"FCT","connected":false,"busy":false,"frozen":false,"channels":4,"connect_failed":true,"connect_fail_count":3},
+   {"device":"BT-01","station":"BT","connected":true,"busy":true,"frozen":false,"channels":4,"connect_failed":false,"connect_fail_count":0}]}}
 ```
 
 ### 9.3 `snapshot`

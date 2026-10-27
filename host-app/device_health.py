@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Container, Iterable
+from typing import TYPE_CHECKING, Any, Container, Iterable, Optional
 
 if TYPE_CHECKING:
     try:
@@ -23,6 +23,30 @@ class DeviceHealth:
     busy: bool
     frozen: bool
     channels: int = 0
+    # Connection failure (#134), filled from the KVM Connection Pool's tracker.
+    connect_fail_count: int = 0
+    connect_failed: bool = False
+    retrying: bool = False
+    retry_in_sec: Optional[int] = None
+    first_fail_at: Optional[float] = None
+    last_connect_error: Optional[str] = None
+
+    def apply_connect_state(self, state: Optional[Any], now: float) -> None:
+        """Copy the tracker's view of this KVM; ``None`` (no failures recorded) resets to the quiet defaults."""
+        if state is None:
+            self.connect_fail_count = 0
+            self.connect_failed = False
+            self.retrying = False
+            self.retry_in_sec = None
+            self.first_fail_at = None
+            self.last_connect_error = None
+            return
+        self.connect_fail_count = state.fail_count
+        self.connect_failed = state.connect_failed
+        self.retrying = state.retrying
+        self.retry_in_sec = state.retry_in_sec(now)
+        self.first_fail_at = state.first_fail_at
+        self.last_connect_error = state.last_error
 
     def refresh(
         self,

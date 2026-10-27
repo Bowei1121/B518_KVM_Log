@@ -120,6 +120,9 @@ Log Solution 在狀態標記正右側同列、與狀態標記同尺寸的 2×2 �
 **找不到心跳框**（Heartbeat not found）：
 影格在前進（PTS 前進）但「Log Solution 心跳」的 2×2 方塊讀不到的紅色異常（#125 稱 heartbeat unreadable）。Core 鎖定此狀態，只有再次讀到心跳框才解除，並以 `core_status` 的 `stations[].is_heartbeat_not_found` 告訴 Monitor UI（欄位定義見 `docs/PROTOCOL.md`，2026-10-27 使用者決定）。和心跳停止是不同狀態，可同時存在；Monitor UI 優先序為畫面凍結 > 心跳停止 > 找不到心跳框 > 執行指令中／已連線。影格不動屬畫面凍結，不算本狀態。各指令的判讀不變：讀不到仍算 Log Solution 不可見，走 Dock 補救。
 
+**連線失敗異常**（Connection failure）：
+同一台 KVM 在 60 秒內連續 3 次「建立新連線」失敗（2026-10-27 使用者決定，#134）。重用既有連線、閒置淘汰、心跳淘汰、使用中連線中斷都不計次；任何來源的建立連線失敗都計（LabVIEW 指令、Monitor UI、Core 背景重連）。每次失敗後 Core 等 10 秒自行背景重連（只建立連線，不送 HID、不拿 Device Lock、不讀畫面；單次最多 10 秒，逾時算失敗），異常後仍每 10 秒重試，只有連線成功才解除並歸零。次數、時間窗、間隔、逾時為 Core Service 啟動參數（預設 3／60／10／10），計數在記憶體，Core 重啟歸零。LabVIEW 從 `status` 的 `devices[].connect_failed` 得知並通知 PLC 報警，Monitor UI 從 `core_status` 的 `stations[]` 取得（欄位定義見 `docs/PROTOCOL.md`）。
+
 **本輪經過時間**：
 Log Solution 畫面上給人看的計時，本輪受理起算（含來源準備）、停止收集時停止，不含停止後人工確認；與監控狀態同一行的固定顯示區。Log Solution 定為開始已受理的輔助證據，但不取代監控就緒；本版橋接不讀。
 
