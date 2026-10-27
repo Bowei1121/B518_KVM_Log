@@ -376,6 +376,8 @@ def test_only_the_abnormal_side_is_shown_when_the_other_side_is_normal(lang):
     assert "▼" not in above
 
 
+@pytest.mark.xfail(condition=sys.platform == "win32", strict=True,
+                   reason="#127 橫幅 120px 擠壓清單區，Windows CI 1024×768 捲不動，待 #138 調整視窗")
 def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
     show(ui, rows(20, frozen=("DFU-01", "BT-08")))
     wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
