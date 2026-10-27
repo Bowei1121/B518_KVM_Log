@@ -376,8 +376,6 @@ def test_only_the_abnormal_side_is_shown_when_the_other_side_is_normal(lang):
     assert "▼" not in above
 
 
-@pytest.mark.xfail(condition=sys.platform == "win32", strict=True,
-                   reason="#127 橫幅 120px 擠壓清單區，Windows CI 1024×768 捲不動，待 #138 調整視窗")
 def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
     show(ui, rows(20, frozen=("DFU-01", "BT-08")))
     wheel(ui, ui._station_widgets["DFU-05"]["card"], -240)
@@ -395,7 +393,14 @@ def test_list_shows_both_sides_in_red_with_a_tick_on_each(ui):
 
 
 
-@pytest.mark.parametrize("ui", [4 / 3, 5 / 3, 2.0, 8 / 3], indirect=True, ids=["100%", "125%", "150%", "200%"])
+@pytest.mark.parametrize("ui", [
+    pytest.param(4 / 3, id="100%"),
+    pytest.param(5 / 3, id="125%"),
+    pytest.param(2.0, id="150%"),
+    pytest.param(8 / 3, id="200%", marks=pytest.mark.xfail(
+        condition=sys.platform == "win32", strict=True,
+        reason="#127 橫幅 120px 擠壓清單區，Windows CI 1024×768 捲不動，待 #138 調整視窗")),
+], indirect=True)
 def test_many_abnormal_on_both_sides_fit_the_hint_line_without_direction(ui):
     frozen = ("DFU-01", "DFU-02", "DFU-03", "BT-06", "BT-07", "BT-08")
     show(ui, rows(20, frozen=frozen))
