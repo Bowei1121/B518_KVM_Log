@@ -418,3 +418,181 @@ def test_start_twice_keeps_a_single_retry_worker():
         await pool.close_all()
         assert len(asyncio.all_tasks()) == 1
     run(go())
+
+
+class GateFailClient(Client):
+    """Holds connect() on the shared gate, then fails."""
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        await self.gate.wait()
+        raise ConnectionError("simulated failure after the gate")
+
+
+class MixedFactory(Factory):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate_fail_hosts: set = set()
+
+    def __call__(self, host: str, password: str = "") -> Client:
+        if host in self.gate_fail_hosts:
+            client = GateFailClient(host, "gate_fail", self.gate)
+            self.clients.append(client)
+            return client
+        return super().__call__(host, password)
+
+
+def test_queued_background_retry_does_not_connect_after_a_command_failure_reschedules_it():
+    async def go():
+        factory, clock = MixedFactory(), Clock()
+        factory.modes[IP] = "fail"
+        pool = make_pool(factory, clock)
+        fail_times: List[float] = []
+        original = pool.connect_failures.record_failure
+
+        def spy(ip, *a, **kw):
+            fail_times.append(clock.now)
+            return original(ip, *a, **kw)
+
+        pool.connect_failures.record_failure = spy
+        t0 = clock.now
+        with pytest.raises(ConnectionError):
+            await pool.get_connection(IP)  # t=0 first failure
+        clock.advance(9)
+        factory.gate_fail_hosts.add(IP)
+        command = asyncio.ensure_future(pool.acquire_connection(IP))
+        await asyncio.sleep(0.01)  # the command holds the ip lock inside connect()
+        clock.advance(1)  # t=10: the background retry is due and queues on the lock
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        await asyncio.sleep(0.01)
+        assert pool.connect_failures.state(IP).retrying is False  # merely queued
+        clock.advance(2)  # t=12
+        factory.gate.set()
+        with pytest.raises(ConnectionError):
+            await command  # t=12 command failure -> next retry at t=22
+        await retry
+        assert len(factory.for_host(IP)) == 2  # the queued retry did not connect
+        state = pool.connect_failures.state(IP)
+        assert state.fail_count == 2
+        assert state.connect_failed is False
+        assert state.retrying is False
+        assert state.next_retry_at == t0 + 22
+        clock.advance(9)  # t=21: still not due
+        await pool.retry_due_connections()
+        assert len(factory.for_host(IP)) == 2
+        factory.gate_fail_hosts.clear()
+        factory.modes[IP] = "fail"
+        clock.advance(1)  # t=22
+        await pool.retry_due_connections()
+        assert len(factory.for_host(IP)) == 3
+        assert fail_times[:2] == [t0, t0 + 12]
+        assert all(b - a >= 10 for a, b in zip(fail_times, fail_times[1:]))
+        await pool.close_all()
+    run(go())
+
+
+def test_retrying_flag_is_true_only_while_a_background_attempt_really_connects():
+    async def go():
+        factory, clock = Factory(), Clock()
+        factory.modes[IP] = "fail"
+        pool = make_pool(factory, clock, connect_timeout_sec=30.0)
+        with pytest.raises(ConnectionError):
+            await pool.get_connection(IP)
+        factory.modes[IP] = "gate"
+        command = asyncio.ensure_future(pool.acquire_connection(IP))
+        await asyncio.sleep(0.01)
+        clock.advance(10)
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        await asyncio.sleep(0.01)
+        assert pool.connect_failures.state(IP).retrying is False  # queued behind the command
+        factory.gate.set()
+        await command
+        await retry
+        assert pool.connect_failures.state(IP).retrying is False  # skipped
+        await pool.close_all()
+
+        factory, clock = Factory(), Clock()
+        factory.modes[IP] = "fail"
+        pool = make_pool(factory, clock, connect_timeout_sec=30.0)
+        with pytest.raises(ConnectionError):
+            await pool.get_connection(IP)
+        factory.modes[IP] = "hang"
+        clock.advance(10)
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        await asyncio.sleep(0.01)
+        assert pool.connect_failures.state(IP).retrying is True  # really connecting
+        await pool.close_all()
+        await asyncio.gather(retry, return_exceptions=True)
+        assert pool.connect_failures.state(IP).retrying is False
+    run(go())
+
+
+def test_cancelling_a_running_background_retry_closes_its_client_once():
+    async def go():
+        factory, clock = Factory(), Clock()
+        factory.modes[IP] = "fail"
+        pool = make_pool(factory, clock, connect_timeout_sec=30.0)
+        with pytest.raises(ConnectionError):
+            await pool.get_connection(IP)
+        factory.modes[IP] = "hang"
+        clock.advance(10)
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        await asyncio.sleep(0.01)
+        hanging = factory.for_host(IP)[-1]
+        assert hanging.connect_calls == 1
+        await pool.close_all()
+        await asyncio.gather(retry, return_exceptions=True)
+        assert hanging.close_calls == 1
+    run(go())
+
+
+def test_failure_is_recorded_before_a_slow_close_finishes():
+    async def go():
+        factory, clock = Factory(), Clock()
+        seen: List[int] = []
+        release = asyncio.Event()
+
+        class SlowClose(Client):
+            async def close(self) -> None:
+                seen.append(pool.connect_failures.state(IP).fail_count)
+                await release.wait()
+                await super().close()
+
+        def make(host, password=""):
+            c = SlowClose(host, "fail", factory.gate)
+            factory.clients.append(c)
+            return c
+
+        pool = KVMConnectionPool(client_factory=make, clock=clock, connect_timeout_sec=30.0)
+        pool.connect_failures.record_failure(IP)  # due for a background retry
+        clock.advance(10)
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        await asyncio.sleep(0.01)
+        assert seen == [2]  # failure already counted while close() is still running
+        assert not retry.done()
+        release.set()
+        await retry
+        await pool.close_all()
+    run(go())
+
+
+def test_command_path_failure_closes_the_client_and_close_errors_do_not_mask_it():
+    async def go():
+        factory, clock = Factory(), Clock()
+
+        class BadClose(Client):
+            async def close(self) -> None:
+                await super().close()
+                raise RuntimeError("close blew up")
+
+        def make(host, password=""):
+            c = BadClose(host, "fail", factory.gate)
+            factory.clients.append(c)
+            return c
+
+        pool = KVMConnectionPool(client_factory=make, clock=clock)
+        with pytest.raises(ConnectionError):
+            await pool.get_connection(IP)
+        assert factory.for_host(IP)[0].close_calls == 1
+        assert pool.connect_failures.state(IP).fail_count == 1
+    run(go())

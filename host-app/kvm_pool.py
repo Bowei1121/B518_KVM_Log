@@ -126,6 +126,8 @@ class KVMConnectionPool:
         self._passwords: Dict[str, str] = {}
         self._retry_worker_task: Optional[asyncio.Task] = None
         self._retry_tasks: Set[asyncio.Task] = set()
+        # IPs with a background attempt queued or running; separate from the `retrying` flag the UI shows.
+        self._retry_pending: Set[str] = set()
 
     def configure_connect_failures(
         self,
@@ -191,8 +193,20 @@ class KVMConnectionPool:
     ) -> Any:
         canonical_ip = normalize_kvm_ip(ip)
         ip_lock = self._get_ip_lock(canonical_ip)
+        background = connect_timeout is not None
 
         async with ip_lock:
+            if background:
+                # The attempt may have queued behind a command on this lock: go on only if it is still due.
+                tracker = self.connect_failures
+                state = tracker.state(canonical_ip)
+                if (
+                    state.fail_count == 0
+                    or state.next_retry_at is None
+                    or state.next_retry_at > tracker.clock()
+                    or canonical_ip in self._pool
+                ):
+                    return None
             now = time.time()
             entry = self._pool.get(canonical_ip)
 
@@ -219,16 +233,20 @@ class KVMConnectionPool:
             logger.info("Connecting to KVM '%s'...", canonical_ip, extra={"zh": "正在連線 KVM '%s'..."})
             self._passwords[canonical_ip] = password
             client = self._client_factory(canonical_ip, password=password)
+            if background:
+                self.connect_failures.set_retrying(canonical_ip, True)  # the attempt really connects now
             try:
                 if connect_timeout is None:
                     await client.connect()
                 else:
                     await asyncio.wait_for(client.connect(), timeout=connect_timeout)
+            except asyncio.CancelledError:
+                await self._discard_client(canonical_ip, client)
+                raise
             except Exception as exc:
-                # Only a failed attempt to establish a new connection counts (#134).
-                if connect_timeout is not None:
-                    await self._discard_client(canonical_ip, client)
+                # Only a failed attempt to establish a new connection counts (#134); count it before closing.
                 self.connect_failures.record_failure(canonical_ip, CONNECT_FAILED_ERROR)
+                await self._discard_client(canonical_ip, client)
                 logger.warning("Connecting to KVM '%s' failed (%s)", canonical_ip, type(exc).__name__,
                                extra={"zh": "連線 KVM '%s' 失敗 (%s)"})
                 raise
@@ -257,14 +275,21 @@ class KVMConnectionPool:
         except Exception:
             pass  # a failed attempt was counted by _get_connection
         finally:
+            self._retry_pending.discard(ip)
             self.connect_failures.set_retrying(ip, False)
 
     def _start_retries(self) -> List[asyncio.Task]:
-        """Start an attempt for every IP whose retry time has come; the IPs are marked retrying at once."""
+        """Start an attempt for every IP whose retry time has come and that has none queued or running.
+
+        An attempt is marked retrying only once it holds the IP lock and really connects; if a command got
+        there first, it re-checks the schedule and skips.
+        """
         loop = asyncio.get_running_loop()
         tasks: List[asyncio.Task] = []
         for ip in self.connect_failures.due():
-            self.connect_failures.set_retrying(ip, True)
+            if ip in self._retry_pending:
+                continue
+            self._retry_pending.add(ip)
             task = loop.create_task(self._retry_one(ip))
             self._retry_tasks.add(task)
             task.add_done_callback(self._retry_tasks.discard)
@@ -415,6 +440,7 @@ class KVMConnectionPool:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         self._retry_tasks.clear()
+        self._retry_pending.clear()
 
     async def close_all(self) -> None:
         """Stop worker and close all active connections cleanly."""
