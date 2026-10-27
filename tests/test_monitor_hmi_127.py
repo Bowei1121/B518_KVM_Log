@@ -102,7 +102,8 @@ def test_scroll_prompt_forms(lang, down, up, both, count):
     assert third(["DFU-05"], ["BT-02"], limit(len(full_both + tail))) == full_both + tail
     assert third(["DFU-05"], ["BT-02"], limit(len(full_both + tail) - 1)) == both + tail
     assert third(["DFU-05"], ["BT-02"], limit(len(both + tail) - 1)) == count + tail
-    assert third(["DFU-05"], ["BT-02"], never) == count + tail  # the shortest form, never cut
+    short = ui_i18n.t("alarm_scroll_short", a=1, b=1)
+    assert third(["DFU-05"], ["BT-02"], never) == short + tail  # the shortest form, never cut
 
 
 def test_scroll_prompt_for_several_ids_on_one_side():
@@ -116,10 +117,14 @@ def test_scroll_prompt_for_several_ids_on_one_side():
 def test_hint_shortens_after_the_scroll_prompt_has_priority():
     ui_i18n.set_language("en")
     prompt = "▼ BT-02: scroll down to see it"
-    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 12))[1] == prompt + GAP + "Check JetKVM"  # the hint is kept whole
+    # the hint is kept whole; the one-side prompt shortens first (designer rule, review item 1)
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 13))[1] == prompt + GAP + "Check JetKVM"
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 12))[1] == (
+        "▼ 1 more below: scroll down" + GAP + "Check JetKVM")
     ui_i18n.set_language("zh")
     prompt = "▼ BT-02：請往下捲動查看"
-    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 8))[1] == prompt + GAP + "請檢查 JetKVM"
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 11))[1] == prompt + GAP + "請檢查 JetKVM"
+    assert banner_lines(frozen("BT-02"), [], ["BT-02"], always, limit(len(prompt) + 8))[1] == "▼ 下方 1 台異常" + GAP + "請檢查 JetKVM"
 
 
 def _two_way(lang):
@@ -142,18 +147,18 @@ def test_hint_stays_whole_while_the_scroll_prompt_shortens_first(lang):
     assert third(limit(len(full + GAP + hint))) == full + GAP + hint
     assert third(limit(len(full + GAP + hint) - 1)) == both + GAP + hint  # the "▲▼ ids" form + hint still fits
     assert third(limit(len(both + GAP + hint) - 1)) == count + GAP + hint
-    assert third(never) == count + GAP + hint
+    assert third(never) == ui_i18n.t("alarm_scroll_short", a=2, b=2) + GAP + hint
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
-def test_never_fits_gives_the_count_prompt_and_the_whole_first_hint(lang):
+def test_never_fits_gives_the_shortest_prompt_and_the_whole_first_hint(lang):
     ui_i18n.set_language(lang)
-    count = ui_i18n.t("alarm_scroll_count", n=2)
+    short = ui_i18n.t("alarm_scroll_short", a=1, b=1)
     hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
     two = frozen("DFU-05", "BT-02")
-    assert banner_lines(two, ["DFU-05"], ["BT-02"], always, never)[2] == count + GAP + hint
+    assert banner_lines(two, ["DFU-05"], ["BT-02"], always, never)[2] == short + GAP + hint
     if lang == "zh":
-        assert count + GAP + hint == "▲▼ 2 台：請捲動查看　▲ 請檢查 JetKVM"
+        assert short + GAP + hint == "▲ 上方 1 台　▼ 下方 1 台　▲ 請檢查 JetKVM"
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
@@ -161,17 +166,121 @@ def test_hints_shorten_only_after_every_scroll_prompt_failed_and_keep_the_first_
     monkeypatch.setitem(alarm_banner.KINDS, "conn", ("■", "station_offline", "alarm_hint_frozen"))
     ui_i18n.set_language(lang)
     t = ui_i18n.t
-    count = t("alarm_scroll_count", n=2)
+    prompts = [t("alarm_up_one", ids="A-01") + GAP + t("alarm_down_one", ids="B-01"),
+               t("alarm_scroll_both", ids=t("sep_list").join(["A-01", "B-01"])),
+               t("alarm_scroll_count", n=2), t("alarm_scroll_short", a=1, b=1)]
     hint = "▲ " + t("alarm_hint_frozen")
     more = t("alarm_hint_more", n=1)
     abnormal = [("A-01", "frozen"), ("B-01", "conn")]
     third = lambda fits: banner_lines(abnormal, ["A-01"], ["B-01"], always, fits)[2]  # noqa: E731
     both_hints = hint + GAP + f"■ {t('alarm_hint_frozen')}"
-    assert third(limit(len(count + GAP + both_hints))).endswith(count + GAP + both_hints)
-    assert third(limit(len(count + GAP + both_hints) - 1)) == count + GAP + hint + GAP + more
-    assert third(never) == count + GAP + hint + GAP + more
+    shortest_whole = min(len(p + GAP + both_hints) for p in prompts)
+    # every prompt is tried with all hints whole before any hint shrinks
+    assert third(limit(shortest_whole)).endswith(GAP + both_hints)
+    shrunk = third(limit(shortest_whole - 1))
+    assert shrunk.endswith(GAP + hint + GAP + more) and shrunk[:-len(GAP + hint + GAP + more)] in prompts
+    assert third(never) == prompts[-1] + GAP + hint + GAP + more
     # no scroll prompt: the first hint is likewise kept whole
     assert banner_lines(abnormal, [], [], always, never)[2] == hint + GAP + more
+
+
+# --- one side / both sides: the scroll prompt shrinks in four steps while the hint stays whole (review item 1) ------
+def _one_side_variants(side, ids):
+    """Variants 1-4 for one side, written out from the designer's rule (side: 'up' = above, 'down' = below)."""
+    t, sep, n = ui_i18n.t, ui_i18n.t("sep_list"), len(ids)
+    arrow = "▲" if side == "up" else "▼"
+    out = [t(f"alarm_{side}_{'one' if n == 1 else 'many'}", ids=sep.join(ids))]
+    for k in range(n - 1, 0, -1):
+        kept = ids[:k] if side == "down" else ids[-k:]  # keep those nearest the visible area, in list order
+        out.append(t(f"alarm_{side}_many", ids=sep.join(kept) + t("alarm_more", n=n - k)))
+    out += [t(f"alarm_{side}_count", n=n), t(f"alarm_{side}_short", n=n)]
+    assert all(v.startswith(arrow) for v in out)
+    return out
+
+
+def _one_side_third(side, ids, fits):
+    ids12 = [f"DFU-{i:02d}" for i in range(1, 13)]
+    above, below = (ids, []) if side == "up" else ([], ids)
+    return banner_lines(frozen(*ids12), above, below, always, fits)[2]
+
+
+DOWN8 = [f"DFU-{i:02d}" for i in range(5, 13)]
+UP8 = [f"DFU-{i:02d}" for i in range(1, 9)]
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+@pytest.mark.parametrize("side,ids", [("down", DOWN8), ("up", UP8)])
+def test_one_side_prompt_steps_full_then_first_few_and_count_then_count_then_short(lang, side, ids):
+    ui_i18n.set_language(lang)
+    hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
+    variants = _one_side_variants(side, ids)
+    assert len(variants) == 1 + 7 + 2
+    lengths = [len(v + GAP + hint) for v in variants]
+    reached = 0
+    for variant, length in zip(variants, lengths):  # the first variant (in rule order) that fits is chosen
+        first = next(v for v in variants if len(v + GAP + hint) <= length)
+        assert _one_side_third(side, ids, limit(length)) == first + GAP + hint
+        reached += first == variant
+    assert reached >= 1 + 3 + 2  # full, several first-few variants, count and short are all hit exactly
+    assert _one_side_third(side, ids, never) == variants[-1] + GAP + hint  # never fits: the shortest + whole hint
+    assert _one_side_third(side, ids, always) == variants[0] + GAP + hint
+
+
+@pytest.mark.parametrize("side,ids", [("down", DOWN8), ("up", UP8)])
+def test_one_side_zh_exact_strings(side, ids):
+    ui_i18n.set_language("zh")
+    hint = GAP + "▲ 請檢查 JetKVM"
+    if side == "down":
+        expected = ["▼ DFU-05、DFU-06、DFU-07、DFU-08、DFU-09、DFU-10、DFU-11、DFU-12：請往下捲動查看",
+                    "▼ DFU-05、DFU-06…另 6 台：請往下捲動查看", "▼ DFU-05…另 7 台：請往下捲動查看",
+                    "▼ 下方 8 台異常：請往下捲動查看", "▼ 下方 8 台異常"]
+    else:
+        expected = ["▲ DFU-01、DFU-02、DFU-03、DFU-04、DFU-05、DFU-06、DFU-07、DFU-08：請往上捲動查看",
+                    "▲ DFU-07、DFU-08…另 6 台：請往上捲動查看", "▲ DFU-08…另 7 台：請往上捲動查看",
+                    "▲ 上方 8 台異常：請往上捲動查看", "▲ 上方 8 台異常"]
+    got = _one_side_variants(side, ids)
+    assert [got[0], got[6], got[7], got[8], got[9]] == expected
+    assert _one_side_third(side, ids, limit(len(expected[1] + hint))) == expected[1] + hint
+    assert _one_side_third(side, ids, limit(len(expected[3] + hint))) == expected[3] + hint
+    assert _one_side_third(side, ids, never) == expected[4] + hint
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+@pytest.mark.parametrize("side", ["up", "down"])
+def test_single_off_screen_device_skips_the_first_few_variant(lang, side):
+    ui_i18n.set_language(lang)
+    hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
+    variants = _one_side_variants(side, ["DFU-05"])
+    assert len(variants) == 3  # full, count, short
+    lengths = [len(v + GAP + hint) for v in variants]
+    for length in (lengths[1], lengths[2], lengths[1] - 1, lengths[2] - 1):  # first fit in rule order: 1 -> 3 -> 4
+        first = next((v for v in variants if len(v + GAP + hint) <= length), variants[-1])
+        assert _one_side_third(side, ["DFU-05"], limit(length)) == first + GAP + hint
+    assert _one_side_third(side, ["DFU-05"], limit(lengths[2])) in (variants[0] + GAP + hint, variants[2] + GAP + hint)
+    assert _one_side_third(side, ["DFU-05"], never) == variants[2] + GAP + hint
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+def test_both_sides_reach_the_short_form_with_the_whole_hint(lang):
+    ui_i18n.set_language(lang)
+    t = ui_i18n.t
+    sep = t("sep_list")
+    above, below = ["DFU-01", "DFU-02"], [f"DFU-{i:02d}" for i in range(7, 13)]
+    hint = "▲ " + t("alarm_hint_frozen")
+    full = t("alarm_up_many", ids=sep.join(above)) + GAP + t("alarm_down_many", ids=sep.join(below))
+    both = t("alarm_scroll_both", ids=sep.join(above + below))
+    count = t("alarm_scroll_count", n=8)
+    short = t("alarm_scroll_short", a=2, b=6)
+    ids12 = [f"DFU-{i:02d}" for i in range(1, 13)]
+    third = lambda fits: banner_lines(frozen(*ids12), above, below, always, fits)[2]  # noqa: E731
+    candidates = [full, both, count, short]
+    for c in candidates:  # the first variant (in rule order) that fits is chosen
+        length = len(c + GAP + hint)
+        first = next(v for v in candidates if len(v + GAP + hint) <= length)
+        assert third(limit(length)) == first + GAP + hint
+    assert third(limit(len(short + GAP + hint))) in (count + GAP + hint, short + GAP + hint)  # reaches the 4th form
+    assert third(never) == short + GAP + hint
+    assert short == ("▲ 上方 2 台　▼ 下方 6 台" if lang == "zh" else "▲ 2 above　▼ 6 below")
 
 
 def test_no_abnormal_gives_no_lines():
@@ -504,3 +613,57 @@ def test_no_red_within_16px_of_the_preview_canvas_and_no_pure_red_anywhere(ui):
                         if rx + x0 < right and rx + x1 > left and ry + y0 < bottom and ry + y1 > top:
                             near.append((str(w), item, value))
     assert near == []
+
+
+# --- real banner font (20 px bold): the hint line is never cut and the hint stays whole (review item 1) ------------
+def _real_font_cases():
+    ids12 = [f"DFU-{i:02d}" for i in range(1, 13)]
+    return {"below": ([], ids12[4:]), "above": (ids12[:8], []), "both": (ids12[:2], ids12[6:])}
+
+
+def _real_font_expected(case, fits):
+    t, sep = ui_i18n.t, ui_i18n.t("sep_list")
+    above, below = _real_font_cases()[case]
+    hint = GAP + "▲ " + t("alarm_hint_frozen")
+    if case == "both":
+        candidates = [t("alarm_up_many", ids=sep.join(above)) + GAP + t("alarm_down_many", ids=sep.join(below)),
+                      t("alarm_scroll_both", ids=sep.join(above + below)), t("alarm_scroll_count", n=8),
+                      t("alarm_scroll_short", a=len(above), b=len(below))]
+    else:
+        side, ids = ("up", above) if above else ("down", below)
+        candidates = _one_side_variants(side, ids)
+    return next((c for c in candidates if fits(c + hint)), candidates[-1]) + hint
+
+
+@pytest.mark.parametrize("lang", ["en", "zh"])
+@pytest.mark.parametrize("case", ["below", "above", "both"])
+@pytest.mark.parametrize("width", [940, "banner"])
+def test_real_font_hint_line_is_never_cut_and_the_hint_stays_whole(ui, lang, case, width):
+    ui_i18n.set_language(lang)
+    if width == "banner":
+        # the real text width of a one-icon banner in a 960 px wide window (the test window itself may be wider)
+        width = 960 - ui_app.BANNER_PAD - ui_app.BANNER_ICON - ui_app.BANNER_GAP - ui_app.BANNER_PAD
+        assert width == 818
+    font = ui._banner_line_font
+    fits = lambda s: font.measure(s) <= width  # noqa: E731
+    above, below = _real_font_cases()[case]
+    ids12 = [f"DFU-{i:02d}" for i in range(1, 13)]
+    line = banner_lines(frozen(*ids12), above, below, fits, fits)[2]
+    assert font.measure(line) <= width
+    assert line.endswith(GAP + "▲ " + ui_i18n.t("alarm_hint_frozen"))
+    assert ui_i18n.t("alarm_hint_more", n=1) not in line
+    assert line == _real_font_expected(case, fits)
+
+
+def test_new_scroll_prompt_strings_exist_in_en_and_zh_with_the_same_placeholders():
+    import re
+    keys = ["alarm_up_count", "alarm_down_count", "alarm_up_short", "alarm_down_short", "alarm_scroll_short"]
+    found = {}
+    for lang in ("en", "zh"):
+        ui_i18n.set_language(lang)
+        for key in keys:
+            text = ui_i18n.t(key)
+            assert text != key, (lang, key)
+            found[lang, key] = set(re.findall(r"\{(\w+)\}", text))
+    for key in keys:
+        assert found["en", key] == found["zh", key] != set(), key

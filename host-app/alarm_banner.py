@@ -2,7 +2,8 @@
 
 Tk-free. The caller passes ``fits_main(text)`` and ``fits_line(text)``, which measure the text in the 40 px and the
 20 px banner font; the longest form that fits is used, and the shortest form is used when nothing fits, so
-characters are never cut off and lines never wrap.
+characters are never cut off and lines never wrap. On the hint line the category hint is kept whole and the scroll
+prompt shrinks first (full list, first few ids + a count, a count, a short count).
 """
 from typing import Callable, List, Sequence, Tuple
 
@@ -49,19 +50,29 @@ def _list_line(abnormal: Abnormal, fits: Callable[[str], bool]) -> str:
 
 
 def _scroll_prompts(above: Sequence[str], below: Sequence[str]) -> List[str]:
+    """Scroll prompts, longest first; the caller uses the first that fits (together with the whole hints)."""
     sep = t("sep_list")
 
     def one(key: str, ids: Sequence[str]) -> str:
         return t(f"alarm_{key}_{'one' if len(ids) == 1 else 'many'}", ids=sep.join(ids))
 
+    def one_side(key: str, ids: Sequence[str], nearest_first: bool) -> List[str]:
+        # Full list; then the ids nearest the visible area + a count of the rest (k = n-1 .. 1); then count; then short.
+        n = len(ids)
+        prompts = [one(key, ids)]
+        for keep in range(n - 1, 0, -1):
+            kept = ids[:keep] if nearest_first else ids[n - keep:]
+            prompts.append(t(f"alarm_{key}_many", ids=sep.join(kept) + t("alarm_more", n=n - keep)))
+        return prompts + [t(f"alarm_{key}_count", n=n), t(f"alarm_{key}_short", n=n)]
+
     if above and below:
         every = list(above) + list(below)
         return [one("up", above) + GAP + one("down", below), t("alarm_scroll_both", ids=sep.join(every)),
-                t("alarm_scroll_count", n=len(every))]
+                t("alarm_scroll_count", n=len(every)), t("alarm_scroll_short", a=len(above), b=len(below))]
     if above:
-        return [one("up", above)]
+        return one_side("up", above, nearest_first=False)  # the last ids are nearest the view
     if below:
-        return [one("down", below)]
+        return one_side("down", below, nearest_first=True)
     return []
 
 
