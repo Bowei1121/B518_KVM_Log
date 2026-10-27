@@ -10,8 +10,9 @@ from typing import Callable, List, Sequence, Tuple
 from ui_i18n import t
 
 # Abnormal categories in click / list order (§13.4): kind -> (icon, status words key, hint key).
-# Only Frame frozen exists today; connection failure (■✕) and heartbeat (♥) come with their own tickets.
-KINDS = {"frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
+# Heartbeat stopped comes before Frame frozen; connection failure (■✕) comes with its own ticket.
+KINDS = {"heartbeat": ("♥", "station_heartbeat", "alarm_hint_heartbeat"),
+         "frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
 GAP = "　"  # full-width space between categories and between the scroll prompt and the hints
 
 Abnormal = Sequence[Tuple[str, str]]  # (device, kind) in device-list order

@@ -241,6 +241,36 @@ def test_extra_row_keys_are_ignored():
     assert present_station(row) == present_station({"status": "FROZEN"})
 
 
+@pytest.mark.parametrize("status", ["IDLE", "BUSY", "TESTING", "DISCONNECTED"])
+@pytest.mark.parametrize("connected", [True, False])
+def test_heartbeat_stopped_is_a_solid_red_row_in_the_banner(status, connected):
+    """#128: is_heartbeat_stopped wins over status; red, not blinking, own words; the lamp follows is_connected."""
+    res = present_station({"status": status, "is_heartbeat_stopped": True, "is_connected": connected})
+    assert (res.text_key, res.status_key) == ("light_heartbeat", "station_heartbeat")
+    assert (res.light, res.blink) == ("red", False)
+    assert (res.row_bg, res.row_red, res.fg) == ("#B71C1C", True, "#ffffff")
+    assert res.alarm_kind == "heartbeat"
+    assert res.online == connected
+    assert present_station({"status": "FROZEN", "is_frozen": True}).alarm_kind == "frozen"
+    assert present_station({"status": status, "is_connected": connected}).alarm_kind == ""
+
+
+def test_frozen_and_heartbeat_stopped_shows_frame_frozen():
+    res = present_station({"status": "BUSY", "is_frozen": True, "is_heartbeat_stopped": True, "is_connected": True})
+    assert (res.text_key, res.status_key, res.alarm_kind) == ("light_frozen", "station_frozen", "frozen")
+
+
+@pytest.mark.parametrize("status", ["IDLE", "BUSY", "DISCONNECTED"])
+def test_heartbeat_false_changes_nothing(status):
+    row = {"status": status, "is_connected": True}
+    assert present_station({**row, "is_heartbeat_stopped": False}) == present_station(row)
+
+
+def test_heartbeat_stopped_with_core_down_is_still_na():
+    row = {"status": "IDLE", "is_heartbeat_stopped": True, "is_connected": True}
+    assert present_station(row, core_connected=False) == present_station({"status": "DISCONNECTED"})
+
+
 def test_frozen_row_with_kvm_disconnected_stays_frozen():
     """User decision 2026-10-26 (#144, option B): Core sends status FROZEN with is_connected false.
 

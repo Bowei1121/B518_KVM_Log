@@ -91,6 +91,7 @@ from ui_widgets import (
     fix_text_widths,
     measure_all_languages,
     bind_clamped,
+    draw_alarm_heart,
     draw_alarm_triangle,
     full_text,
     reserve_text_width,
@@ -970,8 +971,7 @@ class AtlasUI(_BaseTk):
             bar.place(x=0, y=0, width=8, height=56)
             light = StatusLight(card, diameter=12, bg=WINDOW_BG)
             light.place(x=12, y=7, width=16, height=16)
-            icon = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)  # Frame frozen: ▲, not the light
-            draw_alarm_triangle(icon, 16, family=fam)
+            icon = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)  # ▲ / ♥ (drawn per row state), not the light
             icon.place(x=12, y=7, width=16, height=16)
             title = tk.Label(card, text=dev_id, font=(mono, -22, "bold"),
                              bg=WINDOW_BG, fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
@@ -1085,8 +1085,8 @@ class AtlasUI(_BaseTk):
         """(device, kind) of every abnormal row in banner order, whether or not it is on screen."""
         found = []
         for dev, widgets in self._station_widgets.items():
-            if widgets.get("row_red"):  # Frame frozen is the only red state today
-                found.append((dev, "frozen"))
+            if widgets.get("alarm_kind"):
+                found.append((dev, widgets["alarm_kind"]))
         return alarm_banner.sort_abnormal(found)
 
     def _banner_text_width(self, icons: int) -> int:
@@ -1134,8 +1134,9 @@ class AtlasUI(_BaseTk):
             self.lbl_alarm_l3.pack_forget()
         self.alarm_icon.delete("all")
         self.alarm_icon.configure(width=BANNER_ICON * len(kinds))
-        for index, _kind in enumerate(kinds):  # only the ▲ shape exists today
-            draw_alarm_triangle(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
+        for index, kind in enumerate(kinds):  # one icon per shape present, in category order
+            draw = draw_alarm_heart if kind == "heartbeat" else draw_alarm_triangle
+            draw(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
 
     def _on_alarm_banner_click(self, _event: Any = None) -> None:
         """Select the first abnormal device (category order, then list order). Never scrolls the list."""
@@ -1190,6 +1191,12 @@ class AtlasUI(_BaseTk):
         widgets["light"].set_light(pres.light, pres.blink)
         # The ▲ covers the light in the same 16 px box; both stay placed, so a status change never moves a child.
         widgets["row_red"] = pres.row_red  # the alarm banner reads this instead of presenting every row again
+        widgets["alarm_kind"] = pres.alarm_kind
+        if widgets.get("icon_kind") != pres.alarm_kind:  # redraw the shape inside the same 16 px box; it never moves
+            widgets["icon"].delete("all")
+            draw = draw_alarm_heart if pres.alarm_kind == "heartbeat" else draw_alarm_triangle
+            draw(widgets["icon"], 16, family=self.f_label[0])
+            widgets["icon_kind"] = pres.alarm_kind
         stack = "raise" if pres.row_red else "lower"  # widget stacking (Canvas.lift/lower are item methods)
         self.tk.call(stack, widgets["icon"], widgets["light"])
         widgets["status_label"].configure(text=t(pres.status_key))

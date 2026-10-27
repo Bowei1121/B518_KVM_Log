@@ -287,6 +287,37 @@ def test_no_abnormal_gives_no_lines():
     assert banner_lines([], [], [], always, always) == ("", "", "")
 
 
+def heartbeat(*ids):
+    return [(d, "heartbeat") for d in ids]
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("en", ("♥ DFU-03 Heartbeat stopped", "Check test PC and Log Solution", "")),
+    ("zh", ("♥ DFU-03 心跳停止", "請檢查測試電腦和 Log Solution", "")),
+])
+def test_one_heartbeat_device_main_line_and_hint(lang, expected):
+    ui_i18n.set_language(lang)
+    assert banner_lines(heartbeat("DFU-03"), [], [], always, always) == expected
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("en", ("2 devices abnormal", "♥ Heartbeat stopped: DFU-04" + GAP + "▲ Frame frozen: DFU-05",
+            "♥ Check test PC and Log Solution" + GAP + "▲ Check JetKVM")),
+    ("zh", ("2 台設備異常", "♥ 心跳停止：DFU-04" + GAP + "▲ 畫面凍結：DFU-05",
+            "♥ 請檢查測試電腦和 Log Solution" + GAP + "▲ 請檢查 JetKVM")),
+])
+def test_mixed_heartbeat_and_frozen_are_grouped_in_category_order(lang, expected):
+    ui_i18n.set_language(lang)
+    mixed = frozen("DFU-05") + heartbeat("DFU-04")  # frozen listed first on purpose
+    assert banner_lines(mixed, [], [], always, always) == expected
+
+
+def test_heartbeat_sorts_before_frozen():
+    mixed = [("A", "frozen"), ("B", "heartbeat"), ("C", "frozen"), ("D", "heartbeat")]
+    assert alarm_banner.sort_abnormal(mixed) == [("B", "heartbeat"), ("D", "heartbeat"),
+                                                 ("A", "frozen"), ("C", "frozen")]
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Tk banner
 # ---------------------------------------------------------------------------------------------------------------
@@ -667,3 +698,40 @@ def test_new_scroll_prompt_strings_exist_in_en_and_zh_with_the_same_placeholders
             found[lang, key] = set(re.findall(r"\{(\w+)\}", text))
     for key in keys:
         assert found["en", key] == found["zh", key] != set(), key
+
+
+def show_rows(ui, extra):
+    ui._update_status_ui({"status": "ok", "stations": [
+        {"device": d, "station": d.split("-")[0], "status": "IDLE", **extra.get(d, {})} for d in IDS[:6]]})
+    ui.geometry("960x1010")
+    ui.update()
+
+
+def icon_texts(ui):
+    canvas = ui.alarm_icon
+    return [canvas.itemcget(i, "text") for i in canvas.find_all() if canvas.type(i) == "text"]
+
+
+def test_heartbeat_banner_shows_a_heart_icon_and_text(ui):
+    show_rows(ui, {"DFU-03": {"is_heartbeat_stopped": True}})
+    assert labels(ui)[:2] == ["♥ DFU-03 Heartbeat stopped", "Check test PC and Log Solution"]
+    assert int(ui.alarm_icon.cget("width")) == ui_app.BANNER_ICON
+    assert icon_texts(ui) == ["♥"]
+
+
+def test_heartbeat_and_frozen_draw_two_icons_and_the_text_width_uses_two(ui):
+    show_rows(ui, {"DFU-03": {"is_heartbeat_stopped": True}, "DFU-05": {"status": "FROZEN", "is_frozen": True}})
+    assert int(ui.alarm_icon.cget("width")) == 2 * ui_app.BANNER_ICON
+    canvas = ui.alarm_icon
+    assert icon_texts(ui) == ["♥", "!"]  # heart first, then the triangle (its "!")
+    assert "polygon" in {canvas.type(i) for i in canvas.find_all()}
+    assert ui._banner_text_width(2) == ui._banner_text_width(1) - ui_app.BANNER_ICON
+
+
+def test_banner_click_selects_the_heartbeat_device_first(ui):
+    show_rows(ui, {"DFU-02": {"status": "FROZEN", "is_frozen": True}, "DFU-04": {"is_heartbeat_stopped": True}})
+    assert ui._abnormal_devices() == [("DFU-04", "heartbeat"), ("DFU-02", "frozen")]
+    ui.var_sel_device.set("DFU-01")
+    ui.lbl_alarm_main.event_generate("<Button-1>", x=5, y=5)
+    ui.update()
+    assert ui.var_sel_device.get() == "DFU-04"
