@@ -285,5 +285,5 @@ def test_status_and_core_status_rows_keep_their_keys_in_order():
     assert type(rows[0]["status"]) is str
     status_res = asyncio.run(server._handle_status(CommandContext(), None))
     for dev, entry in zip(status_res["devices"], registry.entries()):
-        assert list(dev) == ["device", "station", "connected", "busy", "frozen", "channels"]
+        assert list(dev) == ["device", "station", "connected", "busy", "frozen", "channels", "connect_failed", "connect_fail_count"]
         assert dev["channels"] == entry.channels

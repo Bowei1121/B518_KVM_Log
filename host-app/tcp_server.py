@@ -27,9 +27,9 @@ except ImportError:
     from .device_lock import DeviceLockManager  # type: ignore[import-not-found,no-redef]
 
 try:
-    from kvm_pool import KVMConnectionPool
+    from kvm_pool import KVMConnectionPool, normalize_kvm_ip
 except ImportError:
-    from .kvm_pool import KVMConnectionPool  # type: ignore[import-not-found,no-redef]
+    from .kvm_pool import KVMConnectionPool, normalize_kvm_ip  # type: ignore[import-not-found,no-redef]
 
 try:
     from freeze_guard import FrameFreezeGuard
@@ -260,6 +260,10 @@ class TcpJsonServer:
         visibility_lost_sec: float = VISIBILITY_LOST_SEC,
         dock_recheck_sec: float = DOCK_RECHECK_SEC,
         max_dock_recoveries: int = MAX_DOCK_RECOVERIES,
+        connect_fail_threshold: int = 3,
+        connect_fail_window_sec: float = 60.0,
+        connect_retry_interval_sec: float = 10.0,
+        connect_timeout_sec: float = 10.0,
     ) -> None:
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
@@ -267,7 +271,13 @@ class TcpJsonServer:
         self.port = port
         self.server_address: tuple[str, int] = (host, port)
         self.lock_manager = lock_manager if lock_manager is not None else DeviceLockManager()
+        self.connect_fail_threshold = int(connect_fail_threshold)
         self.kvm_pool = kvm_pool if kvm_pool is not None else KVMConnectionPool()
+        # Connection failure rules (#134) are Core Service parameters, also for an injected pool.
+        configure_failures = getattr(self.kvm_pool, "configure_connect_failures", None)
+        if configure_failures is not None:
+            configure_failures(
+                connect_fail_threshold, connect_fail_window_sec, connect_retry_interval_sec, connect_timeout_sec)
         self.freeze_guard = freeze_guard if freeze_guard is not None else FrameFreezeGuard()
         self.device_registry: DeviceRegistry = (
             device_registry if device_registry is not None else DeviceRegistry([])
@@ -357,8 +367,16 @@ class TcpJsonServer:
         active = set(self.lock_manager.get_active_devices())
         frozen = set(self.freeze_guard.get_status().get("frozen_devices", []))
         connected = set(self.kvm_pool.get_active_ips())
+        tracker = getattr(self.kvm_pool, "connect_failures", None)
         for record in self._health.values():
             record.refresh(active, frozen, connected)
+            state = None
+            if tracker is not None:
+                try:
+                    state = tracker.state(normalize_kvm_ip(record.kvm_ip))
+                except ValueError:
+                    state = None
+            record.apply_connect_state(state, tracker.clock() if tracker is not None else 0.0)
         return [replace(record) for record in self._health.values()]
 
     def _station_rows(self) -> list[Dict[str, Any]]:
@@ -386,6 +404,14 @@ class TcpJsonServer:
                 "is_heartbeat_stopped": slot.heartbeat.stopped if slot is not None else False,
                 "is_heartbeat_not_found": False,  # detection belongs to #125; the field is fixed for the UI (#130)
                 **reading,
+                "connect_fail_count": h.connect_fail_count,
+                "connect_failed": h.connect_failed,
+                "retrying": h.retrying,
+                "retry_in_sec": h.retry_in_sec,
+                "retry_threshold": getattr(
+                    getattr(self.kvm_pool, "connect_failures", None), "threshold", self.connect_fail_threshold),
+                "first_fail_at": h.first_fail_at,
+                "last_connect_error": h.last_connect_error,
             })
         return stations_list
 
@@ -401,6 +427,8 @@ class TcpJsonServer:
                 "busy": h.busy,
                 "frozen": h.frozen,
                 "channels": h.channels,
+                "connect_failed": h.connect_failed,
+                "connect_fail_count": h.connect_fail_count,
             })
         return {"core_uptime_sec": int(uptime), "devices": devices}
 
