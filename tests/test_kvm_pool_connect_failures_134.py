@@ -73,6 +73,15 @@ def make_pool(factory: Factory, clock: Clock, **kw) -> KVMConnectionPool:
     return KVMConnectionPool(client_factory=factory, clock=clock, **kw)
 
 
+async def until(cond, what="condition", max_iters=1000):
+    """Yield to the loop until cond() holds; deterministic, independent of the clock resolution."""
+    for _ in range(max_iters):
+        if cond():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"never reached: {what}")
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -461,10 +470,11 @@ def test_queued_background_retry_does_not_connect_after_a_command_failure_resche
         clock.advance(9)
         factory.gate_fail_hosts.add(IP)
         command = asyncio.ensure_future(pool.acquire_connection(IP))
-        await asyncio.sleep(0.01)  # the command holds the ip lock inside connect()
+        # the command holds the ip lock inside connect()
+        await until(lambda: any(c.connect_calls == 1 for c in factory.for_host(IP)[1:]), "command inside connect")
         clock.advance(1)  # t=10: the background retry is due and queues on the lock
         retry = asyncio.ensure_future(pool.retry_due_connections())
-        await asyncio.sleep(0.01)
+        await until(lambda: bool(pool._ip_locks[IP]._waiters), "retry queued on the ip lock")
         assert pool.connect_failures.state(IP).retrying is False  # merely queued
         clock.advance(2)  # t=12
         factory.gate.set()
@@ -500,10 +510,10 @@ def test_retrying_flag_is_true_only_while_a_background_attempt_really_connects()
             await pool.get_connection(IP)
         factory.modes[IP] = "gate"
         command = asyncio.ensure_future(pool.acquire_connection(IP))
-        await asyncio.sleep(0.01)
+        await until(lambda: any(c.connect_calls == 1 for c in factory.for_host(IP)[1:]), "command inside connect")
         clock.advance(10)
         retry = asyncio.ensure_future(pool.retry_due_connections())
-        await asyncio.sleep(0.01)
+        await until(lambda: bool(pool._ip_locks[IP]._waiters), "retry queued on the ip lock")
         assert pool.connect_failures.state(IP).retrying is False  # queued behind the command
         factory.gate.set()
         await command
@@ -519,7 +529,7 @@ def test_retrying_flag_is_true_only_while_a_background_attempt_really_connects()
         factory.modes[IP] = "hang"
         clock.advance(10)
         retry = asyncio.ensure_future(pool.retry_due_connections())
-        await asyncio.sleep(0.01)
+        await until(lambda: pool.connect_failures.state(IP).retrying, "background attempt connecting")
         assert pool.connect_failures.state(IP).retrying is True  # really connecting
         await pool.close_all()
         await asyncio.gather(retry, return_exceptions=True)
@@ -537,7 +547,8 @@ def test_cancelling_a_running_background_retry_closes_its_client_once():
         factory.modes[IP] = "hang"
         clock.advance(10)
         retry = asyncio.ensure_future(pool.retry_due_connections())
-        await asyncio.sleep(0.01)
+        await until(lambda: len(factory.for_host(IP)) == 2 and factory.for_host(IP)[-1].connect_calls == 1,
+                    "retry inside connect")
         hanging = factory.for_host(IP)[-1]
         assert hanging.connect_calls == 1
         await pool.close_all()
@@ -567,12 +578,49 @@ def test_failure_is_recorded_before_a_slow_close_finishes():
         pool.connect_failures.record_failure(IP)  # due for a background retry
         clock.advance(10)
         retry = asyncio.ensure_future(pool.retry_due_connections())
-        await asyncio.sleep(0.01)
-        assert seen == [2]  # failure already counted while close() is still running
-        assert not retry.done()
-        release.set()
+        try:
+            await until(lambda: bool(seen), "close() started")
+            assert seen == [2]  # failure already counted while close() is still running
+            assert not retry.done()
+        finally:
+            release.set()
         await retry
         await pool.close_all()
+    run(go())
+
+
+def test_close_all_is_not_hung_by_a_cancelled_retry_whose_close_never_returns():
+    async def go():
+        factory, clock = Factory(), Clock()
+        never = asyncio.Event()
+
+        class StuckClose(Client):
+            async def close(self) -> None:
+                self.close_calls += 1
+                await never.wait()
+
+        stuck: List[StuckClose] = []
+
+        def make(host, password=""):
+            c = StuckClose(host, "hang", factory.gate)
+            stuck.append(c)
+            return c
+
+        pool = KVMConnectionPool(client_factory=make, clock=clock, connect_timeout_sec=30.0,
+                                 cancel_close_timeout_sec=0.05)
+        pool.connect_failures.record_failure(IP)  # due for a background retry
+        clock.advance(10)
+        retry = asyncio.ensure_future(pool.retry_due_connections())
+        try:
+            await until(lambda: bool(stuck) and stuck[0].connect_calls == 1, "retry inside connect")
+            await asyncio.wait_for(pool.close_all(), 5)
+            await asyncio.wait_for(asyncio.gather(retry, return_exceptions=True), 5)
+            assert retry.done()
+            assert stuck[0].close_calls == 1
+        finally:
+            never.set()
+            if not retry.done():
+                retry.cancel()
     run(go())
 
 

@@ -103,7 +103,10 @@ class KVMConnectionPool:
         clock: Optional[Callable[[], float]] = None,
         connect_failures: Optional[ConnectFailures] = None,
         retry_tick_sec: float = 1.0,
+        cancel_close_timeout_sec: float = 2.0,
     ) -> None:
+        # Bound on closing a half-made client after cancellation, so a close() that never returns cannot hang stop().
+        self.cancel_close_timeout_sec = float(cancel_close_timeout_sec)
         self.idle_timeout = float(idle_timeout)
         self.heartbeat_interval = float(heartbeat_interval)
         self._client_factory = client_factory if client_factory is not None else _default_client_factory
@@ -241,7 +244,7 @@ class KVMConnectionPool:
                 else:
                     await asyncio.wait_for(client.connect(), timeout=connect_timeout)
             except asyncio.CancelledError:
-                await self._discard_client(canonical_ip, client)
+                await self._discard_client_bounded(canonical_ip, client)
                 raise
             except Exception as exc:
                 # Only a failed attempt to establish a new connection counts (#134); count it before closing.
@@ -266,6 +269,14 @@ class KVMConnectionPool:
         except Exception as exc:
             logger.warning("Error closing KVM client '%s': %s", ip, exc,
                            extra={"zh": "關閉 KVM 用戶端 '%s' 失敗: %s"})
+
+    async def _discard_client_bounded(self, ip: str, client: Any) -> None:
+        """Like _discard_client, but gives up after cancel_close_timeout_sec (the cancellation is already consumed)."""
+        try:
+            await asyncio.wait_for(client.close(), timeout=self.cancel_close_timeout_sec)
+        except Exception as exc:  # includes TimeoutError
+            logger.warning("Error closing cancelled KVM client '%s': %s", ip, repr(exc),
+                           extra={"zh": "關閉已取消的 KVM 用戶端 '%s' 失敗或逾時: %s"})
 
     async def _retry_one(self, ip: str) -> None:
         """One background attempt: establish the connection through the normal path, unleased."""
