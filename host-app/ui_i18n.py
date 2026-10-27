@@ -29,6 +29,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_busy": "Busy",
         "station_offline": "Offline",
         "station_frozen": "Frame frozen",
+        "station_heartbeat": "Heartbeat stopped",
         "station_online_lamp": "Online",
         "station_offline_lamp": "Offline",
         "station_na_lamp": "N/A",
@@ -70,6 +71,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "light_busy": "Yellow: testing now.",
         "light_disc": "Grey: offline (not connected).",
         "light_frozen": "Red: the picture is frozen (stuck).",
+        "light_heartbeat": "Red: the heartbeat on the test PC screen stopped changing.",
         "tip_select": "Show this machine in the picture and controls below.",
         # ---- live picture
         "view_title": "Live view",
@@ -279,6 +281,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} devices abnormal",
         "alarm_hint_frozen": "Check JetKVM",
+        "alarm_hint_heartbeat": "Check test PC and Log Solution",
         "alarm_list_cat": "{icon} {kind}: {ids}",
         "alarm_more": "… +{n} more",
         "alarm_hint_more": "… +{n} more",
@@ -301,6 +304,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "station_busy": "執行指令中",
         "station_offline": "未連線",
         "station_frozen": "畫面凍結",
+        "station_heartbeat": "心跳停止",
         "station_online_lamp": "已連線",
         "station_offline_lamp": "未連線",
         "station_na_lamp": "未知",
@@ -341,6 +345,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "light_busy": "黃燈：測試中。",
         "light_disc": "灰燈：未連線。",
         "light_frozen": "紅燈：畫面卡住不動。",
+        "light_heartbeat": "紅燈：測試電腦畫面上的心跳停止變化。",
         "tip_select": "把下方的畫面和操作切換到這台機台。",
         # ---- live picture
         "view_title": "即時畫面監控",
@@ -550,6 +555,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} 台設備異常",
         "alarm_hint_frozen": "請檢查 JetKVM",
+        "alarm_hint_heartbeat": "請檢查測試電腦和 Log Solution",
         "alarm_list_cat": "{icon} {kind}：{ids}",
         "alarm_more": "…另 {n} 台",
         "alarm_hint_more": "…另 {n} 項",

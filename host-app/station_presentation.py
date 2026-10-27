@@ -7,7 +7,7 @@ the status light, the row colours (spec v5.2 §14.1) and the Online/Offline lamp
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Optional
 
 
@@ -22,6 +22,7 @@ class StationPresentation:
     status_key: str = "station_offline"
     fg: str = "#616161"
     online: bool = False
+    alarm_kind: str = field(default="", compare=False)  # banner category of a red row: "frozen" / "heartbeat"
 
 
 _IDLE = StationPresentation("light_idle", "green", False, "#E8F5E9",
@@ -29,7 +30,9 @@ _IDLE = StationPresentation("light_idle", "green", False, "#E8F5E9",
 _BUSY = StationPresentation("light_busy", "yellow", False, "#E3F2FD",
                             status_key="station_busy", fg="#1565C0", online=True)
 _FROZEN = StationPresentation("light_frozen", "red", False, "#B71C1C", row_red=True,
-                              status_key="station_frozen", fg="#ffffff", online=True)
+                              status_key="station_frozen", fg="#ffffff", online=True,
+                              alarm_kind="frozen")
+_HEARTBEAT = replace(_FROZEN, text_key="light_heartbeat", status_key="station_heartbeat", alarm_kind="heartbeat")
 _DISCONNECTED = StationPresentation("light_disc", "grey", False)
 _LOOKUP = {"IDLE": _IDLE, "OK": _IDLE, "BUSY": _BUSY, "TESTING": _BUSY,
            "FROZEN": _FROZEN, "DISCONNECTED": _DISCONNECTED}
@@ -45,7 +48,12 @@ def present_station(
     status = str(row.get("status") or "").strip().upper()
     if status == "DISCONNECTED" and row.get("is_connected"):
         status = "IDLE"
-    pres = _FROZEN if row.get("is_frozen") else _LOOKUP.get(status, _DISCONNECTED)
+    if row.get("is_frozen"):  # Frame frozen > Heartbeat stopped > the status itself
+        pres = _FROZEN
+    elif row.get("is_heartbeat_stopped"):
+        pres = _HEARTBEAT
+    else:
+        pres = _LOOKUP.get(status, _DISCONNECTED)
     online = bool(row["is_connected"]) if "is_connected" in row else status in (
         "IDLE", "OK", "BUSY", "TESTING", "FROZEN"
     )

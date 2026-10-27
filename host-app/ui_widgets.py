@@ -151,6 +151,12 @@ def draw_alarm_triangle(canvas: tk.Canvas, size: int, x: int = 0, family: str = 
                        tags="icon")
 
 
+def draw_alarm_heart(canvas: tk.Canvas, size: int, x: int = 0, family: str = "TkDefaultFont") -> None:
+    """White ♥ in a ``size`` px box at ``x`` (Heartbeat stopped icon, spec v5.3 §14.1, §14.4)."""
+    canvas.create_text(x + size * 0.5, size * 0.5, text="♥", fill="#ffffff",
+                       font=(family, -round(size * 0.9), "bold"), tags="icon")
+
+
 def iter_widgets(widget: tk.Misc):
     """``widget`` and every widget below it, parents first."""
     yield widget
