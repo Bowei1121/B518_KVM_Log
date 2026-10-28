@@ -67,6 +67,7 @@ FCT 的 `start_test` 回 `unsupported_command`）。
 | `cs_timeout` (`csto`) | `start_test` ok，但看不到測試開始，也永遠沒有結果畫面 | `check_start` `timeout_sec>0` → `status=timeout`、`error=timeout`、`data`：`kind=waiting`、`state=monitoring`、`reason=monitoring`、`active=[]`、`results=[]`；`timeout_sec=0` → ok `waiting`。`check_finish` 同樣 |
 | `cs_paused` (`csp`) | `start_test` ok，看不到測試；`--finish-delay` 秒後畫面進入待確認（通道沒變黃 → NOTEST → 待確認） | 延遲前 `timeout_sec=0` 的 `check_start` → ok `waiting`／`monitoring`；`check_start` 長輪詢或延遲後 → ok `paused`（`state=review`、`reason=confirmation_required`、`results=[]`）。之後 `confirm`／`confirm standby` 照常 |
 | `start_test_drop_not_started` (`stdrop`) | `start_test` 時 server 不回覆就關掉該連線，測試沒有開始 | `start_test` 收不到回覆（連線被關）。重連後 `check_start` 永遠不會 `started`，逾時回 `timeout`（資料同 `cs_timeout`）；本輪開始請求仍在，所以 `check_finish` `timeout_sec=0` 回 ok `waiting`，不是 `monitor_not_ready` |
+| `start_test_drop` (`stds`) | `start_test` 時 server 不回覆就關掉該連線，但測試在內部照常開始（等同 `cs_started`） | `start_test` 收不到回覆（連線被關）。重連後 `check_start` → ok `started`（`reason=activity_confirmed`、`active` 為全部通道 `testing`、`results=[]`）；`--finish-delay` 秒後 `check_finish` → `taken`（設定的 `results`），再查 → `already_taken` |
 
 選錯名稱會回「未知情境」並列出可用名稱。
 
@@ -117,6 +118,7 @@ FCT 的 `start_test` 回 `unsupported_command`）。
 | `check_start` 逾時 | `csto`（再跑 `monitor_start` → `start_test`） | `check_start` → `status=timeout`、`error=timeout`、`data` 為 `waiting`／`monitoring`；`timeout_sec=0` → ok `waiting` |
 | `check_start` 待確認 | `csp`（再跑 `monitor_start` → `start_test`，等 `--finish-delay` 秒） | `check_start` → ok `paused`／`review`／`confirmation_required` |
 | `start_test` 沒有回覆 | `stdrop`（再跑 `monitor_start` → `start_test`） | `start_test` 連線被關、沒有回覆；重連後 `check_start` → `timeout`；`check_finish` `timeout_sec=0` → ok `waiting` |
+| `start_test` 沒有回覆但測試已開始 | `stds`（再跑 `monitor_start` → `start_test`） | `start_test` 連線被關、沒有回覆；重連後 `check_start` → `started`；`check_finish` → `taken`，再查 → `already_taken` |
 | 測完還原 | `clear`（解除故障與情境）或 `reset`（連輪次一起重設） | 回到正常流程 |
 
 ## 之後接「對方模擬器」的擴充點

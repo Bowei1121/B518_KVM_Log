@@ -984,6 +984,36 @@ def test_scenario_start_test_drop_not_started(make_core, name):
     assert r["status"] == "ok" and r["data"]["kind"] == "waiting"  # 不是 monitor_not_ready
 
 
+@pytest.mark.parametrize("name", ["start_test_drop", "stds"])
+def test_scenario_start_test_drop_test_runs_normally(make_core, name):
+    core = make_core(scenario=name, finish_delay=0.8)
+    assert core.scenario == "start_test_drop"
+    cli = core.connect()
+    to_monitoring(cli)
+    cli.send("start_test")
+    assert cli.recv_line() is None  # 沒有回覆、連線被關
+    cli2 = core.connect()
+    r = cli2.call("check_start", timeout_sec=5)
+    assert r["status"] == "ok" and r["data"] == STARTED
+    r = cli2.call("check_finish", timeout_sec=10)
+    assert r["data"]["kind"] == "taken" and r["data"]["results"] == PASS4
+    again = cli2.call("check_finish", timeout_sec=0)
+    assert again["data"]["kind"] == "already_taken" and again["data"]["results"] == PASS4
+
+
+def test_scenario_start_test_drop_cli_and_typed(core):
+    assert fake_core.build_parser().parse_args(["--scenario", "start_test_drop"]).scenario == "start_test_drop"
+    assert fake_core.build_parser().parse_args(["--scenario", "stds"]).scenario == "stds"
+    core.command("stds")
+    assert "start_test_drop" in core.command("state")
+    core.command("scenario start_test_drop_not_started")
+    assert core.scenario == "start_test_drop_not_started"
+    core.command("scenario stds")
+    assert core.scenario == "start_test_drop"
+    core.command("clear")
+    assert core.scenario is None
+
+
 def test_scenario_clear_and_reset_remove_it(core):
     core.command("cs_taken")
     assert "cs_taken" in core.command("state")
@@ -998,7 +1028,8 @@ def test_scenario_unknown_name_and_help(core):
     out = core.command("scenario bogus")
     assert "bogus" in out and "cs_taken" in out
     assert core.scenario is None
-    for name in ("cs_started", "cs_taken", "cs_timeout", "cs_paused", "start_test_drop_not_started"):
+    for name in ("cs_started", "cs_taken", "cs_timeout", "cs_paused", "start_test_drop_not_started",
+                 "start_test_drop (stds)"):
         assert name in core.command("help")
 
 

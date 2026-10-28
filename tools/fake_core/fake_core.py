@@ -110,7 +110,7 @@ COMMANDS: Dict[str, Spec] = {
 
 # 情境（scenario）：改變「下一次 start_test 起」發生的事。名稱 → 別名；cs_started = 正常（等於清除情境）。
 SCENARIOS = {"cs_started": "css", "cs_taken": "cstk", "cs_timeout": "csto", "cs_paused": "csp",
-             "start_test_drop_not_started": "stdrop"}
+             "start_test_drop_not_started": "stdrop", "start_test_drop": "stds"}
 SCENARIO_ALIASES = {alias: name for name, alias in SCENARIOS.items()}
 
 
@@ -302,6 +302,7 @@ class FakeCore:
         "  cs_timeout (csto)  看不到測試開始也沒有結果，check_start／check_finish timeout\n"
         "  cs_paused (csp)    finish-delay 秒後進入待確認，check_start paused\n"
         "  start_test_drop_not_started (stdrop)  start_test 不回覆就斷線，測試未開始\n"
+        "  start_test_drop (stds)  start_test 不回覆就斷線，但測試照常進行，重連後 check_start started\n"
         "result (res) X       改結果：PASS / FAIL / TIMEOUT 或逐通道清單 PASS,FAIL,...\n"
         "state (s)            顯示目前畫面、旗標與故障\n"
         "help (h)             本說明\n"
@@ -645,8 +646,8 @@ class FakeCore:
                         "message": f"Log Solution is not monitoring ({state}); no HID sent"}
             dev.test_started()
         self.emit("start_test", dev.device_id)
-        if self.scenario == "start_test_drop_not_started":
-            conn.close()  # 不回覆就關掉連線；鎖由 _dispatch 釋放
+        if self.scenario in ("start_test_drop_not_started", "start_test_drop"):
+            conn.close()  # 不回覆就關掉連線；鎖由 _dispatch 釋放（start_test_drop 的測試照常進行）
             return None
         return {"status": "ok", "data": {"action": "start_all" if dev.station == "BT" else "ok"}}
 
