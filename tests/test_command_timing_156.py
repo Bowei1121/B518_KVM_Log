@@ -1,5 +1,6 @@
 """Device command timing records in the Core log (issue #156, spec #154) plus the #159 review follow-ups."""
 import asyncio
+import json
 import logging
 import socket
 import sys
@@ -423,3 +424,18 @@ def test_exception_escaping_dispatch_logs_internal_error_and_sends_no_reply(capl
     (rec,) = command_records(caplog)
     f = fields(rec)
     assert (f["result"], f["reason"]) == ("fail", "internal_error")
+
+
+class SlowDrainWriter(FakeWriter):
+    async def drain(self):
+        await asyncio.sleep(0.5)
+
+
+def test_slow_send_is_not_part_of_the_core_processing_time(caplog):
+    writer = SlowDrainWriter()
+    (rec,) = _session(caplog, writer)
+    reply = json.loads(writer.written)
+    ms = int(fields(rec)["elapsed_ms"])
+    assert fields(rec)["result"] == "ok"
+    assert ms < 300  # the 0.5 s drain is send time, not Core processing time
+    assert abs(ms - reply["elapsed_sec"] * 1000) <= 50  # same end point as the envelope elapsed_sec
