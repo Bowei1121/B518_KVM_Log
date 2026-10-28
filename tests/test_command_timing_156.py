@@ -1,5 +1,6 @@
 """Device command timing records in the Core log (issue #156, spec #154) plus the #159 review follow-ups."""
 import asyncio
+import datetime
 import json
 import logging
 import socket
@@ -346,6 +347,10 @@ def test_slow_log_handler_does_not_delay_the_reply(caplog):
     slow = SleepingHandler()
     with Rig(caplog, extra=[spec("fast", fast)]) as rig:
         rig.call("fast")  # connect the KVM first
+        deadline = time.monotonic() + 5
+        while not command_records(caplog) and time.monotonic() < deadline:
+            time.sleep(0.01)  # the warm-up line is written after its reply: let it land before the slow handler
+        assert command_records(caplog)
         command_log.addHandler(slow)
         try:
             began = time.monotonic()
@@ -400,10 +405,27 @@ def _session(caplog, writer):
     return command_records(caplog)
 
 
-def test_ok_is_logged_after_the_reply_was_written(caplog):
-    writer = FakeWriter()
+class DrainTrackingWriter(FakeWriter):
+    drained = False
+
+    async def drain(self):
+        self.drained = True
+
+
+def test_ok_is_logged_after_the_reply_was_written(caplog, monkeypatch):
+    import tcp_server
+    writer = DrainTrackingWriter()
+    state_at_log = []
+    real_log_timing = tcp_server.log_timing
+
+    def recording_log_timing(record, *args, **kwargs):
+        if record.path == "command":
+            state_at_log.append((bool(writer.written), writer.drained))
+        return real_log_timing(record, *args, **kwargs)
+    monkeypatch.setattr(tcp_server, "log_timing", recording_log_timing)
     (rec,) = _session(caplog, writer)
-    assert writer.written and fields(rec)["result"] == "ok"
+    assert fields(rec)["result"] == "ok"
+    assert state_at_log == [(True, True)]  # at the moment of logging the reply was already written and drained
 
 
 def test_failed_write_logs_client_disconnected(caplog):
@@ -455,3 +477,17 @@ def test_ts_is_taken_when_the_reply_is_ready_not_after_the_send(caplog, monkeypa
     (record, logged_at), = seen
     assert record.ok and fields(rec)["result"] == "ok"
     assert logged_at - record.ts >= 0.4  # ts is the end of Core processing, before the 0.5 s drain
+    # The emitted Core log line carries that same time, not the time of logging after the drain.
+    assert rec.created == pytest.approx(record.ts, abs=1e-6)
+    assert rec.msecs == pytest.approx((record.ts - int(record.ts)) * 1000, abs=1)
+    assert fmt(rec)[:8] == datetime.datetime.fromtimestamp(record.ts).strftime("%H:%M:%S")
+
+
+def test_cancelled_drain_logs_client_disconnected(caplog):
+    writer = FakeWriter(drain_error=asyncio.CancelledError())
+    with pytest.raises(BaseException):  # the cancellation still propagates
+        _session(caplog, writer)
+    (rec,) = command_records(caplog)
+    f = fields(rec)
+    assert (f["result"], f["reason"]) == ("fail", "client_disconnected")
+

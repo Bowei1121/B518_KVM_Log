@@ -1110,7 +1110,8 @@ class TcpJsonServer:
                     if response_bytes:
                         writer.write(response_bytes)
                         await writer.drain()
-                except (ConnectionError, OSError):
+                except (ConnectionError, OSError, asyncio.CancelledError):
+                    # The reply may not have reached the client (also a session cancelled mid-drain at shutdown).
                     if pending is not None:
                         pending = replace(pending, ok=False, reason="client_disconnected")
                     raise

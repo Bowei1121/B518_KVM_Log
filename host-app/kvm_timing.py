@@ -80,11 +80,21 @@ def log_timing(record: TimingRecord, log: logging.Logger = logger) -> None:
     if record.ok:
         en += f" result=ok elapsed_ms={record.elapsed_ms}"
         zh += f" 結果=成功 耗時={record.elapsed_ms} ms"
-        log.info(en, extra={"zh": zh})
+        _emit(log, logging.INFO, en, zh, record.ts)
         return
     en += f" result=fail elapsed_ms={record.elapsed_ms} reason={record.reason}"
     zh += f" 結果=失敗 耗時={record.elapsed_ms} ms 原因={_REASON_ZH.get(record.reason, record.reason)}"
     if record.error_type:
         en += f" error={record.error_type}"
         zh += f" 例外={record.error_type}"
-    log.warning(en, extra={"zh": zh})
+    _emit(log, logging.WARNING, en, zh, record.ts)
+
+
+def _emit(log: logging.Logger, level: int, en: str, zh: str, ts: float) -> None:
+    """Log one line stamped with the event time ts (not the time of logging), so every handler prints ts."""
+    if not log.isEnabledFor(level):
+        return
+    rec = log.makeRecord(log.name, level, __file__, 0, en, None, None, extra={"zh": zh})
+    rec.created = ts
+    rec.msecs = int((ts - int(ts)) * 1000) + 0.0
+    log.handle(rec)
