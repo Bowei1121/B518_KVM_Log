@@ -42,6 +42,11 @@ except ImportError:
     from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
 
 try:
+    from kvm_heartbeat import HeartbeatEvent, log_heartbeat_event
+except ImportError:
+    from .kvm_heartbeat import HeartbeatEvent, log_heartbeat_event  # type: ignore[import-not-found,no-redef]
+
+try:
     from device_registry import DeviceRegistry
 except ImportError:
     from .device_registry import DeviceRegistry  # type: ignore[import-not-found,no-redef]
@@ -399,12 +404,34 @@ class TcpJsonServer:
             record.apply_connect_state(state, tracker.clock() if tracker is not None else 0.0)
         return [replace(record) for record in self._health.values()]
 
-    def _log_connect_timing(self, ip: str, path: str, elapsed_ms: int, ok: bool, reason: str, exc: Any) -> None:
-        """Pool timing observer: resolve the device ID from the KVM IP (unknown IP -> empty) and write the log line."""
+    def _log_connect_timing(self, ip: str, path: str, elapsed_ms: int, ok: bool, reason: str, exc: Any,
+                            event: Optional[HeartbeatEvent] = None) -> None:
+        """Pool timing observer: resolve the device ID from the KVM IP (unknown IP -> empty) and write the log lines.
+
+        Each step is guarded on its own: a failing log write must not lose a heartbeat state event, because the
+        pool has already moved to the new state and will not emit it again.
+        """
         entry = self.device_registry.device_for_ip(normalize_kvm_ip(ip))
-        log_timing(TimingRecord(
-            ts=time.time(), device=entry.device_id if entry else "", ip=ip, path=path, elapsed_ms=elapsed_ms,
-            ok=ok, reason=reason, error_type=type(exc).__name__ if exc is not None else ""))
+        device = entry.device_id if entry else ""
+        try:
+            log_timing(TimingRecord(
+                ts=time.time(), device=device, ip=ip, path=path, elapsed_ms=elapsed_ms,
+                ok=ok, reason=reason, error_type=type(exc).__name__ if exc is not None else ""))
+        except Exception:
+            logger.debug("KVM timing log line failed", exc_info=True)
+        if event is None:
+            return
+        try:
+            self._on_heartbeat_event(event, device)
+        except Exception:
+            logger.debug("KVM heartbeat event hand-off failed", exc_info=True)
+        try:
+            log_heartbeat_event(event, device)
+        except Exception:
+            logger.debug("KVM heartbeat event log line failed", exc_info=True)
+
+    def _on_heartbeat_event(self, event: HeartbeatEvent, device: str) -> None:
+        """Seam for the Monitor timing-event buffer (#158); nothing consumes heartbeat events yet."""
 
     def _station_rows(self) -> list[Dict[str, Any]]:
         """Real-time status of every configured test station (the ``stations`` list of core_status).

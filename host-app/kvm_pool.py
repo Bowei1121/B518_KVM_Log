@@ -29,6 +29,13 @@ try:
 except ImportError:
     from .kvm_timing import BACKGROUND_RECONNECT, COMMAND_CONNECT, classify_connect_error  # type: ignore[import-not-found,no-redef]
 
+try:
+    from kvm_heartbeat import HeartbeatTracker
+    from kvm_timing import HEARTBEAT
+except ImportError:
+    from .kvm_heartbeat import HeartbeatTracker  # type: ignore[import-not-found,no-redef]
+    from .kvm_timing import HEARTBEAT  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("KVMConnectionPool")
 
 
@@ -82,6 +89,7 @@ class PooledKVMConnection:
         self.last_used_at = now
         self.last_heartbeat_at = 0.0
         self.heartbeat_count = 0
+        self.pooled_mono: Optional[float] = None  # pool's monotonic clock when pooled; set by the pool
         # Number of commands currently holding this connection via acquire_connection().
         self.in_use = 0
         self._lock: Optional[asyncio.Lock] = None
@@ -112,9 +120,12 @@ class KVMConnectionPool:
         timing_observer: Optional[Callable[..., None]] = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        # Called once per real connect attempt: (ip, path, elapsed_ms, ok, reason, exc). Never breaks the pool.
+        # Called once per real connect attempt: (ip, path, elapsed_ms, ok, reason, exc), and once per pooled
+        # connection per heartbeat: (ip, "heartbeat", elapsed_ms, ok, reason, None, event), so an observer must
+        # accept an optional 7th argument (HeartbeatEvent or None). Never breaks the pool.
         self.timing_observer = timing_observer
         self._monotonic = monotonic
+        self._heartbeats = HeartbeatTracker()  # per-IP, outlives evicted entries; empty on a new pool
         # Bound on closing a half-made client after cancellation, so a close() that never returns cannot hang stop().
         self.cancel_close_timeout_sec = float(cancel_close_timeout_sec)
         self.idle_timeout = float(idle_timeout)
@@ -269,6 +280,7 @@ class KVMConnectionPool:
 
             self._report_timing(canonical_ip, background, started, None)
             entry = PooledKVMConnection(canonical_ip, client)
+            entry.pooled_mono = self._monotonic()
             entry.in_use = 1 if lease else 0
             self._pool[canonical_ip] = entry
             self.connect_failures.record_success(canonical_ip)
@@ -363,7 +375,14 @@ class KVMConnectionPool:
         now = time.time()
 
         for entry in entries:
-            if not entry.client.is_healthy():
+            # An earlier eviction may have yielded while a command replaced this connection: skip what left the pool.
+            if self._pool.get(entry.ip) is not entry:
+                continue
+            started = self._monotonic()
+            healthy = entry.client.is_healthy()
+            elapsed_ms = int(round((self._monotonic() - started) * 1000))
+            self._report_heartbeat(entry, healthy, elapsed_ms)
+            if not healthy:
                 await self._evict_or_defer(entry, "unhealthy during heartbeat", "心跳時判定不健康")
                 continue
 
@@ -374,6 +393,25 @@ class KVMConnectionPool:
                          extra={"zh": "KVM '%s' 心跳正常 (累計=%d)"})
 
         return success_count
+
+    def _report_heartbeat(self, entry: PooledKVMConnection, healthy: bool, elapsed_ms: int) -> None:
+        """Update the IP's heartbeat state and tell the timing observer; the observer can never break the pool."""
+        reason = ""
+        if not healthy:
+            reason_of = getattr(entry.client, "unhealthy_reason", None)
+            try:
+                reason = (reason_of() if reason_of is not None else "") or "not_connected"
+            except Exception:
+                reason = "not_connected"
+        now = self._monotonic()
+        pooled_at = entry.pooled_mono if entry.pooled_mono is not None else now
+        event = self._heartbeats.observe(entry.ip, healthy, reason, now, pooled_at)
+        if self.timing_observer is None:
+            return
+        try:
+            self.timing_observer(entry.ip, HEARTBEAT, elapsed_ms, healthy, reason, None, event)
+        except Exception:
+            logger.debug("KVM timing observer failed", exc_info=True)
 
     async def _evict_or_defer(self, entry: PooledKVMConnection, reason: str, reason_zh: str) -> None:
         """Evict now if no command holds it; otherwise defer until the last lease is released."""

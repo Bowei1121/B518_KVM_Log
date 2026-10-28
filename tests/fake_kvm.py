@@ -69,6 +69,15 @@ class FakeKVMSession:
     def is_healthy(self) -> bool:
         return self.connected and not self.track_ended and self.peer_state not in ("failed", "closed")
 
+    def unhealthy_reason(self) -> str:
+        if not self.connected:
+            return "not_connected"
+        if self.track_ended:
+            return "track_ended"
+        if self.peer_state in ("failed", "closed"):
+            return "peer_" + self.peer_state
+        return ""
+
 
 class FakeKVM(FakeKVMSession):
     """Attribute-backed fake with the client's own field names (``frame``, ``frame_sequence``, ...).
