@@ -25,28 +25,50 @@ python tools/fake_core/fake_core.py
 | `--monitor-delay` | `0.5` | `monitor_start` 耗時秒數 |
 | `--result` | `PASS` | `PASS`／`FAIL`／`TIMEOUT`，或逐通道清單 `PASS,FAIL,PASS,NOTEST` |
 | `--not-found-delay` | `30` | `log_solution_not_found` 故障下 `check_finish` 長輪詢等幾秒才回錯誤（對應真 Core 的 `VISIBILITY_LOST_SEC`） |
-| `--poll` | `0.5` | `check_finish` 內部輪詢間隔（對應真 Core 的 `CHECK_POLL_INTERVAL_SEC`） |
+| `--poll` | `0.5` | `check_start`／`check_finish` 內部輪詢間隔（對應真 Core 的 `CHECK_POLL_INTERVAL_SEC`） |
+| `--scenario` | 無（正常） | 情境名稱或別名，見下方「情境」 |
 
 ## 支援的指令
 
-`ping`、`status`、`monitor_start`、`start_test`、`check_finish`。驗證順序與錯誤碼同真 Core
+`ping`、`status`、`monitor_start`、`start_test`、`check_start`、`check_finish`。驗證順序與錯誤碼同真 Core
 （`invalid_json`、`invalid_request`、`unsupported_protocol_version`、`missing_req_id`、`missing_command`、
 `unknown_command`、`unknown_field`、`forbidden_field`、`missing_device`、`unknown_device`、`invalid_argument`；
 FCT 的 `start_test` 回 `unsupported_command`）。
 
-`snapshot`、`check_start`、`inspect`、`input`、`core_status`、`shutdown` 不模擬，通過驗證後回
+`snapshot`、`inspect`、`input`、`core_status`、`shutdown` 不模擬，通過驗證後回
 `error=unsupported_command`（message 說明 fake core 不模擬），不會假裝成功。
 
 ### 正常流程
 
 1. `monitor_start`（`timeout_sec` 1–300）→ ok，`data = {state: "monitoring", capacity: 通道數}`
 2. `start_test` → ok，`data.action` 為 `start_all`（BT）或 `ok`（DFU）
-3. `check_finish`（`timeout_sec` 0–3600）→ 在 `--finish-delay` 之後回 `kind=taken`、`reason=reliable_complete`、`results` 逐通道
-   （第一次看到完成畫面先回 `waiting`／`confirming_complete_frame`，下一次輪詢約 `--poll` 秒後 `taken`，所以長輪詢會自然取到）
-4. 再查一次 → `kind=already_taken`，同一組 `results`
+3. `check_start`（可省略、可重複；`timeout_sec` 0–3600）→ 測試進行中且連續兩次讀取相隔 ≤ 1 秒：
+   `kind=started`、`state=monitoring`、`reason=activity_confirmed`、`active` 為每個通道 `{slot, evidence:"testing"}`、`results=[]`。
+   `timeout_sec=0` 第 1 次回 `waiting`／`monitoring`，1 秒內第 2 次回 `started`；長輪詢約 `--poll` 秒後回 `started`；
+   兩次相隔 > 1 秒不會配對。`started` 不消耗結果，之後 `check_finish` 仍可 `taken`。結果畫面已出現時 `check_start` 也會 `taken`
+   （之後 `check_finish`／`check_start` 都回 `already_taken`）。逾時回 `status=timeout`、`error=timeout`，`data` 為最後讀值。
+4. `check_finish`（`timeout_sec` 0–3600）→ 在 `--finish-delay` 之後回 `kind=taken`、`reason=reliable_complete`、`results` 逐通道、`active=[]`
+   （第一次看到完成畫面先回 `waiting`／`confirming_complete_frame`，下一次輪詢約 `--poll` 秒後 `taken`，所以長輪詢會自然取到；`check_finish` 不會回 `started`）
+5. 再查一次 → `kind=already_taken`，同一組 `results`
 
-沒有 `monitor_start` 就 `check_finish`、或非監控中 `start_test` → `monitor_not_ready`。
-同設備上鎖指令（`monitor_start`／`start_test`／`check_finish`）並行時第二筆回 `device_busy`。
+沒有 `monitor_start` 就 `check_start`／`check_finish`、或非監控中 `start_test` → `monitor_not_ready`。
+同設備上鎖指令（`monitor_start`／`start_test`／`check_start`／`check_finish`）並行時第二筆回 `device_busy`。
+`check_start` 與 `check_finish` 共用判讀順序與故障行為（待確認、`shutdown`、`heartbeat`、`not_found`、`timeout`、client 斷線不回覆）。
+
+## 情境（scenario）
+
+情境改變「下一次 `start_test` 起」發生的事，持續到 `clear`／`reset` 或改選別的情境。三種選法：
+啟動參數 `--scenario NAME`、在視窗直接輸入名稱（或別名）、在視窗輸入 `scenario NAME`。`state` 顯示目前情境，`help` 列出全部。
+
+| 情境（別名） | 發生什麼事 | 預期回覆 |
+| --- | --- | --- |
+| `cs_started` (`css`) | 正常；選它等於清除情境 | `check_start` → ok `started`；之後 `check_finish` → `taken` |
+| `cs_taken` (`cstk`) | `start_test` ok，結果畫面立刻出現（看不到測試過程） | `check_start` 長輪詢 → ok `taken`（`state=complete`、`reason=reliable_complete`、逐通道 `results`）；`timeout_sec=0` 第 1 次 `waiting`／`complete`／`confirming_complete_frame`，1 秒內第 2 次 `taken`。之後 `check_finish`（任何 `timeout_sec`）與再次 `check_start` → ok `already_taken`、同一組 `results` |
+| `cs_timeout` (`csto`) | `start_test` ok，但看不到測試開始，也永遠沒有結果畫面 | `check_start` `timeout_sec>0` → `status=timeout`、`error=timeout`、`data`：`kind=waiting`、`state=monitoring`、`reason=monitoring`、`active=[]`、`results=[]`；`timeout_sec=0` → ok `waiting`。`check_finish` 同樣 |
+| `cs_paused` (`csp`) | `start_test` ok，看不到測試；`--finish-delay` 秒後畫面進入待確認（通道沒變黃 → NOTEST → 待確認） | 延遲前 `timeout_sec=0` 的 `check_start` → ok `waiting`／`monitoring`；`check_start` 長輪詢或延遲後 → ok `paused`（`state=review`、`reason=confirmation_required`、`results=[]`）。之後 `confirm`／`confirm standby` 照常 |
+| `start_test_drop_not_started` (`stdrop`) | `start_test` 時 server 不回覆就關掉該連線，測試沒有開始 | `start_test` 收不到回覆（連線被關）。重連後 `check_start` 永遠不會 `started`，逾時回 `timeout`（資料同 `cs_timeout`）；本輪開始請求仍在，所以 `check_finish` `timeout_sec=0` 回 ok `waiting`，不是 `monitor_not_ready` |
+
+選錯名稱會回「未知情境」並列出可用名稱。
 
 ## 故障：視窗輸入指令（括號內是縮寫）
 
@@ -61,8 +83,9 @@ FCT 的 `start_test` 回 `unsupported_command`）。
 | `confirm standby` | 轉換 | 待確認 → 待機。第 1 次 `error round_lost`（`data.kind=unknown`、`state=""`），第 2 次 ok `waiting`／`standby` |
 | `shutdown` (`sd`) | 持續 | 進行中的 `check_finish` 與之後所有請求回 `server_shutting_down`；輪次重設為待機 |
 | `not_found` (`nf`) | 持續 | `monitor_start` 回 `log_solution_not_found`（`data` 為 `state=""`、`capacity=0`）；`check_finish` `timeout_sec=0` 回 ok、`kind=unknown`、`reason=locators_missing_or_ambiguous`；長輪詢等 `--not-found-delay` 秒後回 `log_solution_not_found`（`timeout_sec` 較小則先回 `timeout`）；`start_test` 回 `monitor_not_ready`（unreadable） |
-| `clear` (`c`) | | 解除所有持續故障 |
-| `reset` (`r`) | | 解除故障並把輪次重設為待機 |
+| `clear` (`c`) | | 解除所有持續故障與情境 |
+| `reset` (`r`) | | 解除故障與情境，並把輪次重設為待機 |
+| `scenario NAME` (`sc`) | | 選情境，見上方「情境」 |
 | `result X` (`res`) | | 執行中改結果，例如 `result FAIL`、`result PASS,FAIL,PASS,NOTEST` |
 | `state` (`s`) | | 顯示目前畫面、旗標與故障 |
 | `help` (`h`)／`quit` (`q`) | | 說明／結束 |
@@ -89,17 +112,22 @@ FCT 的 `start_test` 回 `unsupported_command`）。
 | 待確認中開始監控 | `review`，VI 送 `monitor_start`，再 `confirm` | `monitor_start` 回 `log_solution_review`；`check_finish` 回 `manual_verification_required`，再查回 `monitor_not_ready` |
 | 伺服器關閉 | `shutdown` | 進行中與之後的請求都回 `server_shutting_down` |
 | 找不到 Log Solution | `not_found` | `monitor_start` 回 `log_solution_not_found`；`check_finish` `timeout_sec=0` 回 ok、`kind=unknown`、`reason=locators_missing_or_ambiguous`，長輪詢等 `--not-found-delay` 秒後回 `log_solution_not_found` |
-| 測完還原 | `clear`（只解除故障）或 `reset`（連輪次一起重設） | 回到正常流程 |
+| `check_start` 看到已開始 | （不用輸入，預設 `--finish-delay` 夠長即可） | 連查兩次（相隔 ≤ 1 秒）或長輪詢 → `kind=started`、`active` 為全部通道；`check_finish` 之後仍 `taken` |
+| `check_start` 直接交付 | `cstk`（再跑 `monitor_start` → `start_test`） | `check_start` → `taken`；`check_finish` 與再次 `check_start` → `already_taken` |
+| `check_start` 逾時 | `csto`（再跑 `monitor_start` → `start_test`） | `check_start` → `status=timeout`、`error=timeout`、`data` 為 `waiting`／`monitoring`；`timeout_sec=0` → ok `waiting` |
+| `check_start` 待確認 | `csp`（再跑 `monitor_start` → `start_test`，等 `--finish-delay` 秒） | `check_start` → ok `paused`／`review`／`confirmation_required` |
+| `start_test` 沒有回覆 | `stdrop`（再跑 `monitor_start` → `start_test`） | `start_test` 連線被關、沒有回覆；重連後 `check_start` → `timeout`；`check_finish` `timeout_sec=0` → ok `waiting` |
+| 測完還原 | `clear`（解除故障與情境）或 `reset`（連輪次一起重設） | 回到正常流程 |
 
 ## 之後接「對方模擬器」的擴充點
 
 目前不做手臂觸發、PLC IO 交握、Busy／Ready、結果寫入 PLC 暫存器。結構上預留兩處：
 
 - **畫面／輪次轉換是公開方法**：`FakeCore.devices["BT-01"]` 是 `Device`，有 `enter_review()`、`confirm(to)`、
-  `monitor_ready()`、`test_started()`、`show_result()`、`reset()`，以及 `screen`、`start_requested`、`armed`、`delivered` 屬性；
+  `monitor_ready()`、`test_started()`、`show_result()`、`observe_activity()`、`reset()`，以及 `screen`、`start_requested`、`armed`、`delivered` 屬性；
   `core.results` 是目前設定的逐通道結果；`core.command(text)`（與視窗輸入同一個入口）也可直接當程式介面用。
 - **事件掛鉤**：`core.add_listener(callback)`，`callback(event_name, device_id, details)`。事件：
-  `monitor_start`、`start_test`、`result_screen`、`taken`、`review`、`confirm`、`fault`。
+  `monitor_start`、`start_test`、`result_screen`、`taken`、`review`、`confirm`、`fault`、`scenario`。
 
 ```python
 # 在 tools/fake_core 目錄下執行，或先 sys.path.insert(0, "tools/fake_core")

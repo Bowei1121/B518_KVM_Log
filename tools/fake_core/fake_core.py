@@ -90,7 +90,7 @@ COMMANDS: Dict[str, Spec] = {
     "shutdown": Spec(),
     "snapshot": Spec(fields=frozenset({"format", "quality"}), device_bound=True, parse=_snapshot_args,
                      default_data={"width": 0, "height": 0, "format": "", "image_base64": ""}),
-    "check_start": Spec(fields=frozenset({"timeout_sec"}), device_bound=True, takes_lock=True,
+    "check_start": Spec("_check_start", fields=frozenset({"timeout_sec"}), device_bound=True, takes_lock=True,
                         parse=_check_timeout, default_data=_unknown()),
     "check_finish": Spec("_check_finish", fields=frozenset({"timeout_sec"}), device_bound=True, takes_lock=True,
                          parse=_check_timeout, default_data=_unknown()),
@@ -106,6 +106,18 @@ COMMANDS: Dict[str, Spec] = {
     "monitor_start": Spec("_monitor_start", fields=frozenset({"timeout_sec"}), device_bound=True, takes_lock=True,
                           parse=_monitor_timeout, default_data={"state": "", "capacity": 0}),
 }
+
+
+# 情境（scenario）：改變「下一次 start_test 起」發生的事。名稱 → 別名；cs_started = 正常（等於清除情境）。
+SCENARIOS = {"cs_started": "css", "cs_taken": "cstk", "cs_timeout": "csto", "cs_paused": "csp",
+             "start_test_drop_not_started": "stdrop"}
+SCENARIO_ALIASES = {alias: name for name, alias in SCENARIOS.items()}
+
+
+def resolve_scenario(name: str) -> Optional[str]:
+    """名稱或別名 → 正式名稱；None = 不是情境。"""
+    name = name.strip().lower()
+    return name if name in SCENARIOS else SCENARIO_ALIASES.get(name)
 
 
 def parse_results(text: str, channels: int) -> List[str]:
@@ -139,6 +151,9 @@ class Device:
         self.candidate_at: Optional[float] = None  # 兩張完成畫面規則：上一張完成畫面的時間
         self.running = False
         self.finish_at = 0.0
+        self.visible = False  # 畫面上看得到通道在測試（check_start 的活動證據）
+        self.outcome = "complete"  # finish_at 到時出現的畫面：complete 或 review
+        self.activity_prev: Optional[float] = None  # 活動配對：上一張看得到測試的影格時間
 
     def begin_start(self) -> None:
         """monitor_start 一開始：放掉上次交付與 armed；start_requested 保持原樣。"""
@@ -152,22 +167,40 @@ class Device:
         self.screen = "monitoring"
         self.start_requested = True
         self.armed = True
-        self.running = False
+        self.running = self.visible = False
+        self.activity_prev = None
 
     def test_started(self) -> None:
-        """start_test 成功：finish_delay 秒後出現結果畫面。"""
-        self.running = True
-        self.finish_at = time.monotonic() + self.core.finish_delay
+        """start_test 成功：預設 finish_delay 秒後出現結果畫面，期間看得到通道在測試。依情境改變。"""
+        scenario = self.core.scenario
+        self.running = self.visible = False
+        self.activity_prev = None
+        if scenario == "cs_taken":  # 看不到測試，結果畫面立刻出現
+            self.show_result()
+        elif scenario in ("cs_timeout", "start_test_drop_not_started"):  # 看不到測試，也不會有結果畫面
+            pass
+        else:
+            self.running = True
+            self.visible = scenario != "cs_paused"
+            self.outcome = "review" if scenario == "cs_paused" else "complete"
+            self.finish_at = time.monotonic() + self.core.finish_delay
 
     def enter_review(self) -> None:
         self.screen = "review"
-        self.running = False
-        self.candidate_at = None
+        self.running = self.visible = False
+        self.candidate_at = self.activity_prev = None
 
     def show_result(self) -> None:
         self.screen = "complete"
-        self.running = False
-        self.candidate_at = None
+        self.running = self.visible = False
+        self.candidate_at = self.activity_prev = None
+
+    def observe_activity(self, now: float) -> bool:
+        """一次讀取：連續兩張 ≤1 秒、都看得到測試才算活動（check_start / check_finish 的讀取共用）。"""
+        testing = self.running and self.visible and self.screen == "monitoring"
+        confirmed = testing and self.activity_prev is not None and now - self.activity_prev <= FRAME_GAP_SEC
+        self.activity_prev = now if testing else None
+        return confirmed
 
     def confirm(self, to: str = "complete") -> None:
         """待確認 → 完成（帶設定的結果）或待機。不在待確認時不動作。"""
@@ -183,8 +216,11 @@ class Device:
         """時間到且沒有 timeout 故障，結果畫面出現。"""
         if (self.running and self.screen == "monitoring" and time.monotonic() >= self.finish_at
                 and "timeout" not in self.core.faults):
-            self.show_result()
-            self.core.emit("result_screen", self.device_id)
+            if self.outcome == "review":
+                self.enter_review()
+            else:
+                self.show_result()
+            self.core.emit("result_screen", self.device_id, screen=self.screen)
 
     def reading(self) -> Dict[str, Any]:
         """畫面現在看到的樣子（waiting 形狀）。"""
@@ -258,8 +294,14 @@ class FakeCore:
         "confirm (cn)         待確認 → 完成（confirm standby：待確認 → 待機）\n"
         "shutdown (sd)        [持續] server_shutting_down，並把輪次重設為待機\n"
         "not_found (nf)       [持續] log_solution_not_found\n"
-        "clear (c)            清除所有持續故障\n"
-        "reset (r)            清除故障並把輪次重設為待機\n"
+        "clear (c)            清除所有持續故障與情境\n"
+        "reset (r)            清除故障與情境並把輪次重設為待機\n"
+        "scenario (sc) NAME   選情境（也可直接輸入名稱或別名），下一次 start_test 起生效、持續到 clear：\n"
+        "  cs_started (css)   正常：check_start started、check_finish taken（等於清除情境）\n"
+        "  cs_taken (cstk)    start_test 後結果畫面立刻出現，check_start 直接 taken\n"
+        "  cs_timeout (csto)  看不到測試開始也沒有結果，check_start／check_finish timeout\n"
+        "  cs_paused (csp)    finish-delay 秒後進入待確認，check_start paused\n"
+        "  start_test_drop_not_started (stdrop)  start_test 不回覆就斷線，測試未開始\n"
         "result (res) X       改結果：PASS / FAIL / TIMEOUT 或逐通道清單 PASS,FAIL,...\n"
         "state (s)            顯示目前畫面、旗標與故障\n"
         "help (h)             本說明\n"
@@ -272,8 +314,12 @@ class FakeCore:
     def __init__(self, host: str = "0.0.0.0", port: int = 5000, device: str = "BT-01", station: str = "BT",
                  channels: int = 4, finish_delay: float = 5.0, monitor_delay: float = 0.5,
                  result: str = "PASS", not_found_delay: float = 30.0, poll: float = 0.5,
-                 log: Optional[Callable[[str], None]] = None) -> None:
+                 log: Optional[Callable[[str], None]] = None, scenario: Optional[str] = None) -> None:
         self.host, self.port = host, port
+        canonical = resolve_scenario(scenario) if scenario else None
+        if scenario and canonical is None:
+            raise ValueError(f"unknown scenario '{scenario}'")
+        self.scenario = None if canonical == "cs_started" else canonical
         self.finish_delay, self.monitor_delay = float(finish_delay), float(monitor_delay)
         self.not_found_delay, self.poll = float(not_found_delay), float(poll)
         self.channels = channels
@@ -363,10 +409,12 @@ class FakeCore:
                 return f"故障 {fault} 已啟用（clear 解除）"
             if name in ("clear", "c"):
                 self.faults.clear()
+                self.scenario = None
                 self.emit("fault", "", fault="clear", on=False)
-                return "已清除所有故障"
+                return "已清除所有故障與情境"
             if name in ("reset", "r"):
                 self.faults.clear()
+                self.scenario = None
                 for dev in self.devices.values():
                     dev.reset()
                 self.emit("fault", "", fault="reset", on=False)
@@ -394,12 +442,26 @@ class FakeCore:
                 except ValueError as exc:
                     return str(exc)
                 return "結果改為 " + ",".join(self.results)
+            if name in ("scenario", "sc") or resolve_scenario(name):
+                wanted = args[0] if name in ("scenario", "sc") and args else name
+                if wanted in ("scenario", "sc"):
+                    return "目前情境：" + (self.scenario or "none") + "\n可用：" + self._scenario_names()
+                canonical = resolve_scenario(wanted)
+                if canonical is None:
+                    return f"未知情境 '{wanted}'，可用：" + self._scenario_names()
+                self.scenario = None if canonical == "cs_started" else canonical
+                self.emit("scenario", "", scenario=canonical)
+                return f"情境 {canonical} 已選擇（下一次 start_test 起生效；clear 解除）"
             if name in ("state", "s"):
                 return self._state_text()
             if name in ("quit", "q"):
                 self.quit_event.set()
                 return "bye"
         return f"未知指令 '{name}'，輸入 help 看說明"
+
+    @staticmethod
+    def _scenario_names() -> str:
+        return "、".join(f"{n}({a})" for n, a in SCENARIOS.items())
 
     def _state_text(self) -> str:
         lines = []
@@ -410,6 +472,7 @@ class FakeCore:
                          f"delivered={'yes' if dev.delivered else 'no'}")
         lines.append("results=" + ",".join(self.results))
         lines.append("faults=" + (",".join(sorted(self.faults)) or "none"))
+        lines.append("scenario=" + (self.scenario or "none"))
         return "\n".join(lines)
 
     # ---- 一行請求 → 一行回覆 ----------------------------------------------------------------------
@@ -582,16 +645,20 @@ class FakeCore:
                         "message": f"Log Solution is not monitoring ({state}); no HID sent"}
             dev.test_started()
         self.emit("start_test", dev.device_id)
+        if self.scenario == "start_test_drop_not_started":
+            conn.close()  # 不回覆就關掉連線；鎖由 _dispatch 釋放
+            return None
         return {"status": "ok", "data": {"action": "start_all" if dev.station == "BT" else "ok"}}
 
     def _fail(self, code: str, message: str, last: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "error": code, "message": message,
                 "data": {**last, "kind": "unknown", "results": []}}
 
-    def _step(self, dev: Device, now: float):
+    def _step(self, dev: Device, now: float, mode: str):
         """RoundCheck.step 一輪：(回覆, 最後讀值)；回覆為 None = 繼續等。"""
         dev.tick()
         last = dev.reading()
+        confirmed = dev.observe_activity(now)
         results = tuple(self.results)
         rows = [{"slot": i, "status": s} for i, s in enumerate(results, 1)]
         if dev.screen == "review":
@@ -621,9 +688,21 @@ class FakeCore:
             return {"status": "error", "error": "round_lost",
                     "message": "Log Solution returned to standby before this round was taken",
                     "data": _unknown()}, last
+        if mode == "start" and confirmed and dev.screen == "monitoring":
+            # 只回報、不結算：start_requested / armed 不變，之後 check_finish 仍可 taken
+            active = [{"slot": i, "evidence": "testing"} for i in range(1, dev.channels + 1)]
+            return {"status": "ok", "data": {**last, "kind": "started", "reason": "activity_confirmed",
+                                             "active": active, "results": []}}, last
         return None, last
 
+    def _check_start(self, dev: Device, timeout: float, conn: _Conn) -> Optional[Dict[str, Any]]:
+        return self._check(dev, timeout, conn, "start")
+
     def _check_finish(self, dev: Device, timeout: float, conn: _Conn) -> Optional[Dict[str, Any]]:
+        return self._check(dev, timeout, conn, "finish")
+
+    def _check(self, dev: Device, timeout: float, conn: _Conn, mode: str) -> Optional[Dict[str, Any]]:
+        """check_start / check_finish 共用的長輪詢（tcp_server._long_poll）。mode 只差在要不要回 started。"""
         started = time.monotonic()
         not_found_last = _unknown(NOT_FOUND_REASON)
         last = _unknown()
@@ -648,7 +727,7 @@ class FakeCore:
                         dev.tick()
                         reply, last = None, dev.reading()
                     else:
-                        reply, last = self._step(dev, now)
+                        reply, last = self._step(dev, now, mode)
                 if reply is not None:
                     return reply
                 if timeout == 0:
@@ -674,7 +753,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--result", default="PASS", help="PASS / FAIL / TIMEOUT，或逐通道清單 PASS,FAIL,...（預設 PASS）")
     p.add_argument("--not-found-delay", type=float, default=30,
                    help="log_solution_not_found 故障下 check_finish 長輪詢等幾秒才回錯誤（預設 30）")
-    p.add_argument("--poll", type=float, default=0.5, help="check_finish 內部輪詢間隔秒數（預設 0.5）")
+    p.add_argument("--poll", type=float, default=0.5, help="check_start／check_finish 內部輪詢間隔秒數（預設 0.5）")
+    p.add_argument("--scenario", default=None, choices=sorted(set(SCENARIOS) | set(SCENARIO_ALIASES)),
+                   help="情境（預設無 = 正常）：" + "、".join(f"{n}({a})" for n, a in SCENARIOS.items()))
     return p
 
 
@@ -694,7 +775,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
     try:
         core = FakeCore(args.host, args.port, args.device, args.station, args.channels, args.finish_delay,
-                        args.monitor_delay, args.result, args.not_found_delay, args.poll)
+                        args.monitor_delay, args.result, args.not_found_delay, args.poll, scenario=args.scenario)
     except ValueError as exc:
         parser.error(str(exc))
     core.start()

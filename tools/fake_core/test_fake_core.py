@@ -230,7 +230,6 @@ def test_fct_start_test_is_unsupported_command(make_core):
 
 @pytest.mark.parametrize("cmd,fields", [
     ("snapshot", {"format": "png", "quality": 0}),
-    ("check_start", {"timeout_sec": 0}),
     ("inspect", {"timeout_sec": 0}),
 ])
 def test_real_but_not_simulated_commands_say_so(cli, cmd, fields):
@@ -557,6 +556,7 @@ TCP_SERVER_DEFAULTS = {
     "status": {"core_uptime_sec": 0, "devices": []},
     "monitor_start": {"state": "", "capacity": 0},
     "start_test": {"action": ""},
+    "check_start": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
     "check_finish": {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []},
 }
 
@@ -566,7 +566,8 @@ def test_error_replies_carry_exactly_tcp_server_default_data_keys(core, cli):
     to_monitoring(a)
     a.send("check_finish", timeout_sec=1)  # 佔住鎖 → 其他人 device_busy
     time.sleep(0.2)
-    fields = {"monitor_start": {"timeout_sec": 5}, "check_finish": {"timeout_sec": 0}}
+    fields = {"monitor_start": {"timeout_sec": 5}, "check_finish": {"timeout_sec": 0},
+              "check_start": {"timeout_sec": 0}}
     for cmd, default in TCP_SERVER_DEFAULTS.items():
         bad = cli.call(cmd, device="BAD")  # unknown_device / invalid_argument（ping、status 帶 device）
         assert bad["status"] == "error" and bad["data"] == default, cmd
@@ -721,3 +722,329 @@ def test_only_stdlib_imports():
             mods.add((node.module or "").split(".")[0])
     assert mods
     assert mods <= set(sys.stdlib_module_names), mods - set(sys.stdlib_module_names)
+
+
+# ---------------------------------------------------------------- check_start
+
+WAITING_MONITORING = {"kind": "waiting", "state": "monitoring", "reason": "monitoring", "capacity": 4,
+                      "active": [], "results": []}
+STARTED = {"kind": "started", "state": "monitoring", "reason": "activity_confirmed", "capacity": 4,
+           "active": [{"slot": i, "evidence": "testing"} for i in range(1, 5)], "results": []}
+PAUSED = {"kind": "paused", "state": "review", "reason": "confirmation_required", "capacity": 4,
+          "active": [], "results": []}
+PASS4 = [{"slot": i, "status": "PASS"} for i in range(1, 5)]
+
+
+def running(make_core, **kw):
+    """monitor_start + start_test 之後的 (core, client)。"""
+    core = make_core(**kw)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    return core, cli
+
+
+@pytest.mark.parametrize("fields,msg", [
+    ({}, "timeout_sec is required and must be a number"),
+    ({"timeout_sec": True}, "timeout_sec is required and must be a number"),
+    ({"timeout_sec": -1}, "timeout_sec must be between 0 and 3600"),
+    ({"timeout_sec": 3601}, "timeout_sec must be between 0 and 3600"),
+])
+def test_check_start_timeout_validation(cli, fields, msg):
+    r = cli.call("check_start", **fields)
+    assert r["error"] == "invalid_argument" and r["message"] == msg and r["data"] == UNKNOWN_DEFAULT
+
+
+def test_check_start_unknown_field(cli):
+    r = cli.call("check_start", timeout_sec=0, bogus=1)
+    assert r["error"] == "unknown_field" and r["data"] == UNKNOWN_DEFAULT
+
+
+def test_check_start_device_busy(core, cli):
+    a = core.connect()
+    to_monitoring(a)
+    a.send("check_start", timeout_sec=1)
+    time.sleep(0.2)
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["error"] == "device_busy" and r["data"] == UNKNOWN_DEFAULT
+    assert a.recv()["status"] == "timeout"
+
+
+def test_check_start_without_monitor_start_is_monitor_not_ready(cli):
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["error"] == "monitor_not_ready" and r["data"]["kind"] == "unknown" and r["data"]["results"] == []
+
+
+def test_check_start_after_monitor_start_only_is_waiting_then_times_out(cli):
+    to_monitoring(cli)
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["status"] == "ok" and r["data"] == WAITING_MONITORING
+    t0 = time.monotonic()
+    r = cli.call("check_start", timeout_sec=1)
+    assert time.monotonic() - t0 >= 0.95
+    assert (r["status"], r["error"]) == ("timeout", "timeout")
+    assert r["message"] == "no reliable result within 1 s" and r["data"] == WAITING_MONITORING
+
+
+def test_check_start_long_poll_started_exact_data(make_core):
+    core, cli = running(make_core, finish_delay=30)
+    t0 = time.monotonic()
+    r = cli.call("check_start", timeout_sec=5)
+    assert time.monotonic() - t0 < 1.0
+    assert r["status"] == "ok" and r["data"] == STARTED
+    again = cli.call("check_start", timeout_sec=0)
+    assert again["data"] == STARTED
+
+
+def test_check_start_two_polls_within_one_second_pair(make_core):
+    core, cli = running(make_core, finish_delay=30)
+    assert cli.call("check_start", timeout_sec=0)["data"] == WAITING_MONITORING
+    assert cli.call("check_start", timeout_sec=0)["data"] == STARTED
+
+
+def test_check_start_polls_more_than_one_second_apart_never_pair(make_core):
+    core, cli = running(make_core, finish_delay=30)
+    assert cli.call("check_start", timeout_sec=0)["data"] == WAITING_MONITORING
+    time.sleep(1.15)
+    assert cli.call("check_start", timeout_sec=0)["data"] == WAITING_MONITORING
+
+
+def test_started_does_not_consume_round_and_check_finish_never_reports_started(make_core):
+    core, cli = running(make_core, finish_delay=0.8)
+    assert cli.call("check_start", timeout_sec=5)["data"]["kind"] == "started"
+    r = cli.call("check_finish", timeout_sec=0)
+    assert r["data"]["kind"] == "waiting" and r["data"]["active"] == []
+    r = cli.call("check_finish", timeout_sec=10)
+    assert r["data"]["kind"] == "taken" and r["data"]["results"] == PASS4 and r["data"]["active"] == []
+
+
+def test_check_start_on_complete_screen_takes_then_already_taken(make_core):
+    core, cli = running(make_core, finish_delay=0.1)
+    time.sleep(0.3)
+    r = cli.call("check_start", timeout_sec=5)
+    assert r["data"] == {"kind": "taken", "state": "complete", "reason": "reliable_complete", "capacity": 4,
+                         "active": [], "results": PASS4}
+    r = cli.call("check_finish", timeout_sec=0)
+    assert r["data"]["kind"] == "already_taken" and r["data"]["results"] == PASS4
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["data"]["kind"] == "already_taken" and r["data"]["reason"] == "round_already_taken"
+
+
+def test_check_start_during_review_is_paused_even_on_long_poll(core, cli):
+    to_monitoring(cli)
+    core.command("review")
+    t0 = time.monotonic()
+    r = cli.call("check_start", timeout_sec=30)
+    assert time.monotonic() - t0 < 1.0 and r["status"] == "ok" and r["data"] == PAUSED
+
+
+def test_check_start_shutdown_fault(core):
+    a, b = core.connect(), core.connect()
+    to_monitoring(a)
+    a.send("check_start", timeout_sec=30)
+    time.sleep(0.2)
+    core.command("shutdown")
+    r = a.recv()
+    assert r["error"] == "server_shutting_down" and r["data"] == UNKNOWN_DEFAULT
+    assert b.call("check_start", timeout_sec=0)["error"] == "server_shutting_down"
+
+
+def test_check_start_heartbeat_fault(core, cli):
+    core.command("heartbeat")
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["error"] == "kvm_connect_failed" and r["data"] == UNKNOWN_DEFAULT
+
+
+def test_check_start_not_found_fault(core, cli):
+    core.command("not_found")
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["status"] == "ok" and r["data"] == {**UNKNOWN_DEFAULT, "reason": "locators_missing_or_ambiguous"}
+
+
+def test_check_start_timeout_fault(make_core):
+    core, cli = running(make_core, finish_delay=30)
+    core.command("timeout")
+    t0 = time.monotonic()
+    r = cli.call("check_start", timeout_sec=1)
+    assert time.monotonic() - t0 >= 0.95
+    assert (r["status"], r["error"]) == ("timeout", "timeout") and r["data"]["kind"] == "waiting"
+
+
+def test_check_start_client_gone_releases_lock(core):
+    a = core.connect()
+    to_monitoring(a)
+    a.send("check_start", timeout_sec=30)
+    time.sleep(0.2)
+    a.close()
+    time.sleep(0.3)
+    assert core.connect().call("check_start", timeout_sec=0)["error"] != "device_busy"
+
+
+# ---------------------------------------------------------------- scenarios
+
+def test_scenario_cli_option_and_constructor():
+    parser = fake_core.build_parser()
+    assert parser.parse_args([]).scenario is None
+    assert parser.parse_args(["--scenario", "cs_taken"]).scenario == "cs_taken"
+    assert parser.parse_args(["--scenario", "stdrop"]).scenario == "stdrop"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--scenario", "nope"])
+    with pytest.raises(ValueError):
+        fake_core.FakeCore(port=0, scenario="nope")
+
+
+def test_scenario_cs_started_is_normal_and_clears_scenario(make_core):
+    core = make_core(scenario="cs_timeout", finish_delay=30)
+    core.command("cs_started")
+    assert "cs_timeout" not in core.command("state")
+    cli = core.connect()
+    to_monitoring(cli)
+    cli.call("start_test")
+    cli.call("check_start", timeout_sec=0)
+    assert cli.call("check_start", timeout_sec=0)["data"] == STARTED
+
+
+def test_scenario_cs_taken(make_core):
+    core = make_core(scenario="cs_taken", finish_delay=30)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    first = cli.call("check_start", timeout_sec=0)
+    assert (first["data"]["kind"], first["data"]["state"], first["data"]["reason"]) == \
+        ("waiting", "complete", "confirming_complete_frame")
+    r = cli.call("check_start", timeout_sec=0)
+    assert r["data"]["kind"] == "taken" and r["data"]["results"] == PASS4
+    for t in (0, 5):
+        r = cli.call("check_finish", timeout_sec=t)
+        assert r["data"]["kind"] == "already_taken" and r["data"]["results"] == PASS4
+    assert cli.call("check_start", timeout_sec=0)["data"]["kind"] == "already_taken"
+
+
+def test_scenario_cs_taken_long_poll_alias(make_core):
+    core = make_core(finish_delay=30)
+    core.command("scenario cstk")
+    cli = core.connect()
+    to_monitoring(cli)
+    cli.call("start_test")
+    r = cli.call("check_start", timeout_sec=5)
+    assert r["data"]["kind"] == "taken"
+
+
+@pytest.mark.parametrize("typed", ["cs_timeout", "csto", "scenario cs_timeout", "scenario csto"])
+def test_scenario_cs_timeout(make_core, typed):
+    core = make_core(finish_delay=0.1)
+    core.command(typed)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    time.sleep(0.3)
+    assert cli.call("check_start", timeout_sec=0)["data"] == WAITING_MONITORING
+    r = cli.call("check_start", timeout_sec=0.3)
+    assert (r["status"], r["error"]) == ("timeout", "timeout") and r["data"] == WAITING_MONITORING
+    r = cli.call("check_finish", timeout_sec=0.3)
+    assert (r["status"], r["error"]) == ("timeout", "timeout") and r["data"] == WAITING_MONITORING
+    assert cli.call("check_finish", timeout_sec=0)["status"] == "ok"
+
+
+def test_scenario_cs_paused(make_core):
+    core = make_core(scenario="csp", finish_delay=0.5)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    assert cli.call("check_start", timeout_sec=0)["data"] == WAITING_MONITORING
+    r = cli.call("check_start", timeout_sec=10)
+    assert r["status"] == "ok" and r["data"] == PAUSED
+    assert cli.call("check_start", timeout_sec=0)["data"] == PAUSED
+    core.command("confirm standby")
+    assert cli.call("check_finish", timeout_sec=0)["error"] == "round_lost"
+
+
+def test_scenario_cs_paused_confirm_complete(make_core):
+    core = make_core(scenario="cs_paused", finish_delay=0.1)
+    cli = core.connect()
+    to_monitoring(cli)
+    cli.call("start_test")
+    time.sleep(0.3)
+    assert cli.call("check_start", timeout_sec=0)["data"] == PAUSED
+    core.command("confirm")
+    assert cli.call("check_finish", timeout_sec=5)["data"]["kind"] == "taken"
+
+
+@pytest.mark.parametrize("name", ["start_test_drop_not_started", "stdrop"])
+def test_scenario_start_test_drop_not_started(make_core, name):
+    core = make_core(scenario=name, finish_delay=0.1)
+    cli = core.connect()
+    to_monitoring(cli)
+    cli.send("start_test")
+    assert cli.recv_line() is None  # 沒有回覆、連線被關
+    cli2 = core.connect()
+    r = cli2.call("check_start", timeout_sec=1)
+    assert (r["status"], r["error"]) == ("timeout", "timeout") and r["data"] == WAITING_MONITORING
+    r = cli2.call("check_finish", timeout_sec=0)
+    assert r["status"] == "ok" and r["data"]["kind"] == "waiting"  # 不是 monitor_not_ready
+
+
+def test_scenario_clear_and_reset_remove_it(core):
+    core.command("cs_taken")
+    assert "cs_taken" in core.command("state")
+    core.command("clear")
+    assert "cs_taken" not in core.command("state")
+    core.command("stdrop")
+    core.command("reset")
+    assert "stdrop" not in core.command("state")
+
+
+def test_scenario_unknown_name_and_help(core):
+    out = core.command("scenario bogus")
+    assert "bogus" in out and "cs_taken" in out
+    assert core.scenario is None
+    for name in ("cs_started", "cs_taken", "cs_timeout", "cs_paused", "start_test_drop_not_started"):
+        assert name in core.command("help")
+
+
+def test_scenario_listener_event(core):
+    events = []
+    core.add_listener(lambda n, d, details: events.append((n, details)))
+    core.command("csp")
+    assert ("scenario", {"scenario": "cs_paused"}) in events
+
+
+def test_scenario_from_stdin_in_subprocess():
+    proc = subprocess.Popen(
+        [sys.executable, str(HERE / "fake_core.py"), "--port", "0", "--host", "127.0.0.1",
+         "--finish-delay", "0.2", "--monitor-delay", "0"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        encoding="utf-8")
+    try:
+        port = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            if "listening on" in line:
+                port = int(line.strip().rsplit(":", 1)[1])
+                break
+        assert port
+        threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
+        proc.stdin.write("scenario cs_taken\nresult FAIL\n")  # 指令依序處理：結果為 FAIL 時情境必已生效
+        proc.stdin.flush()
+        c = Client(port)
+        got = None
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline and got is None:
+            c.call("monitor_start", timeout_sec=5)
+            c.call("start_test")
+            r = c.call("check_start", timeout_sec=3)
+            if r["data"]["kind"] == "taken":
+                got = r
+            else:
+                time.sleep(0.2)
+        assert got is not None and {x["status"] for x in got["data"]["results"]} == {"FAIL"}
+        c.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
