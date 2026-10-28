@@ -32,9 +32,9 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool, normalize_kvm_ip  # type: ignore[import-not-found,no-redef]
 
 try:
-    from kvm_timing import TimingRecord, log_timing
+    from kvm_timing import COMMAND, TimingRecord, command_logger, log_timing
 except ImportError:
-    from .kvm_timing import TimingRecord, log_timing  # type: ignore[import-not-found,no-redef]
+    from .kvm_timing import COMMAND, TimingRecord, command_logger, log_timing  # type: ignore[import-not-found,no-redef]
 
 try:
     from freeze_guard import FrameFreezeGuard
@@ -181,6 +181,18 @@ class CommandContext:
     operation: Optional[Callable[..., Any]] = None
     reader: Any = None
     writer: Any = None
+
+
+@dataclass(frozen=True)
+class _PendingTiming:
+    """A device command's timing line, written once its reply has been sent (or found unsendable)."""
+    started: float
+    req_id: str
+    admitted: Any
+    ok: bool
+    reason: str
+    ended: float  # when the reply was ready (or Core decided there is none): the envelope elapsed_sec end point
+    ts: float  # wall-clock time (epoch seconds) at that same end point
 
 
 @dataclass(frozen=True)
@@ -964,17 +976,28 @@ class TcpJsonServer:
         writer: Optional[asyncio.StreamWriter] = None,
     ) -> bytes:
         """Parse one line, validate it, dispatch it, and return a newline-terminated 1.0 envelope."""
+        reply, pending = await self._process_request(raw_line, reader=reader, writer=writer)
+        self._log_command_timing(pending)
+        return reply
+
+    async def _process_request(
+        self,
+        raw_line: bytes,
+        reader: Optional[asyncio.StreamReader] = None,
+        writer: Optional[asyncio.StreamWriter] = None,
+    ) -> tuple[bytes, Optional[_PendingTiming]]:
+        """Like ``_process_line``, plus the device command's timing line for the caller to write after the reply."""
         line_str = raw_line.decode("utf-8", errors="replace").strip()
         if not line_str:
-            return b""
+            return b"", None
 
         started = time.monotonic()
         try:
             req = json.loads(line_str)
         except Exception as exc:
-            return self._encode_envelope(started, "", "", "", "error", "invalid_json", f"Failed to parse JSON: {exc}", {})
+            return self._encode_envelope(started, "", "", "", "error", "invalid_json", f"Failed to parse JSON: {exc}", {}), None
         if not isinstance(req, dict):
-            return self._encode_envelope(started, "", "", "", "error", "invalid_request", "Request must be a JSON object", {})
+            return self._encode_envelope(started, "", "", "", "error", "invalid_request", "Request must be a JSON object", {}), None
 
         req_id = req.get("req_id") if isinstance(req.get("req_id"), str) else ""
         device = req.get("device") if isinstance(req.get("device"), str) else ""
@@ -983,12 +1006,39 @@ class TcpJsonServer:
         invalid, admitted = self._admit(req)
         if invalid is not None:
             error, message = invalid
-            return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
+            return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {}), None
 
-        raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
+        try:
+            raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
+        except Exception:
+            self._log_command_timing(_PendingTiming(started, req_id, admitted, False, "internal_error",
+                                                    time.monotonic(), time.time()))
+            raise
         if raw.get("error") == "client_disconnected":
-            return b""  # PROTOCOL 7: the client is gone, so nothing is written
-        return self._encode_result(started, req_id, device, cmd, raw)
+            # PROTOCOL 7: the client is gone, so nothing is written
+            return b"", _PendingTiming(started, req_id, admitted, False, "client_disconnected",
+                                       time.monotonic(), time.time())
+        reply = self._encode_result(started, req_id, device, cmd, raw)
+        status = str(raw.get("status", "ok"))
+        reason = "timeout" if status == "timeout" else str(raw.get("error") or "internal_error")
+        return reply, _PendingTiming(started, req_id, admitted, status == "ok", "" if status == "ok" else reason,
+                                     time.monotonic(), time.time())
+
+    def _log_command_timing(self, pending: Optional[_PendingTiming]) -> None:
+        """One Core-side processing-time line per device command (#156). Never raises: logging cannot cost a reply."""
+        if pending is None:
+            return
+        try:
+            admitted = pending.admitted
+            if not admitted.spec.device_bound or admitted.entry is None:
+                return
+            log_timing(TimingRecord(
+                ts=pending.ts, device=admitted.entry.device_id, ip=str(admitted.entry.kvm_ip or ""), path=COMMAND,
+                elapsed_ms=int(round((pending.ended - pending.started) * 1000)), ok=pending.ok,
+                reason=pending.reason, command=admitted.spec.name,
+                source="ui" if pending.req_id.startswith("ui-") else "client"), command_logger)
+        except Exception:
+            logger.debug("Command timing log failed", exc_info=True)
 
     def _encode_result(
         self, started: float, req_id: str, device: str, cmd: str, raw: Dict[str, Any]
@@ -1055,10 +1105,18 @@ class TcpJsonServer:
                 if not line:
                     break
 
-                response_bytes = await self._process_line(line, reader=reader, writer=writer)
-                if response_bytes:
-                    writer.write(response_bytes)
-                    await writer.drain()
+                response_bytes, pending = await self._process_request(line, reader=reader, writer=writer)
+                try:
+                    if response_bytes:
+                        writer.write(response_bytes)
+                        await writer.drain()
+                except (ConnectionError, OSError, asyncio.CancelledError):
+                    # The reply may not have reached the client (also a session cancelled mid-drain at shutdown).
+                    if pending is not None:
+                        pending = replace(pending, ok=False, reason="client_disconnected")
+                    raise
+                finally:
+                    self._log_command_timing(pending)  # after the reply is out, so logging cannot delay it
         except (ConnectionError, OSError):
             pass
         except Exception:
