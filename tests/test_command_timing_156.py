@@ -239,9 +239,13 @@ def test_wrapped_refused_connection_is_not_a_timeout_lookalikes():
 def test_wrapped_refused_connection_is_not_a_timeout_real_urllib3():
     urllib3_exc = pytest.importorskip("urllib3.exceptions")
     requests_exc = pytest.importorskip("requests.exceptions")
-    new_conn = urllib3_exc.NewConnectionError(None, "refused")
-    refused = _chain(requests_exc.ConnectionError("wrapped"), new_conn, ConnectionRefusedError())
-    assert classify_connect_error(refused) == "connection_refused"
+    requests = pytest.importorskip("requests")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        closed_port = s.getsockname()[1]
+    with pytest.raises(requests_exc.ConnectionError) as real:
+        requests.get(f"http://127.0.0.1:{closed_port}/", timeout=2)
+    assert classify_connect_error(real.value) == "connection_refused"
     unreachable = _chain(requests_exc.ConnectionError("wrapped"), urllib3_exc.NewConnectionError(None, "no route"),
                          OSError("no route"))
     assert classify_connect_error(unreachable) == "unreachable"
@@ -290,3 +294,132 @@ def test_connect_elapsed_excludes_per_ip_lock_wait():
     first_ms, second_ms = (r[2] for r in records)
     assert first_ms == 50000  # the first attempt really spent 50 s connecting
     assert second_ms == 250  # the second one's 50 s wait for the lock is not part of its connect time
+
+
+# --- review round 1: timing logging never touches the reply ---
+
+def fast(ctx, args):
+    return {"done": True}
+
+
+class RaisingHandler(logging.Handler):
+    def emit(self, record):
+        raise OSError("disk full")
+
+
+class RaisingFilter(logging.Filter):
+    def filter(self, record):
+        raise ValueError("bad filter")
+
+
+class SleepingHandler(logging.Handler):
+    def emit(self, record):
+        time.sleep(0.5)
+
+
+def _stable(reply):
+    return {k: v for k, v in reply.items() if k != "elapsed_sec"}
+
+
+@pytest.mark.parametrize("faulty", [RaisingHandler(), RaisingFilter()])
+def test_faulty_log_handler_cannot_change_or_drop_the_reply(caplog, faulty):
+    command_log = logging.getLogger("KVMTiming.command")
+    attach = command_log.addFilter if isinstance(faulty, logging.Filter) else command_log.addHandler
+    detach = command_log.removeFilter if isinstance(faulty, logging.Filter) else command_log.removeHandler
+    with Rig(caplog, extra=[spec("fast", fast)]) as rig:
+        baseline = rig.call("fast")
+        attach(faulty)
+        try:
+            with socket.create_connection(rig.srv.server_address, timeout=5) as s:
+                for req_id in ("r1", "r2"):  # the same connection keeps serving
+                    s.sendall(dumps_request(build_request("fast", req_id, DEVICE)))
+                    reply = recv_reply(s)
+                    assert reply["status"] == "ok"
+                    assert _stable(reply) == _stable({**baseline, "req_id": req_id})
+        finally:
+            detach(faulty)
+
+
+def test_slow_log_handler_does_not_delay_the_reply(caplog):
+    command_log = logging.getLogger("KVMTiming.command")
+    slow = SleepingHandler()
+    with Rig(caplog, extra=[spec("fast", fast)]) as rig:
+        rig.call("fast")  # connect the KVM first
+        command_log.addHandler(slow)
+        try:
+            began = time.monotonic()
+            assert rig.call("fast")["status"] == "ok"
+            assert time.monotonic() - began < 0.3
+        finally:
+            time.sleep(0.6)  # let the sleeping handler finish before the server stops
+            command_log.removeHandler(slow)
+
+
+class FakeReader:
+    def __init__(self, line):
+        self.lines = [line]
+
+    async def readline(self):
+        return self.lines.pop(0) if self.lines else b""
+
+    def at_eof(self):
+        return not self.lines
+
+
+class FakeWriter:
+    def __init__(self, drain_error=None):
+        self.drain_error, self.written = drain_error, b""
+
+    def get_extra_info(self, name):
+        return ("test", 0)
+
+    def write(self, data):
+        self.written += data
+
+    async def drain(self):
+        if self.drain_error is not None:
+            raise self.drain_error
+
+    def is_closing(self):
+        return False
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
+def _session(caplog, writer):
+    with Rig(caplog, extra=[spec("fast", fast)]) as rig:
+        line = dumps_request(build_request("fast", "r1", DEVICE))
+        fut = asyncio.run_coroutine_threadsafe(
+            rig.srv._client_connected_cb(FakeReader(line), writer), rig.srv._loop)
+        fut.result(10)
+    return command_records(caplog)
+
+
+def test_ok_is_logged_after_the_reply_was_written(caplog):
+    writer = FakeWriter()
+    (rec,) = _session(caplog, writer)
+    assert writer.written and fields(rec)["result"] == "ok"
+
+
+def test_failed_write_logs_client_disconnected(caplog):
+    writer = FakeWriter(drain_error=ConnectionResetError())
+    (rec,) = _session(caplog, writer)
+    f = fields(rec)
+    assert (f["result"], f["reason"]) == ("fail", "client_disconnected")
+
+
+def test_exception_escaping_dispatch_logs_internal_error_and_sends_no_reply(caplog):
+    async def broken(req_id, admitted, reader=None, writer=None):
+        raise RuntimeError("dispatch broke")
+    with Rig(caplog, extra=[spec("fast", fast)]) as rig:
+        rig.srv._dispatch_command = broken
+        with socket.create_connection(rig.srv.server_address, timeout=5) as s:
+            s.sendall(dumps_request(build_request("fast", "r1", DEVICE)))
+            assert s.recv(4096) == b""  # as on main: the session ends and nothing is written
+    (rec,) = command_records(caplog)
+    f = fields(rec)
+    assert (f["result"], f["reason"]) == ("fail", "internal_error")
