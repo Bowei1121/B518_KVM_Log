@@ -32,6 +32,11 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool, normalize_kvm_ip  # type: ignore[import-not-found,no-redef]
 
 try:
+    from kvm_timing import TimingRecord, log_timing
+except ImportError:
+    from .kvm_timing import TimingRecord, log_timing  # type: ignore[import-not-found,no-redef]
+
+try:
     from freeze_guard import FrameFreezeGuard
 except ImportError:
     from .freeze_guard import FrameFreezeGuard  # type: ignore[import-not-found,no-redef]
@@ -282,6 +287,9 @@ class TcpJsonServer:
         self.device_registry: DeviceRegistry = (
             device_registry if device_registry is not None else DeviceRegistry([])
         )
+        # Every new KVM connection attempt is timed into the Core log (#155); a fake pool without the hook is skipped.
+        if hasattr(self.kvm_pool, "timing_observer"):
+            self.kvm_pool.timing_observer = self._log_connect_timing
 
         # Runtime records are read/written only on the asyncio event-loop thread.
         # _device_health has no await, so readers never see a partial update.
@@ -378,6 +386,13 @@ class TcpJsonServer:
                     state = None
             record.apply_connect_state(state, tracker.clock() if tracker is not None else 0.0)
         return [replace(record) for record in self._health.values()]
+
+    def _log_connect_timing(self, ip: str, path: str, elapsed_ms: int, ok: bool, reason: str, exc: Any) -> None:
+        """Pool timing observer: resolve the device ID from the KVM IP (unknown IP -> empty) and write the log line."""
+        entry = self.device_registry.device_for_ip(normalize_kvm_ip(ip))
+        log_timing(TimingRecord(
+            ts=time.time(), device=entry.device_id if entry else "", ip=ip, path=path, elapsed_ms=elapsed_ms,
+            ok=ok, reason=reason, error_type=type(exc).__name__ if exc is not None else ""))
 
     def _station_rows(self) -> list[Dict[str, Any]]:
         """Real-time status of every configured test station (the ``stations`` list of core_status).

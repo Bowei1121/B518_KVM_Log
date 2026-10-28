@@ -96,6 +96,10 @@ class DeviceRegistry:
         """Return the entry for ``device_id`` (exact match) or None."""
         return self._by_id.get(device_id)
 
+    def device_for_ip(self, ip: str) -> Optional[DeviceEntry]:
+        """Return the entry whose KVM IP is ``ip`` (kvm_ip values are unique) or None."""
+        return next((e for e in self._entries if e.kvm_ip == ip), None)
+
     def entries(self) -> List[DeviceEntry]:
         """Return all entries in file order."""
         return list(self._entries)

@@ -50,6 +50,18 @@ _USAGE["."] = (False, 0x37)
 _USAGE[":"] = (True, 0x33)
 
 
+class KVMLoginFailed(RuntimeError):
+    reason = "login_failed"
+
+
+class KVMRpcNotOpen(RuntimeError):
+    reason = "rpc_not_open"
+
+
+class KVMNoSignal(RuntimeError):
+    reason = "no_signal"
+
+
 class JetKVMClient:
     def __init__(self, host, password=""):
         # host 可為 "192.168.1.50" 或 "http://192.168.1.50"
@@ -83,7 +95,7 @@ class JetKVMClient:
                           json={"password": self.password}, verify=False, timeout=5)
         if r.status_code == 200:
             return f"authToken={r.cookies.get('authToken')}"
-        raise RuntimeError(f"登入失敗 {r.status_code}")
+        raise KVMLoginFailed(f"登入失敗 {r.status_code}")
 
     async def connect(self):
         cookie = self._login_cookie()
@@ -169,12 +181,12 @@ class JetKVMClient:
         try:
             await asyncio.wait_for(rpc_open.wait(), timeout=15)
         except asyncio.TimeoutError:
-            raise RuntimeError("連上網路但裝置未回應 (rpc 未開)")
+            raise KVMRpcNotOpen("連上網路但裝置未回應 (rpc 未開)")
         # 再等第一張影格; 收不到通常是來源端沒有 HDMI 訊號
         try:
             await asyncio.wait_for(first_frame.wait(), timeout=15)
         except asyncio.TimeoutError:
-            raise RuntimeError("連上裝置但收不到畫面 (no_signal): "
+            raise KVMNoSignal("連上裝置但收不到畫面 (no_signal): "
                                "請確認來源電腦有輸出 HDMI 到 JetKVM 且螢幕已喚醒")
         await asyncio.sleep(0.3)
         self.connected = True
