@@ -192,6 +192,7 @@ class _PendingTiming:
     ok: bool
     reason: str
     ended: float  # when the reply was ready (or Core decided there is none): the envelope elapsed_sec end point
+    ts: float  # wall-clock time (epoch seconds) at that same end point
 
 
 @dataclass(frozen=True)
@@ -1010,16 +1011,18 @@ class TcpJsonServer:
         try:
             raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
         except Exception:
-            self._log_command_timing(_PendingTiming(started, req_id, admitted, False, "internal_error", time.monotonic()))
+            self._log_command_timing(_PendingTiming(started, req_id, admitted, False, "internal_error",
+                                                    time.monotonic(), time.time()))
             raise
         if raw.get("error") == "client_disconnected":
             # PROTOCOL 7: the client is gone, so nothing is written
-            return b"", _PendingTiming(started, req_id, admitted, False, "client_disconnected", time.monotonic())
+            return b"", _PendingTiming(started, req_id, admitted, False, "client_disconnected",
+                                       time.monotonic(), time.time())
         reply = self._encode_result(started, req_id, device, cmd, raw)
         status = str(raw.get("status", "ok"))
         reason = "timeout" if status == "timeout" else str(raw.get("error") or "internal_error")
         return reply, _PendingTiming(started, req_id, admitted, status == "ok", "" if status == "ok" else reason,
-                                     time.monotonic())
+                                     time.monotonic(), time.time())
 
     def _log_command_timing(self, pending: Optional[_PendingTiming]) -> None:
         """One Core-side processing-time line per device command (#156). Never raises: logging cannot cost a reply."""
@@ -1030,7 +1033,7 @@ class TcpJsonServer:
             if not admitted.spec.device_bound or admitted.entry is None:
                 return
             log_timing(TimingRecord(
-                ts=time.time(), device=admitted.entry.device_id, ip=str(admitted.entry.kvm_ip or ""), path=COMMAND,
+                ts=pending.ts, device=admitted.entry.device_id, ip=str(admitted.entry.kvm_ip or ""), path=COMMAND,
                 elapsed_ms=int(round((pending.ended - pending.started) * 1000)), ok=pending.ok,
                 reason=pending.reason, command=admitted.spec.name,
                 source="ui" if pending.req_id.startswith("ui-") else "client"), command_logger)

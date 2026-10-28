@@ -439,3 +439,19 @@ def test_slow_send_is_not_part_of_the_core_processing_time(caplog):
     assert fields(rec)["result"] == "ok"
     assert ms < 300  # the 0.5 s drain is send time, not Core processing time
     assert abs(ms - reply["elapsed_sec"] * 1000) <= 50  # same end point as the envelope elapsed_sec
+
+
+def test_ts_is_taken_when_the_reply_is_ready_not_after_the_send(caplog, monkeypatch):
+    import tcp_server
+    seen = []
+    real_log_timing = tcp_server.log_timing
+
+    def recording_log_timing(record, *args, **kwargs):
+        if record.path == "command":
+            seen.append((record, time.time()))
+        return real_log_timing(record, *args, **kwargs)
+    monkeypatch.setattr(tcp_server, "log_timing", recording_log_timing)
+    (rec,) = _session(caplog, SlowDrainWriter())
+    (record, logged_at), = seen
+    assert record.ok and fields(rec)["result"] == "ok"
+    assert logged_at - record.ts >= 0.4  # ts is the end of Core processing, before the 0.5 s drain
