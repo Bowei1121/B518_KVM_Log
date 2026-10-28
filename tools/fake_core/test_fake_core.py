@@ -1113,3 +1113,28 @@ def test_monitor_start_busy_drops_armed_round_then_manual_verification(make_core
     assert r["status"] == "error" and r["error"] == "manual_verification_required"
     assert r["data"]["kind"] != "taken"
 
+
+# ---------------------------------------------------------------- 只支援 BT／DFU（FCT 沒有治具推入的觸發）
+
+
+def test_cli_rejects_fct_station(capsys):
+    with pytest.raises(SystemExit) as exc:
+        fake_core.main(["--station", "FCT", "--port", "0"])
+    assert exc.value.code not in (0, None)
+    err = capsys.readouterr().err
+    assert "FCT" in err and "BT" in err and "DFU" in err
+
+
+@pytest.mark.parametrize("station", ["BT", "DFU"])
+def test_cli_accepts_bt_and_dfu_station(station):
+    args = fake_core.build_parser().parse_args(["--station", station])
+    assert args.station == station
+
+
+def test_typed_station_command_does_not_switch(core):
+    before = core.command("state")
+    out = core.command("station FCT")
+    assert "FCT" in out and "不支援" in out and "切換" in out
+    assert "切換" in core.command("station DFU")
+    assert core.command("state") == before
+    assert core.devices[DEV].station == "BT"

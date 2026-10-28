@@ -27,6 +27,7 @@ CONNECT_FAIL_COUNT = 3
 RESULT_STATUSES = ("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED")
 NOT_FOUND_REASON = "locators_missing_or_ambiguous"
 KVM_NAME = "fake"
+SUPPORTED_STATIONS = ("BT", "DFU")  # 能完整跑完一輪的站別；FCT 沒有治具推入的觸發，跑不完
 
 
 def _unknown(reason: str = "") -> Dict[str, Any]:
@@ -304,6 +305,7 @@ class FakeCore:
         "  start_test_drop_not_started (stdrop)  start_test 不回覆就斷線，測試未開始\n"
         "  start_test_drop (stds)  start_test 不回覆就斷線，但測試照常進行，重連後 check_start started\n"
         "result (res) X       改結果：PASS / FAIL / TIMEOUT 或逐通道清單 PASS,FAIL,...\n"
+        "station X            站別執行中不能切換；FCT 不支援（只支援 BT／DFU）\n"
         "state (s)            顯示目前畫面、旗標與故障\n"
         "help (h)             本說明\n"
         "quit (q)             結束"
@@ -453,6 +455,11 @@ class FakeCore:
                 self.scenario = None if canonical == "cs_started" else canonical
                 self.emit("scenario", "", scenario=canonical)
                 return f"情境 {canonical} 已選擇（下一次 start_test 起生效；clear 解除）"
+            if name == "station":
+                wanted = args[0].upper() if args else ""
+                if wanted == "FCT":
+                    return "不支援 FCT：fake core 沒有治具推入的觸發，無法完成一輪；站別執行中不能切換"
+                return f"站別執行中不能切換（目前只支援 {'／'.join(SUPPORTED_STATIONS)}，請用 --station 啟動）"
             if name in ("state", "s"):
                 return self._state_text()
             if name in ("quit", "q"):
@@ -742,12 +749,24 @@ class FakeCore:
             time.sleep(min(self.poll, max(0.01, limit - elapsed)))
 
 
+def _station_arg(value: str) -> str:
+    station = value.strip().upper()
+    if station == "FCT":
+        raise argparse.ArgumentTypeError(
+            "不支援 FCT：fake core 沒有治具推入的觸發（test_started 無人呼叫），無法完成一輪；"
+            f"支援的站別：{'、'.join(SUPPORTED_STATIONS)}")
+    if station not in SUPPORTED_STATIONS:
+        raise argparse.ArgumentTypeError(f"未知站別 '{value}'；支援的站別：{'、'.join(SUPPORTED_STATIONS)}")
+    return station
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="模擬 Core（fake core）：讓 LabVIEW 沒有 KVM 也能測 Core Client")
     p.add_argument("--host", default="0.0.0.0", help="監聽位址（預設 0.0.0.0，區網 LabVIEW 電腦可連）")
     p.add_argument("--port", type=int, default=5000, help="TCP port（預設 5000；0 = 系統指派）")
     p.add_argument("--device", default="BT-01", help="設備 ID（預設 BT-01）")
-    p.add_argument("--station", default="BT", choices=["DFU", "BT", "FCT"], help="站別（預設 BT）")
+    p.add_argument("--station", default="BT", type=_station_arg,
+                   help="站別 BT／DFU（預設 BT）；不支援 FCT（沒有治具推入的觸發）")
     p.add_argument("--channels", type=int, default=4, help="通道數（預設 4）")
     p.add_argument("--finish-delay", type=float, default=5, help="start_test 後幾秒出結果畫面（預設 5）")
     p.add_argument("--monitor-delay", type=float, default=0.5, help="monitor_start 耗時秒數（預設 0.5）")
