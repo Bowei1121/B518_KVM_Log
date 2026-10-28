@@ -676,6 +676,10 @@ class FakeCore:
                                              "results": rows}}, last
         if not dev.start_requested:
             return self._fail("monitor_not_ready", "no round-start request; result was not taken", last), last
+        if dev.screen == "monitoring":  # 同真 Core device_round：讀到監控中就放掉上次交付；有開始請求時重新 armed
+            dev.delivered = None
+            dev.candidate_at = None
+            dev.armed = True  # 上面已確認 start_requested
         if dev.screen == "complete" and not dev.armed:
             dev.start_requested = False
             return self._fail("manual_verification_required",

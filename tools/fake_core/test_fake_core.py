@@ -1113,13 +1113,25 @@ def test_monitor_start_not_found_still_drops_previous_round(make_core):
     assert r["data"]["kind"] != "already_taken"
 
 
-def test_monitor_start_busy_drops_armed_round_then_manual_verification(make_core):
+def test_monitor_start_busy_then_check_during_test_rearms_and_takes(make_core):
     core = make_core(finish_delay=2.5)
     cli = core.connect()
     to_monitoring(cli)
     assert cli.call("start_test")["status"] == "ok"
     r = cli.call("monitor_start", timeout_sec=5)
     assert r["error"] == "log_solution_busy"
+    r = cli.call("check_finish", timeout_sec=15)
+    assert r["status"] == "ok" and r["data"]["kind"] == "taken"
+
+
+def test_monitor_start_busy_then_no_check_until_complete_manual_verification(make_core):
+    core = make_core(finish_delay=2.5)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    r = cli.call("monitor_start", timeout_sec=5)
+    assert r["error"] == "log_solution_busy"
+    time.sleep(2.5 + 1.0)  # 測試結束、完成畫面出現，但這段時間沒有任何查詢
     r = cli.call("check_finish", timeout_sec=15)
     assert r["status"] == "error" and r["error"] == "manual_verification_required"
     assert r["data"]["kind"] != "taken"
