@@ -24,6 +24,11 @@ try:
 except ImportError:
     from .connect_failures import CONNECT_FAILED_ERROR, ConnectFailures  # type: ignore[import-not-found,no-redef]
 
+try:
+    from kvm_timing import BACKGROUND_RECONNECT, COMMAND_CONNECT, classify_connect_error
+except ImportError:
+    from .kvm_timing import BACKGROUND_RECONNECT, COMMAND_CONNECT, classify_connect_error  # type: ignore[import-not-found,no-redef]
+
 logger = logging.getLogger("KVMConnectionPool")
 
 
@@ -104,7 +109,12 @@ class KVMConnectionPool:
         connect_failures: Optional[ConnectFailures] = None,
         retry_tick_sec: float = 1.0,
         cancel_close_timeout_sec: float = 2.0,
+        timing_observer: Optional[Callable[..., None]] = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Called once per real connect attempt: (ip, path, elapsed_ms, ok, reason, exc). Never breaks the pool.
+        self.timing_observer = timing_observer
+        self._monotonic = monotonic
         # Bound on closing a half-made client after cancellation, so a close() that never returns cannot hang stop().
         self.cancel_close_timeout_sec = float(cancel_close_timeout_sec)
         self.idle_timeout = float(idle_timeout)
@@ -235,6 +245,7 @@ class KVMConnectionPool:
 
             logger.info("Connecting to KVM '%s'...", canonical_ip, extra={"zh": "正在連線 KVM '%s'..."})
             self._passwords[canonical_ip] = password
+            started = self._monotonic()
             client = self._client_factory(canonical_ip, password=password)
             if background:
                 self.connect_failures.set_retrying(canonical_ip, True)  # the attempt really connects now
@@ -243,10 +254,12 @@ class KVMConnectionPool:
                     await client.connect()
                 else:
                     await asyncio.wait_for(client.connect(), timeout=connect_timeout)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                self._report_timing(canonical_ip, background, started, exc)
                 await self._discard_client_bounded(canonical_ip, client)
                 raise
             except Exception as exc:
+                self._report_timing(canonical_ip, background, started, exc)
                 # Only a failed attempt to establish a new connection counts (#134); count it before closing.
                 self.connect_failures.record_failure(canonical_ip, CONNECT_FAILED_ERROR)
                 await self._discard_client(canonical_ip, client)
@@ -254,6 +267,7 @@ class KVMConnectionPool:
                                extra={"zh": "連線 KVM '%s' 失敗 (%s)"})
                 raise
 
+            self._report_timing(canonical_ip, background, started, None)
             entry = PooledKVMConnection(canonical_ip, client)
             entry.in_use = 1 if lease else 0
             self._pool[canonical_ip] = entry
@@ -261,6 +275,18 @@ class KVMConnectionPool:
             logger.info("KVM connection established and pooled for '%s'", canonical_ip,
                         extra={"zh": "KVM 連線已建立並放入連線池 '%s'"})
             return client
+
+    def _report_timing(self, ip: str, background: bool, started: float, exc: Optional[BaseException]) -> None:
+        """Tell the timing observer how a real connect attempt ended; the observer can never break the pool."""
+        if self.timing_observer is None:
+            return
+        elapsed_ms = int(round((self._monotonic() - started) * 1000))
+        path = BACKGROUND_RECONNECT if background else COMMAND_CONNECT
+        reason = "" if exc is None else classify_connect_error(exc)
+        try:
+            self.timing_observer(ip, path, elapsed_ms, exc is None, reason, exc)
+        except Exception:
+            logger.debug("KVM timing observer failed", exc_info=True)
 
     async def _discard_client(self, ip: str, client: Any) -> None:
         """Close a half-made client, best effort."""
