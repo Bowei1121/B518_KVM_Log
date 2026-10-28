@@ -73,3 +73,12 @@ def log_timing(record: TimingRecord, log: logging.Logger = logger) -> None:
         en += f" error={record.error_type}"
         zh += f" 例外={record.error_type}"
     log.warning(en, extra={"zh": zh})
+
+
+# Heartbeat path (issue #157); its lost/recovered events live in kvm_heartbeat.
+HEARTBEAT = "heartbeat"
+_PATH_ZH[HEARTBEAT] = "心跳"
+_REASON_ZH.update({
+    "track_ended": "影像中斷", "peer_failed": "連線中斷（失敗）", "peer_closed": "連線中斷（已關閉）",
+    "not_connected": "未連線",
+})

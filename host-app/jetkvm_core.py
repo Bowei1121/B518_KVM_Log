@@ -240,6 +240,16 @@ class JetKVMClient:
         """
         return self.connected and not self._track_ended and self._peer_state not in ("failed", "closed")
 
+    def unhealthy_reason(self) -> str:
+        """Why is_healthy() is False: not_connected, track_ended, peer_failed or peer_closed; "" when healthy."""
+        if not self.connected:
+            return "not_connected"
+        if self._track_ended:
+            return "track_ended"
+        if self._peer_state in ("failed", "closed"):
+            return "peer_" + self._peer_state
+        return ""
+
     def latest_frame(self) -> Optional[FrameSnapshot]:
         """The newest picture as a copy with its freshness metadata; None until the first frame."""
         with self._frame_lock:
