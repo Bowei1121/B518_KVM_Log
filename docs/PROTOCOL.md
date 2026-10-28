@@ -20,7 +20,7 @@
 | 分隔 | 一行一個 JSON 物件，以 `\n`（LF, 0x0A）結尾。Core 容忍 `\r\n`，LabVIEW 送出時請用 `\n` |
 | 連線 | 每台設備一條獨立 TCP 連線（ADR-0006）。同一條連線上**一次只送一筆請求**，收到回覆後才送下一筆 |
 | 回覆順序 | 一筆請求只回一行；以 `req_id` 配對 |
-| 最大行長 | `snapshot` 回覆含 base64 影像，可能超過 1 MB；LabVIEW 讀取時請用 CRLF/LF 模式並給足夠的最大長度 |
+| 最大行長 | `snapshot` 回覆含 base64 影像，可能超過 1 MB；LabVIEW 讀取時用 TCP Read 的 Immediate 或 Standard 模式讀進緩衝區，再自己用 LF（0x0A）切行；緩衝區要給夠大（超過 1 MB）。不要用 CRLF 模式：Core 每行只用 LF 結尾、沒有 CR，CRLF 模式會一直等到逾時 |
 
 JSON 內不使用 `null`。字串欄位沒有值時為 `""`，數字為 `0`，陣列為 `[]`，布林為 `false`。
 
