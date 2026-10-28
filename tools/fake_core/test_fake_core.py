@@ -810,11 +810,11 @@ def test_check_start_polls_more_than_one_second_apart_never_pair(make_core):
 
 
 def test_started_does_not_consume_round_and_check_finish_never_reports_started(make_core):
-    core, cli = running(make_core, finish_delay=0.8)
+    core, cli = running(make_core, finish_delay=2.5)
     assert cli.call("check_start", timeout_sec=5)["data"]["kind"] == "started"
     r = cli.call("check_finish", timeout_sec=0)
     assert r["data"]["kind"] == "waiting" and r["data"]["active"] == []
-    r = cli.call("check_finish", timeout_sec=10)
+    r = cli.call("check_finish", timeout_sec=15)
     assert r["data"]["kind"] == "taken" and r["data"]["results"] == PASS4 and r["data"]["active"] == []
 
 
@@ -986,7 +986,7 @@ def test_scenario_start_test_drop_not_started(make_core, name):
 
 @pytest.mark.parametrize("name", ["start_test_drop", "stds"])
 def test_scenario_start_test_drop_test_runs_normally(make_core, name):
-    core = make_core(scenario=name, finish_delay=0.8)
+    core = make_core(scenario=name, finish_delay=2.5)
     assert core.scenario == "start_test_drop"
     cli = core.connect()
     to_monitoring(cli)
@@ -995,7 +995,7 @@ def test_scenario_start_test_drop_test_runs_normally(make_core, name):
     cli2 = core.connect()
     r = cli2.call("check_start", timeout_sec=5)
     assert r["status"] == "ok" and r["data"] == STARTED
-    r = cli2.call("check_finish", timeout_sec=10)
+    r = cli2.call("check_finish", timeout_sec=15)
     assert r["data"]["kind"] == "taken" and r["data"]["results"] == PASS4
     again = cli2.call("check_finish", timeout_sec=0)
     assert again["data"]["kind"] == "already_taken" and again["data"]["results"] == PASS4
