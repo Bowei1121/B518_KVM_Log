@@ -8,14 +8,19 @@ from dataclasses import dataclass
 
 BACKGROUND_RECONNECT = "background_reconnect"
 COMMAND_CONNECT = "command_connect"
+COMMAND = "command"  # Core-side processing time of one device command (#156)
 
-_PATH_ZH = {BACKGROUND_RECONNECT: "背景重連", COMMAND_CONNECT: "指令連線"}
+_PATH_ZH = {BACKGROUND_RECONNECT: "背景重連", COMMAND_CONNECT: "指令連線", COMMAND: "Core 指令處理"}
+_SOURCE_ZH = {"ui": "Monitor UI", "client": "用戶端"}
 _REASON_ZH = {
+    "client_disconnected": "用戶端已中斷", "internal_error": "內部錯誤", "device_busy": "設備忙碌",
+    "kvm_connect_failed": "KVM 連線失敗",
     "timeout": "逾時", "connection_refused": "連線被拒", "unreachable": "無法連線", "login_failed": "登入失敗",
     "rpc_not_open": "裝置未回應", "no_signal": "收不到畫面", "cancelled": "已取消", "error": "其他錯誤",
 }
 
 logger = logging.getLogger("KVMTiming")
+command_logger = logging.getLogger("KVMTiming.command")  # command lines: same hierarchy, same Core log handler
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,7 @@ class TimingRecord:
     reason: str = ""
     command: str = ""
     error_type: str = ""
+    source: str = ""  # who sent a command: "ui" (Monitor UI) or "client"; empty for connect records
 
 
 def classify_connect_error(exc: BaseException) -> str:
@@ -46,13 +52,16 @@ def classify_connect_error(exc: BaseException) -> str:
         reason = getattr(type(e), "reason", None)
         if isinstance(reason, str) and reason in _REASON_ZH:
             return reason
-    for e in chain:
-        if isinstance(e, TimeoutError) or any("Timeout" in c.__name__ for c in type(e).__mro__):
-            return "timeout"
+    # urllib3's NewConnectionError subclasses ConnectTimeoutError, but it means refused/unreachable, not a timeout.
+    new_connection = any(c.__name__ == "NewConnectionError" for e in chain for c in type(e).__mro__)
+    if not new_connection:
+        for e in chain:
+            if isinstance(e, TimeoutError) or any("Timeout" in c.__name__ for c in type(e).__mro__):
+                return "timeout"
     for e in chain:
         if isinstance(e, ConnectionRefusedError):
             return "connection_refused"
-    if isinstance(exc, OSError):
+    if isinstance(exc, OSError) or new_connection:
         return "unreachable"
     return "error"
 
@@ -62,6 +71,12 @@ def log_timing(record: TimingRecord, log: logging.Logger = logger) -> None:
     path_zh = _PATH_ZH.get(record.path, record.path)
     en = f"KVM timing device={record.device} ip={record.ip} path={record.path}"
     zh = f"KVM 計時 設備={record.device} IP={record.ip} 路徑={path_zh}"
+    if record.command:
+        en += f" command={record.command}"
+        zh += f" 指令={record.command}"
+    if record.source:
+        en += f" source={record.source}"
+        zh += f" 來源={_SOURCE_ZH.get(record.source, record.source)}"
     if record.ok:
         en += f" result=ok elapsed_ms={record.elapsed_ms}"
         zh += f" 結果=成功 耗時={record.elapsed_ms} ms"

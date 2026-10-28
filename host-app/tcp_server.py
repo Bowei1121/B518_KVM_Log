@@ -32,9 +32,9 @@ except ImportError:
     from .kvm_pool import KVMConnectionPool, normalize_kvm_ip  # type: ignore[import-not-found,no-redef]
 
 try:
-    from kvm_timing import TimingRecord, log_timing
+    from kvm_timing import COMMAND, TimingRecord, command_logger, log_timing
 except ImportError:
-    from .kvm_timing import TimingRecord, log_timing  # type: ignore[import-not-found,no-redef]
+    from .kvm_timing import COMMAND, TimingRecord, command_logger, log_timing  # type: ignore[import-not-found,no-redef]
 
 try:
     from freeze_guard import FrameFreezeGuard
@@ -985,10 +985,28 @@ class TcpJsonServer:
             error, message = invalid
             return self._encode_envelope(started, req_id, device, cmd, "error", error, message, {})
 
-        raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
+        try:
+            raw = await self._dispatch_command(req_id, admitted, reader=reader, writer=writer)
+        except Exception:
+            self._log_command_timing(started, req_id, admitted, False, "internal_error")
+            raise
         if raw.get("error") == "client_disconnected":
+            self._log_command_timing(started, req_id, admitted, False, "client_disconnected")
             return b""  # PROTOCOL 7: the client is gone, so nothing is written
-        return self._encode_result(started, req_id, device, cmd, raw)
+        reply = self._encode_result(started, req_id, device, cmd, raw)
+        status = str(raw.get("status", "ok"))
+        reason = "timeout" if status == "timeout" else str(raw.get("error") or "internal_error")
+        self._log_command_timing(started, req_id, admitted, status == "ok", "" if status == "ok" else reason)
+        return reply
+
+    def _log_command_timing(self, started: float, req_id: str, admitted: _Admitted, ok: bool, reason: str) -> None:
+        """One Core-side processing-time line per device command (#156); same start point as envelope elapsed_sec."""
+        if not admitted.spec.device_bound or admitted.entry is None:
+            return
+        log_timing(TimingRecord(
+            ts=time.time(), device=admitted.entry.device_id, ip=str(admitted.entry.kvm_ip or ""), path=COMMAND,
+            elapsed_ms=int(round((time.monotonic() - started) * 1000)), ok=ok, reason=reason,
+            command=admitted.spec.name, source="ui" if req_id.startswith("ui-") else "client"), command_logger)
 
     def _encode_result(
         self, started: float, req_id: str, device: str, cmd: str, raw: Dict[str, Any]
