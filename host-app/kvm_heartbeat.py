@@ -24,7 +24,7 @@ class HeartbeatEvent:
     ip: str
     reason: str = ""  # lost only
     since_ok_sec: Optional[int] = None  # lost only: whole seconds since the later of the last OK heartbeat and pooling
-    outage_sec: Optional[int] = None  # recovered only: whole seconds since the first failure
+    outage_sec: Optional[int] = None  # recovered only: whole seconds since the same reference point as since_ok_sec
 
 
 def _whole_seconds(value: float) -> int:
@@ -37,25 +37,26 @@ class HeartbeatTracker:
 
     def __init__(self) -> None:
         self._last_ok: Dict[str, float] = {}
-        self._first_fail: Dict[str, float] = {}
+        self._outage_from: Dict[str, float] = {}  # failing IPs -> later of last OK heartbeat and pooling
 
     def observe(self, ip: str, ok: bool, reason: str, now: float, pooled_at: float) -> Optional[HeartbeatEvent]:
         """Record one heartbeat result at monotonic ``now``; return the event it triggers, if any.
 
         ``pooled_at`` is when the connection entered the pool: ``since_ok_sec`` counts from the later of
         the last OK heartbeat and ``pooled_at``, so an OK heartbeat on an earlier connection does not count.
+        ``outage_sec`` counts from that same point, fixed at the first failure.
         """
         if ok:
-            failed_at = self._first_fail.pop(ip, None)
+            outage_from = self._outage_from.pop(ip, None)
             self._last_ok[ip] = now
-            if failed_at is None:
+            if outage_from is None:
                 return None
-            return HeartbeatEvent(HEARTBEAT_RECOVERED, ip, outage_sec=_whole_seconds(now - failed_at))
-        if ip in self._first_fail:
+            return HeartbeatEvent(HEARTBEAT_RECOVERED, ip, outage_sec=_whole_seconds(now - outage_from))
+        if ip in self._outage_from:
             return None
-        self._first_fail[ip] = now
-        since = now - max(self._last_ok.get(ip, pooled_at), pooled_at)
-        return HeartbeatEvent(HEARTBEAT_LOST, ip, reason=reason, since_ok_sec=_whole_seconds(since))
+        outage_from = max(self._last_ok.get(ip, pooled_at), pooled_at)
+        self._outage_from[ip] = outage_from
+        return HeartbeatEvent(HEARTBEAT_LOST, ip, reason=reason, since_ok_sec=_whole_seconds(now - outage_from))
 
 
 def log_heartbeat_event(event: HeartbeatEvent, device: str, log: logging.Logger = logger) -> None:

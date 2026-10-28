@@ -299,6 +299,7 @@ def test_server_fills_device_into_heartbeat_and_event_lines(caplog):
         await rig.connect(IP)
         await rig.pool.perform_heartbeat()
 
+    rig.pool.heartbeat_interval = 3600  # no background heartbeat while the test drives the pool
     server.start()
     try:
         with caplog.at_level(logging.INFO, logger="KVMTiming"):
@@ -316,8 +317,8 @@ def test_server_fills_device_into_heartbeat_and_event_lines(caplog):
     assert len(lost) == 1 and len(rec) == 1
     assert (f"KVM heartbeat_lost device=DFU-03 ip={IP} reason=track_ended since_ok_sec=5 | "
             f"KVM 心跳偵測不到 設備=DFU-03 IP={IP} 原因=影像中斷 距上次正常=5 秒") in lost[0]
-    assert (f"KVM heartbeat_recovered device=DFU-03 ip={IP} outage_sec=75 | "
-            f"KVM 心跳恢復 設備=DFU-03 IP={IP} 已中斷=75 秒") in rec[0]
+    assert (f"KVM heartbeat_recovered device=DFU-03 ip={IP} outage_sec=80 | "
+            f"KVM 心跳恢復 設備=DFU-03 IP={IP} 已中斷=80 秒") in rec[0]
     hb = [x for x in lines if "path=heartbeat" in x]
     assert len(hb) == 3 and all(f"device=DFU-03 ip={IP}" in x for x in hb)
     ev_recs = [r for r in caplog.records if "heartbeat_" in r.getMessage()]
@@ -421,7 +422,7 @@ def test_two_devices_keep_independent_state(caplog):
     lines = [fmt(r) for r in caplog.records if "heartbeat_" in r.getMessage()]
     assert len(lines) == 3
     assert any("heartbeat_lost device=DFU-03" in x and "reason=track_ended" in x for x in lines)
-    assert any("heartbeat_recovered device=DFU-03" in x and "outage_sec=10" in x for x in lines)
+    assert any("heartbeat_recovered device=DFU-03" in x and "outage_sec=15" in x for x in lines)
     assert any("heartbeat_lost device=DFU-04" in x and "reason=peer_failed" in x for x in lines)
 
 
