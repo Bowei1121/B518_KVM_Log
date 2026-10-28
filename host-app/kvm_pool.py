@@ -121,7 +121,8 @@ class KVMConnectionPool:
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         # Called once per real connect attempt: (ip, path, elapsed_ms, ok, reason, exc), and once per pooled
-        # connection per heartbeat: (ip, "heartbeat", elapsed_ms, ok, reason, None, event). Never breaks the pool.
+        # connection per heartbeat: (ip, "heartbeat", elapsed_ms, ok, reason, None, event), so an observer must
+        # accept an optional 7th argument (HeartbeatEvent or None). Never breaks the pool.
         self.timing_observer = timing_observer
         self._monotonic = monotonic
         self._heartbeats = HeartbeatTracker()  # per-IP, outlives evicted entries; empty on a new pool
@@ -374,6 +375,9 @@ class KVMConnectionPool:
         now = time.time()
 
         for entry in entries:
+            # An earlier eviction may have yielded while a command replaced this connection: skip what left the pool.
+            if self._pool.get(entry.ip) is not entry:
+                continue
             started = self._monotonic()
             healthy = entry.client.is_healthy()
             elapsed_ms = int(round((self._monotonic() - started) * 1000))

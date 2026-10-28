@@ -1,4 +1,4 @@
-"""KVM connection timing records (spec #154): one Core log line per newly established KVM connection."""
+"""KVM timing records (spec #154): one Core log line per new KVM connection attempt or KVM heartbeat check."""
 
 from __future__ import annotations
 
@@ -82,3 +82,4 @@ _REASON_ZH.update({
     "track_ended": "影像中斷", "peer_failed": "連線中斷（失敗）", "peer_closed": "連線中斷（已關閉）",
     "not_connected": "未連線",
 })
+REASON_ZH = _REASON_ZH  # public read-only view: reason code -> Chinese, for other timing modules

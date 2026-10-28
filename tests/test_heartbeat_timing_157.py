@@ -302,7 +302,8 @@ def test_server_fills_device_into_heartbeat_and_event_lines(caplog):
     server.start()
     try:
         with caplog.at_level(logging.INFO, logger="KVMTiming"):
-            asyncio.run(go())
+            # Drive the pool on the server's own event loop, as the Core does.
+            asyncio.run_coroutine_threadsafe(go(), server._loop).result(10)
             with socket.create_connection(server.server_address, timeout=5) as s:  # server still serves
                 s.sendall(dumps_request(build_request("start_test", "r1", "DFU-01")))
                 recv_reply(s)
@@ -321,3 +322,134 @@ def test_server_fills_device_into_heartbeat_and_event_lines(caplog):
     assert len(hb) == 3 and all(f"device=DFU-03 ip={IP}" in x for x in hb)
     ev_recs = [r for r in caplog.records if "heartbeat_" in r.getMessage()]
     assert [r.levelno for r in ev_recs] == [logging.WARNING, logging.INFO]
+
+
+# --- Review round 1 (PR #161) ---
+
+def test_connection_replaced_during_slow_close_is_not_checked(caplog):
+    """A's slow close yields; meanwhile a command replaces B with a healthy B2. The old B must not be checked."""
+    rig = Rig()
+    closing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def go():
+        await rig.connect(IP, IP2)
+        a, old_b = rig.sessions[IP], rig.sessions[IP2]
+
+        async def slow_close():
+            closing.set()
+            await release.wait()
+            a.connected = False
+        a.close = slow_close
+        a.end_track()
+        old_b.end_track()
+
+        async def replace_b():
+            await closing.wait()
+            await rig.connect(IP2)  # command finds B unhealthy, discards it, connects B2
+            release.set()
+
+        with caplog.at_level(logging.INFO, logger="KVMTiming"):
+            await asyncio.gather(rig.pool.perform_heartbeat(), replace_b())
+            assert rig.sessions[IP2] is not old_b and rig.sessions[IP2].is_healthy()
+            await rig.pool.perform_heartbeat()  # next round: B2 healthy
+    asyncio.run(go())
+    b_lines = [fmt(r) for r in hb_lines(caplog) if f"ip={IP2} " in r.getMessage()]
+    assert b_lines and all("result=ok" in x for x in b_lines)
+    assert [(e.kind, e.ip) for e in rig.events()] == [("heartbeat_lost", IP)]
+
+
+def test_lost_event_survives_a_failing_timing_log(monkeypatch, caplog):
+    import tcp_server
+    rig = Rig()
+    seen = []
+    monkeypatch.setattr(rig.server, "_on_heartbeat_event", lambda event, device: seen.append((event.kind, device)))
+
+    def broken_log(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(tcp_server, "log_timing", broken_log)
+
+    async def go():
+        await rig.connect(IP)
+        rig.sessions[IP].end_track()
+        with caplog.at_level(logging.INFO, logger="KVMTiming"):
+            await rig.pool.perform_heartbeat()
+    asyncio.run(go())
+    assert seen == [("heartbeat_lost", "DFU-03")]
+    assert len([r for r in caplog.records if "heartbeat_lost" in r.getMessage()]) == 1
+
+
+def test_event_delivered_when_event_log_line_fails(monkeypatch):
+    import tcp_server
+    rig = Rig()
+    seen = []
+    monkeypatch.setattr(rig.server, "_on_heartbeat_event", lambda event, device: seen.append((event.kind, device)))
+
+    def broken_log(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(tcp_server, "log_heartbeat_event", broken_log)
+
+    async def go():
+        await rig.connect(IP)
+        rig.sessions[IP].end_track()
+        await rig.pool.perform_heartbeat()
+    asyncio.run(go())
+    assert seen == [("heartbeat_lost", "DFU-03")]
+
+
+def test_two_devices_keep_independent_state(caplog):
+    rig = Rig()
+
+    async def go():
+        await rig.connect(IP, IP2)
+        with caplog.at_level(logging.INFO, logger="KVMTiming"):
+            await rig.pool.perform_heartbeat()
+            rig.sessions[IP].end_track()
+            rig.mono.now += 5
+            await rig.pool.perform_heartbeat()  # A lost, B ok
+            rig.mono.now += 10
+            await rig.connect(IP)
+            rig.sessions[IP2].set_peer_state("failed")
+            await rig.pool.perform_heartbeat()  # A recovered, B lost
+    asyncio.run(go())
+    events = rig.events()  # pool order: the reconnected A comes after B in the last round
+    assert [(e.kind, e.ip) for e in events if e.ip == IP] == [("heartbeat_lost", IP), ("heartbeat_recovered", IP)]
+    assert [(e.kind, e.ip) for e in events if e.ip == IP2] == [("heartbeat_lost", IP2)]
+    first = [fmt(r) for r in hb_lines(caplog)][:2]
+    assert f"device=DFU-03 ip={IP} path=heartbeat result=ok" in first[0]
+    assert f"device=DFU-04 ip={IP2} path=heartbeat result=ok" in first[1]
+    lines = [fmt(r) for r in caplog.records if "heartbeat_" in r.getMessage()]
+    assert len(lines) == 3
+    assert any("heartbeat_lost device=DFU-03" in x and "reason=track_ended" in x for x in lines)
+    assert any("heartbeat_recovered device=DFU-03" in x and "outage_sec=10" in x for x in lines)
+    assert any("heartbeat_lost device=DFU-04" in x and "reason=peer_failed" in x for x in lines)
+
+
+def test_unknown_ip_logs_empty_device(caplog):
+    rig = Rig()
+    unknown = "10.9.9.9"
+
+    async def go():
+        await rig.connect(unknown)
+        rig.sessions[unknown].end_track()
+        with caplog.at_level(logging.INFO, logger="KVMTiming"):
+            await rig.pool.perform_heartbeat()
+    asyncio.run(go())
+    lines = [fmt(r) for r in caplog.records if r.name.startswith("KVMTiming")]
+    assert any(f"device= ip={unknown} path=heartbeat result=fail" in x for x in lines)
+    assert any(f"KVM heartbeat_lost device= ip={unknown} reason=track_ended" in x for x in lines)
+
+
+def test_real_client_unhealthy_reason():
+    from jetkvm_core import JetKVMClient
+    c = JetKVMClient("192.168.1.10")
+    assert c.unhealthy_reason() == "not_connected"
+    c.connected = True
+    assert c.unhealthy_reason() == ""
+    c._on_peer_state("closed")
+    assert c.unhealthy_reason() == "peer_closed"
+    c._on_peer_state("failed")
+    assert c.unhealthy_reason() == "peer_failed"
+    c._track_ended = True
+    assert c.unhealthy_reason() == "track_ended"
+    assert c.is_healthy() is False

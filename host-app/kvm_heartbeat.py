@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 try:
-    from kvm_timing import _REASON_ZH
+    from kvm_timing import REASON_ZH
 except ImportError:
-    from .kvm_timing import _REASON_ZH  # type: ignore[import-not-found,no-redef]
+    from .kvm_timing import REASON_ZH  # type: ignore[import-not-found,no-redef]
 
 HEARTBEAT_LOST = "heartbeat_lost"
 HEARTBEAT_RECOVERED = "heartbeat_recovered"
@@ -23,7 +23,7 @@ class HeartbeatEvent:
     kind: str  # HEARTBEAT_LOST | HEARTBEAT_RECOVERED
     ip: str
     reason: str = ""  # lost only
-    since_ok_sec: Optional[int] = None  # lost only: whole seconds since the last OK heartbeat
+    since_ok_sec: Optional[int] = None  # lost only: whole seconds since the later of the last OK heartbeat and pooling
     outage_sec: Optional[int] = None  # recovered only: whole seconds since the first failure
 
 
@@ -61,7 +61,7 @@ class HeartbeatTracker:
 def log_heartbeat_event(event: HeartbeatEvent, device: str, log: logging.Logger = logger) -> None:
     """Write one bilingual line; WARNING for lost, INFO for recovered."""
     if event.kind == HEARTBEAT_LOST:
-        reason_zh = _REASON_ZH.get(event.reason, event.reason)
+        reason_zh = REASON_ZH.get(event.reason, event.reason)
         log.warning(
             f"KVM {event.kind} device={device} ip={event.ip} reason={event.reason} since_ok_sec={event.since_ok_sec}",
             extra={"zh": f"KVM 心跳偵測不到 設備={device} IP={event.ip} 原因={reason_zh} 距上次正常={event.since_ok_sec} 秒"})

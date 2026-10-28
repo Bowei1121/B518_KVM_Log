@@ -394,15 +394,29 @@ class TcpJsonServer:
 
     def _log_connect_timing(self, ip: str, path: str, elapsed_ms: int, ok: bool, reason: str, exc: Any,
                             event: Optional[HeartbeatEvent] = None) -> None:
-        """Pool timing observer: resolve the device ID from the KVM IP (unknown IP -> empty) and write the log lines."""
+        """Pool timing observer: resolve the device ID from the KVM IP (unknown IP -> empty) and write the log lines.
+
+        Each step is guarded on its own: a failing log write must not lose a heartbeat state event, because the
+        pool has already moved to the new state and will not emit it again.
+        """
         entry = self.device_registry.device_for_ip(normalize_kvm_ip(ip))
         device = entry.device_id if entry else ""
-        log_timing(TimingRecord(
-            ts=time.time(), device=device, ip=ip, path=path, elapsed_ms=elapsed_ms,
-            ok=ok, reason=reason, error_type=type(exc).__name__ if exc is not None else ""))
-        if event is not None:
-            log_heartbeat_event(event, device)
+        try:
+            log_timing(TimingRecord(
+                ts=time.time(), device=device, ip=ip, path=path, elapsed_ms=elapsed_ms,
+                ok=ok, reason=reason, error_type=type(exc).__name__ if exc is not None else ""))
+        except Exception:
+            logger.debug("KVM timing log line failed", exc_info=True)
+        if event is None:
+            return
+        try:
             self._on_heartbeat_event(event, device)
+        except Exception:
+            logger.debug("KVM heartbeat event hand-off failed", exc_info=True)
+        try:
+            log_heartbeat_event(event, device)
+        except Exception:
+            logger.debug("KVM heartbeat event log line failed", exc_info=True)
 
     def _on_heartbeat_event(self, event: HeartbeatEvent, device: str) -> None:
         """Seam for the Monitor timing-event buffer (#158); nothing consumes heartbeat events yet."""
