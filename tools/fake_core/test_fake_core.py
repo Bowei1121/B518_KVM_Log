@@ -1079,3 +1079,37 @@ def test_scenario_from_stdin_in_subprocess():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+# ---------------------------------------------------------------- monitor_start 丟掉上一輪（同真 Core 的 begin_start）
+
+
+def test_monitor_start_not_found_still_drops_previous_round(make_core):
+    core = make_core(finish_delay=0.1)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    r = cli.call("check_finish", timeout_sec=15)
+    assert r["data"]["kind"] == "taken"
+    core.command("nf")
+    r = cli.call("monitor_start", timeout_sec=5)
+    assert r["error"] == "log_solution_not_found"
+    core.command("clear")
+    r = cli.call("check_finish", timeout_sec=0)
+    assert r["status"] == "error" and r["error"] == "monitor_not_ready"
+    r = cli.call("check_finish", timeout_sec=0)
+    assert r["status"] == "error" and r["error"] == "monitor_not_ready"
+    assert r["data"]["kind"] != "already_taken"
+
+
+def test_monitor_start_busy_drops_armed_round_then_manual_verification(make_core):
+    core = make_core(finish_delay=2.5)
+    cli = core.connect()
+    to_monitoring(cli)
+    assert cli.call("start_test")["status"] == "ok"
+    r = cli.call("monitor_start", timeout_sec=5)
+    assert r["error"] == "log_solution_busy"
+    r = cli.call("check_finish", timeout_sec=15)
+    assert r["status"] == "error" and r["error"] == "manual_verification_required"
+    assert r["data"]["kind"] != "taken"
+

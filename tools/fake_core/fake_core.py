@@ -619,12 +619,12 @@ class FakeCore:
 
     def _monitor_start(self, dev: Device, timeout: float, conn: _Conn) -> Dict[str, Any]:
         with self._mu:
+            dev.begin_start()  # 同真 Core：畫面拒絕之後、任何 log_solution_* 錯誤之前就丟掉上一輪
             dev.tick()
             if "not_found" in self.faults:
                 return {"status": "error", "error": "log_solution_not_found",
                         "message": "Log Solution Dock icon is not on screen"}
             if dev.screen == "review":
-                dev.begin_start()
                 return {"status": "error", "error": "log_solution_review",
                         "message": "Log Solution 為待確認（開始前），未繼續開始監控"}
             if dev.screen == "monitoring":
