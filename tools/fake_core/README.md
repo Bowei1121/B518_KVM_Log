@@ -19,7 +19,7 @@ python tools/fake_core/fake_core.py
 | `--host` | `0.0.0.0` | 監聽位址 |
 | `--port` | `5000` | TCP port；`0` 由系統指派（實際 port 看 `listening on` 那行） |
 | `--device` | `BT-01` | 設備 ID |
-| `--station` | `BT` | 站別 `BT`／`DFU`（目前只支援能完整跑完一輪的這兩種；`FCT` 沒有治具推入的觸發，`--station FCT` 會被拒絕） |
+| `--station` | `BT` | 站別 `BT`／`DFU`／`FCT`（FCT 沒有治具訊號，`monitor_start` 成功即視為治具已推入） |
 | `--channels` | `4` | 通道數 |
 | `--finish-delay` | `5` | `start_test` 後幾秒出結果畫面 |
 | `--monitor-delay` | `0.5` | `monitor_start` 耗時秒數 |
@@ -33,8 +33,8 @@ python tools/fake_core/fake_core.py
 `ping`、`status`、`monitor_start`、`start_test`、`check_start`、`check_finish`。驗證順序與錯誤碼同真 Core
 （`invalid_json`、`invalid_request`、`unsupported_protocol_version`、`missing_req_id`、`missing_command`、
 `unknown_command`、`unknown_field`、`forbidden_field`、`missing_device`、`unknown_device`、`invalid_argument`；
-FCT 的 `start_test` 回 `unsupported_command`，此為協定行為；但 fake 本身不支援 FCT 站，原因是沒有治具推入的觸發，
-跑不完一輪，所以 CLI 拒絕 `--station FCT`）。目前只支援 BT 與 DFU。站別執行中不能切換，互動輸入 `station X` 只會回說明。
+FCT 的 `start_test` 仍回 `unsupported_command`，此為協定行為）。FCT 沒有治具訊號，`monitor_start` 成功即視為治具已推入
+（之後照 finish-delay 出結果，可跑完一輪）。站別執行中不能切換，互動輸入 `station X` 只會回說明。
 
 `snapshot`、`inspect`、`input`、`core_status`、`shutdown` 不模擬，通過驗證後回
 `error=unsupported_command`（message 說明 fake core 不模擬），不會假裝成功。

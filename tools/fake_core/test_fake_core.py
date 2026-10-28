@@ -228,6 +228,17 @@ def test_fct_start_test_is_unsupported_command(make_core):
     assert "FCT" in r["message"]
 
 
+def test_fct_monitor_start_simulates_fixture_push_round_completes(make_core):
+    c = make_core(station="FCT", device="FCT-01", finish_delay=2.5).connect()
+    c.sock.settimeout(20)
+    r = c.call("monitor_start", device="FCT-01", timeout_sec=5)
+    assert r["status"] == "ok"
+    r = c.call("check_start", device="FCT-01", timeout_sec=15)
+    assert r["status"] == "ok" and r["data"]["kind"] == "started"
+    r = c.call("check_finish", device="FCT-01", timeout_sec=15)
+    assert r["status"] == "ok" and r["data"]["kind"] == "taken"
+
+
 @pytest.mark.parametrize("cmd,fields", [
     ("snapshot", {"format": "png", "quality": 0}),
     ("inspect", {"timeout_sec": 0}),
@@ -1114,21 +1125,27 @@ def test_monitor_start_busy_drops_armed_round_then_manual_verification(make_core
     assert r["data"]["kind"] != "taken"
 
 
-# ---------------------------------------------------------------- 只支援 BT／DFU（FCT 沒有治具推入的觸發）
-
-
-def test_cli_rejects_fct_station(capsys):
-    with pytest.raises(SystemExit) as exc:
-        fake_core.main(["--station", "FCT", "--port", "0"])
-    assert exc.value.code not in (0, None)
-    err = capsys.readouterr().err
-    assert "FCT" in err and "BT" in err and "DFU" in err
+# ---------------------------------------------------------------- 支援 BT／DFU／FCT（未知站別被拒絕）
 
 
 @pytest.mark.parametrize("station", ["BT", "DFU"])
 def test_cli_accepts_bt_and_dfu_station(station):
     args = fake_core.build_parser().parse_args(["--station", station])
     assert args.station == station
+
+
+def test_cli_accepts_fct_station():
+    parser = fake_core.build_parser()
+    assert parser.parse_args(["--station", "FCT"]).station == "FCT"
+    assert parser.parse_args(["--station", "fct"]).station == "FCT"
+
+
+def test_cli_rejects_unknown_station(capsys):
+    with pytest.raises(SystemExit) as exc:
+        fake_core.main(["--station", "XYZ", "--port", "0"])
+    assert exc.value.code not in (0, None)
+    err = capsys.readouterr().err
+    assert "BT" in err and "DFU" in err and "FCT" in err
 
 
 def test_typed_station_command_does_not_switch(core):
