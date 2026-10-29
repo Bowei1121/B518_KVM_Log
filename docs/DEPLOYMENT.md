@@ -92,7 +92,8 @@ python host-app/core_daemon.py restart --port 5000
 
 ## 7. 防火牆與連線
 
-- 上位機需允許入站 TCP 5000（或所用埠）給 LabVIEW 所在的電腦。
+- Core 預設只監聽 `127.0.0.1`（本機），可用 `--host` 覆寫（例如 `--host 0.0.0.0`）；只有改為對外監聽時，才需允許入站 TCP 5000（或所用埠）給 LabVIEW 所在的電腦。待使用者確認。
+- 設定頁「重啟 Core」及 `--restart-core` 使用 UI 的 host（預設為 `127.0.0.1`）與預設設備清單重啟，不會自動沿用先前 Core 的 `--host 0.0.0.0` 或 `--devices-file`；UI 可用 `--host` 指定其他 host。
 - 上位機需能對九台 KVM 的 80 埠發起 TCP 連線（設定頁測試與 Core 連線都需要）。
 
 ## 8. 未驗證與待現場確認

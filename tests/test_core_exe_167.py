@@ -120,6 +120,62 @@ def test_source_start_restart(tmp_path):
             pass
 
 
+def test_start_missing_devices_preserves_child_failure(tmp_path):
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    status = tmp_path / 'status'
+    args = ['--port', str(port), '--devices-file', str(tmp_path / 'missing'),
+            '--status-file', str(status), '--pid-file', str(tmp_path / 'pid'),
+            '--log-file', str(tmp_path / 'log'), '--timeout', '5']
+    try:
+        result = subprocess.run([sys.executable, core.__file__, 'start', *args], capture_output=True, timeout=20)
+        assert result.returncode != 0
+        assert json.loads(status.read_text(encoding='utf-8'))['reason'] == 'devices_missing'
+        assert 'devices_missing' in (tmp_path / 'log').read_text(encoding='utf-8')
+    finally:
+        try:
+            core.send_tcp_command('shutdown', port=port, timeout=.2)
+        except OSError:
+            pass
+
+
+def test_failed_start_preserves_running_core_status(tmp_path):
+    devices = tmp_path / 'devices.json'
+    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}), encoding='utf-8')
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+    status = tmp_path / 'status'
+    common = ['--port', str(port), '--devices-file', str(devices), '--status-file', str(status), '--log-file', str(tmp_path / 'log')]
+    proc = subprocess.Popen([sys.executable, core.__file__, 'run', *common, '--pid-file', str(tmp_path / 'pid1')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                if core.send_tcp_command('ping', port=port, timeout=.2)['data']['pong']:
+                    break
+            except OSError:
+                time.sleep(.1)
+        else:
+            pytest.fail('Core did not start')
+        before = json.loads(status.read_text(encoding='utf-8'))
+        assert before['state'] == 'running' and before['pid'] == proc.pid
+        result = subprocess.run([sys.executable, core.__file__, 'start', *common, '--pid-file', str(tmp_path / 'pid2'), '--timeout', '5'], capture_output=True, timeout=20)
+        assert result.returncode != 0
+        after = json.loads(status.read_text(encoding='utf-8'))
+        assert after['state'] == 'running' and after['pid'] == proc.pid
+        assert core.send_tcp_command('ping', port=port, timeout=1)['data']['pong']
+    finally:
+        if proc.poll() is None:
+            try:
+                core.send_tcp_command('shutdown', port=port, timeout=1)
+                proc.wait(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                proc.kill()
+                proc.wait(timeout=10)
+
+
 def test_unhandled_exception_records_failure(monkeypatch, tmp_path):
     status = tmp_path / 'status'
     log = tmp_path / 'log'
@@ -143,14 +199,20 @@ def test_bridge_restart_core_without_tk(tmp_path):
         port = sock.getsockname()[1]
     env = dict(os.environ, HOME=str(tmp_path), USERPROFILE=str(tmp_path), B518_DEVICES_FILE=str(devices))
     try:
-        result = subprocess.run([sys.executable, str(Path(core.__file__).with_name('ui_app.py')), '--restart-core', '--port', str(port)], env=env, capture_output=True, timeout=30)
+        result = subprocess.run([sys.executable, str(Path(core.__file__).with_name('ui_app.py')), '--restart-core', '--port', str(port), '--pid-file', str(tmp_path / 'pid'), '--log-file', str(tmp_path / 'log'), '--status-file', str(tmp_path / 'status')], env=env, capture_output=True, timeout=40)
         assert result.returncode == 0, result.stderr
         assert core.send_tcp_command('ping', port=port)['data']['pong']
     finally:
+        pid = core.read_pid_file(tmp_path / 'pid')
         try:
             core.send_tcp_command('shutdown', port=port)
         except OSError:
             pass
+        if pid:
+            deadline = time.monotonic() + 20
+            while core.is_pid_alive(pid) and time.monotonic() < deadline:
+                time.sleep(.1)
+            assert not core.is_pid_alive(pid)
 
 
 def test_frozen_default_paths(monkeypatch, tmp_path):

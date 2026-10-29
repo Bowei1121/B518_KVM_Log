@@ -105,6 +105,20 @@ def test_committed_icon_pngs_match_the_ascii_drawing():
         assert actual.tobytes() == expected.tobytes(), f"bridge_{size}.png is stale"
 
 
+def test_core_exe_packaging_collects_both_executables():
+    tree = ast.parse((HOST_APP / "AtlasKVM.spec").read_text(encoding="utf-8"))
+    calls = {node.targets[0].id: node.value for node in tree.body
+             if isinstance(node, ast.Assign) and len(node.targets) == 1
+             and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Call)}
+    core_exe = calls["core_exe"]
+    assert isinstance(core_exe.func, ast.Name) and core_exe.func.id == "EXE"
+    assert ast.literal_eval(next(kw.value for kw in core_exe.keywords if kw.arg == "disable_windowed_traceback")) is True
+    collect = calls["coll"]
+    assert isinstance(collect.func, ast.Name) and collect.func.id == "COLLECT"
+    names = {arg.id for arg in collect.args if isinstance(arg, ast.Name)}
+    assert {"core_exe", "exe"} <= names
+
+
 def test_icon_ico_holds_every_size_and_the_bridge_colours():
     from PIL import Image
 

@@ -24,7 +24,7 @@ bridge = bundle / 'AtlasKVM.exe'
 
 
 def run(exe, *args):
-    return subprocess.run([str(exe), *args], timeout=25).returncode
+    return subprocess.run([str(exe), *args], timeout=60).returncode
 
 
 def command(cmd):
@@ -92,6 +92,24 @@ def check_single_instance():
     shutdown()
 
 
+def check_restart_with_idle_clients():
+    previous_pid = state()['pid']
+    with socket.create_connection(('127.0.0.1', 5000), timeout=2) as idle, \
+            socket.create_connection(('127.0.0.1', 5000), timeout=2) as pinged:
+        pinged.sendall((json.dumps({'protocol_version': '1.0', 'req_id': 'ci-idle', 'device': '', 'cmd': 'ping'}) + '\n').encode())
+        reply = b''
+        while not reply.endswith(b'\n'):
+            chunk = pinged.recv(65536)
+            if not chunk:
+                raise AssertionError('Core closed ping connection before replying')
+            reply += chunk
+        assert json.loads(reply)['data']['pong'] is True
+        assert run(bridge, '--restart-core') == 0
+        assert command('ping')['data']['pong'] is True
+        current = state()
+        assert current['state'] == 'running' and current['pid'] and current['pid'] != previous_pid
+
+
 def check_direct_start():
     started = time.monotonic()
     proc = subprocess.Popen([str(core)])
@@ -108,24 +126,27 @@ def check_direct_start():
 
 def check_missing():
     devices.unlink()
+    before = len(log.read_text(encoding='utf-8')) if log.exists() else 0
     assert run(core) != 0 and state()['reason'] == 'devices_missing' and Path(state()['devices_file']) == devices
-    assert 'devices_missing' in log.read_text(encoding='utf-8')
+    assert 'devices_missing' in log.read_text(encoding='utf-8')[before:]
 
 
 def check_invalid(content, expected):
     devices.write_text(content, encoding='utf-8')
+    before = len(log.read_text(encoding='utf-8')) if log.exists() else 0
     assert run(core) != 0 and state()['reason'] == 'devices_invalid'
     assert state()['detail'] == expected
-    assert 'devices_invalid' in log.read_text(encoding='utf-8')
+    assert 'devices_invalid' in log.read_text(encoding='utf-8')[before:]
 
 
 def check_occupied():
+    before = len(log.read_text(encoding='utf-8')) if log.exists() else 0
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         listener.bind(('127.0.0.1', 5000))
         listener.listen()
         assert run(core) != 0 and state()['reason'] == 'port_in_use'
-        assert 'port_in_use' in log.read_text(encoding='utf-8')
+        assert 'port_in_use' in log.read_text(encoding='utf-8')[before:]
         result = subprocess.run(['powershell', '-NoProfile', '-Command', '(Get-Process Core -ErrorAction SilentlyContinue | Measure-Object).Count'], capture_output=True, text=True, timeout=20, check=True)
         assert int(result.stdout.strip()) == 0
 
@@ -139,6 +160,7 @@ try:
     shutil.copyfile(root / 'config/devices.example.json', devices)
     valid = devices.read_bytes()
     check('bridge cold start', check_bridge_start)
+    check('restart with idle clients (FIN_WAIT_2)', check_restart_with_idle_clients)
     check('single instance and shutdown', check_single_instance)
     check('direct Core cold start and shutdown', check_direct_start)
     check('devices_missing', check_missing)

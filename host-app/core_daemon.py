@@ -220,7 +220,8 @@ def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
     """Check if a TCP port is currently free to bind."""
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        option = socket.SO_EXCLUSIVEADDRUSE if sys.platform == "win32" else socket.SO_REUSEADDR
+        s.setsockopt(socket.SOL_SOCKET, option, 1)
         try:
             s.bind((check_host, port))
             return True
@@ -555,6 +556,8 @@ def start_core_daemon(
 
     while time.time() < deadline:
         time.sleep(0.15)
+        if proc.poll() is not None:
+            break
         try:
             resp = send_tcp_command("ping", host=check_host, port=port, timeout=1.0)
             if resp.get("status") == "ok":
@@ -564,9 +567,16 @@ def start_core_daemon(
             last_err = exc
 
     if not started:
-        if not is_pid_alive(proc.pid):
+        if proc.poll() is not None:
+            detail = ""
+            try:
+                data = json.loads(Path(status_file or default_status_file()).read_text(encoding="utf-8"))
+                if data.get("pid") == proc.pid and data.get("state") == "failed":
+                    detail = f" {data.get('reason')}: {data.get('detail')}"
+            except (OSError, ValueError, AttributeError):
+                pass
             raise RuntimeError(
-                f"Core daemon process {proc.pid} exited prematurely during startup."
+                f"Core daemon process {proc.pid} exited prematurely during startup.{detail}"
             )
         raise TimeoutError(f"Core daemon did not respond within {timeout}s: {last_err}")
 
@@ -636,7 +646,7 @@ def run_service_foreground(
                       extra={"zh": "設備清單錯誤 (%s)：%s"})
             if sys.stderr is not None:
                 print(f"Device list error: {line}", file=sys.stderr)
-        write_status(status_path, "failed", exc.reason, exc.errors[0], devices_path, port)
+        write_status(status_path, "failed", exc.reason, exc.errors[0], devices_path, port, os.getpid())
         raise SystemExit(1) from exc
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if sys.platform == "win32":
@@ -658,7 +668,7 @@ def run_service_foreground(
         except Exception:
             pass
         log.error("port_in_use: %s", exc, extra={"zh": "port_in_use：連接埠已被使用：%s"})
-        write_status(status_path, "failed", "port_in_use", str(exc), devices_path, port)
+        write_status(status_path, "failed", "port_in_use", str(exc), devices_path, port, os.getpid())
         raise SystemExit(1) from exc
     server = TcpJsonServer(host=host, port=port, device_registry=registry)
     server.bound_socket = sock
@@ -843,9 +853,10 @@ def entrypoint() -> None:
     except Exception as exc:
         setup_rotating_logging(getattr(args, "log_file", None) or default_log_file(), console=False)
         logger.exception("Unhandled Core exception", extra={"zh": "Core 發生未處理的例外"})
-        write_status(getattr(args, "status_file", None) or default_status_file(), "failed", "internal_error",
-                     str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
-                     getattr(args, "devices_file", None) or default_registry_path(), getattr(args, "port", 5000))
+        if (args.command or "run") == "run":
+            write_status(getattr(args, "status_file", None) or default_status_file(), "failed", "internal_error",
+                         str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+                         getattr(args, "devices_file", None) or default_registry_path(), getattr(args, "port", 5000), os.getpid())
         sys.exit(1)
 
 
