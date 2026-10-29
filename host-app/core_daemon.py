@@ -155,6 +155,8 @@ def setup_rotating_logging(
             for h in target_logger.handlers
         )
         if not existing_console:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(errors="replace")
             sh = logging.StreamHandler(sys.stdout)
             sh.setLevel(level)
             sh.setFormatter(formatter)
@@ -167,6 +169,25 @@ def is_pid_alive(pid: int) -> bool:
     """Check if process with given PID exists, is active, and is not a zombie."""
     if pid <= 0:
         return False
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED
+        try:
+            exit_code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except (ProcessLookupError, OSError):

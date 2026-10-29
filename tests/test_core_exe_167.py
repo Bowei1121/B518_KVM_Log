@@ -31,12 +31,12 @@ def test_launch_command_and_defaults(monkeypatch, tmp_path):
 def test_invalid_devices(tmp_path, content, reason):
     devices = tmp_path / 'devices.json'
     if content is not None:
-        devices.write_text(content)
+        devices.write_text(content, encoding='utf-8')
     status = tmp_path / 'status.json'
     cmd = [sys.executable, str(Path(core.__file__)), 'run', '--port', '0', '--devices-file', str(devices), '--status-file', str(status), '--log-file', str(tmp_path / 'log'), '--pid-file', str(tmp_path / 'pid')]
     result = subprocess.run(cmd, timeout=30)
     assert result.returncode != 0
-    data = json.loads(status.read_text())
+    data = json.loads(status.read_text(encoding='utf-8'))
     assert data['reason'] == reason and data['devices_file'] == str(devices.resolve())
     assert data['detail']
     assert reason in (tmp_path / 'log').read_text(encoding='utf-8')
@@ -51,7 +51,7 @@ def test_invalid_devices(tmp_path, content, reason):
 
 def test_foreground_lifecycle_and_single_instance(tmp_path):
     devices = tmp_path / 'devices.json'
-    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}))
+    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}), encoding='utf-8')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -72,10 +72,10 @@ def test_foreground_lifecycle_and_single_instance(tmp_path):
         data = json.loads(before)
         assert data['state'] == 'running' and data['pid'] == proc.pid and data['started_at'] and data['port'] == port
         assert subprocess.run(cmd, timeout=20).returncode == 0
-        assert status.read_bytes() == before and int(pid.read_text()) == proc.pid
+        assert status.read_bytes() == before and int(pid.read_text(encoding='utf-8')) == proc.pid
         core.send_tcp_command('shutdown', port=port)
         assert proc.wait(timeout=20) == 0
-        assert json.loads(status.read_text())['state'] == 'stopped'
+        assert json.loads(status.read_text(encoding='utf-8'))['state'] == 'stopped'
         assert not pid.exists()
     finally:
         if proc.poll() is None:
@@ -85,7 +85,7 @@ def test_foreground_lifecycle_and_single_instance(tmp_path):
 
 def test_port_in_use(tmp_path):
     devices = tmp_path / 'devices.json'
-    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}))
+    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}), encoding='utf-8')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         sock.listen()
@@ -94,13 +94,13 @@ def test_port_in_use(tmp_path):
         log = tmp_path / 'log'
         cmd = [sys.executable, core.__file__, 'run', '--port', str(port), '--devices-file', str(devices), '--status-file', str(status), '--log-file', str(log), '--pid-file', str(tmp_path / 'pid')]
         assert subprocess.run(cmd, timeout=20).returncode != 0
-        assert json.loads(status.read_text())['reason'] == 'port_in_use'
-        assert 'port_in_use' in log.read_text()
+        assert json.loads(status.read_text(encoding='utf-8'))['reason'] == 'port_in_use'
+        assert 'port_in_use' in log.read_text(encoding='utf-8')
 
 
 def test_source_start_restart(tmp_path):
     devices = tmp_path / 'devices.json'
-    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}))
+    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}), encoding='utf-8')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -108,7 +108,10 @@ def test_source_start_restart(tmp_path):
     try:
         for command in ('start', 'restart'):
             result = subprocess.run([sys.executable, core.__file__, command, *args], capture_output=True, timeout=30)
-            assert result.returncode == 0, result.stderr
+            log = tmp_path / 'log'
+            log_text = log.read_text(encoding='utf-8', errors='replace') if log.exists() else '<missing>'
+            assert result.returncode == 0, (f"{command}: stdout={result.stdout!r}, "
+                                            f"stderr={result.stderr!r}, log={log_text}")
             assert core.send_tcp_command('ping', port=port)['data']['pong']
     finally:
         try:
@@ -128,13 +131,13 @@ def test_unhandled_exception_records_failure(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         core.entrypoint()
     assert exc.value.code != 0
-    assert json.loads(status.read_text())['reason'] == 'internal_error'
-    assert 'injected failure' in log.read_text()
+    assert json.loads(status.read_text(encoding='utf-8'))['reason'] == 'internal_error'
+    assert 'injected failure' in log.read_text(encoding='utf-8')
 
 
 def test_bridge_restart_core_without_tk(tmp_path):
     devices = tmp_path / 'devices.json'
-    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}))
+    devices.write_text(json.dumps({'DFU-01': {'station': 'DFU', 'kvm_ip': '192.0.2.1', 'channels': 4}}), encoding='utf-8')
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -188,3 +191,12 @@ def test_wildcard_host_single_instance(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=20)
+
+
+def test_is_pid_alive_for_current_and_finished_process():
+    # Runs on Windows CI too (test_core_daemon.py is excluded there, #111):
+    # os.kill(pid, 0) is not a liveness probe on Windows (signal 0 == CTRL_C_EVENT).
+    assert core.is_pid_alive(os.getpid())
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    child.wait(timeout=20)
+    assert not core.is_pid_alive(child.pid)

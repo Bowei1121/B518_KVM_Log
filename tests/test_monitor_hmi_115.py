@@ -118,12 +118,24 @@ def test_exe_packaging_uses_the_icon_and_bundles_assets_on_every_path():
     spec = (HOST_APP / "AtlasKVM.spec").read_text(encoding="utf-8")
     bat = (HOST_APP / "build_exe.bat").read_text(encoding="utf-8")
     ci = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(encoding="utf-8")
-    assert "bridge.ico" in spec and "('assets', 'assets')" in spec
-    assert "--icon assets\\bridge.ico" in bat and "--add-data \"assets;assets\"" in bat
-    assert "--icon assets/bridge.ico" in ci and "--add-data \"assets;assets\"" in ci
-    assert "write_build_info.py" in bat and "write_build_info.py" in ci
-    # the names stay AtlasKVM (issue #115 keeps exe / spec / artifact names)
-    assert "name='AtlasKVM'" in spec and "--name AtlasKVM" in bat and "--name AtlasKVM" in ci
+    assert "('assets', 'assets')" in spec
+    tree = ast.parse(spec)
+    calls = {node.targets[0].id: node.value for node in tree.body
+             if isinstance(node, ast.Assign) and len(node.targets) == 1
+             and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Call)}
+    for variable, name in (("exe", "AtlasKVM"), ("core_exe", "Core")):
+        call = calls[variable]
+        assert isinstance(call.func, ast.Name) and call.func.id == "EXE"
+        keywords = {item.arg: item.value for item in call.keywords}
+        assert ast.literal_eval(keywords["name"]) == name
+        assert ast.literal_eval(keywords["console"]) is False
+        assert "assets/bridge.ico" in ast.unparse(keywords["icon"])
+    collect = calls["coll"]
+    assert isinstance(collect.func, ast.Name) and collect.func.id == "COLLECT"
+    assert ast.literal_eval(next(item.value for item in collect.keywords if item.arg == "name")) == "AtlasKVM"
+    for build in (bat, ci):
+        assert re.search(r"python\s+-m\s+PyInstaller\b[^\n]*\bAtlasKVM\.spec\b", build)
+        assert "write_build_info.py" in build
 
 
 def test_ci_writes_build_info_before_packaging_and_tests_the_layout():
