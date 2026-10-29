@@ -1,0 +1,81 @@
+# Probe for #168 (prerequisite measured in #167): does Task Scheduler "restart on failure"
+# (RestartInterval 1 min, RestartCount 3) re-run a program that STARTED and later exited non-zero?
+# Informational only: never blocks a PR. Results are printed in the job log.
+name: Scheduler restart-on-failure probe
+
+on:
+  pull_request:
+    paths: [ '.github/workflows/scheduler-restart-probe.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - name: Register probe tasks (current user, RunLevel Limited)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'schedprobe'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          # A: starts, writes a line, exits 1 after 5 s.  B: starts, writes a line, runs until killed.
+          Set-Content -Path "$dir\exit1.ps1" -Value "Add-Content -Path '$dir\exit1.txt' -Value (Get-Date -Format o); Start-Sleep -Seconds 5; exit 1"
+          Set-Content -Path "$dir\killed.ps1" -Value "Add-Content -Path '$dir\killed.txt' -Value (Get-Date -Format o); Start-Sleep -Seconds 900"
+          $user = "$env:USERDOMAIN\$env:USERNAME"
+          $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+          foreach ($name in 'exit1', 'killed') {
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\$name.ps1`""
+            $registered = $false
+            foreach ($logon in 'Interactive', 'S4U') {
+              try {
+                $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType $logon -RunLevel Limited
+                Register-ScheduledTask -TaskName "B518Probe_$name" -Action $action -Settings $settings -Principal $principal -Force | Out-Null
+                Write-Host "registered B518Probe_$name as $user LogonType=$logon"
+                $registered = $true; break
+              } catch { Write-Host "register $name with $logon failed: $_" }
+            }
+            if (-not $registered) { throw "could not register $name" }
+          }
+          wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true
+          Start-ScheduledTask -TaskName B518Probe_exit1
+          Start-ScheduledTask -TaskName B518Probe_killed
+          Start-Sleep -Seconds 15
+          foreach ($name in 'exit1', 'killed') { Write-Host "$name after 15 s:"; Get-Content "$dir\$name.txt" -ErrorAction SilentlyContinue }
+          # B: kill the running program (simulates Core.exe being terminated / crashing after start)
+          $victims = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*killed.ps1*' }
+          foreach ($v in $victims) { Write-Host "killing PID $($v.ProcessId)"; Stop-Process -Id $v.ProcessId -Force }
+
+      - name: Observe for 4 minutes
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'schedprobe'
+          for ($i = 1; $i -le 8; $i++) {
+            Start-Sleep -Seconds 30
+            $a = @(Get-Content "$dir\exit1.txt" -ErrorAction SilentlyContinue).Count
+            $b = @(Get-Content "$dir\killed.txt" -ErrorAction SilentlyContinue).Count
+            Write-Host ("t+{0,3}s  exit1 runs={1}  killed runs={2}" -f ($i * 30), $a, $b)
+          }
+
+      - name: Report
+        if: always()
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'schedprobe'
+          foreach ($name in 'exit1', 'killed') {
+            $runs = @(Get-Content "$dir\$name.txt" -ErrorAction SilentlyContinue)
+            Write-Host "=== B518Probe_$name : $($runs.Count) run(s) ==="
+            $runs | ForEach-Object { Write-Host "  $_" }
+            Get-ScheduledTaskInfo -TaskName "B518Probe_$name" | Format-List LastRunTime, LastTaskResult, NumberOfMissedRuns | Out-String | Write-Host
+            (Get-ScheduledTask -TaskName "B518Probe_$name").Settings | Format-List RestartCount, RestartInterval, ExecutionTimeLimit, MultipleInstances | Out-String | Write-Host
+          }
+          Write-Host '=== TaskScheduler/Operational events for the probe tasks ==='
+          Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational -MaxEvents 300 -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -like '*B518Probe_*' } | Sort-Object TimeCreated |
+            ForEach-Object { Write-Host ("{0:o}  id={1}  {2}" -f $_.TimeCreated, $_.Id, ($_.Message -replace '\s+', ' ')) }
+          foreach ($name in 'exit1', 'killed') { Unregister-ScheduledTask -TaskName "B518Probe_$name" -Confirm:$false -ErrorAction SilentlyContinue }
