@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 REM ============================================================
-REM  Build ui_app.py -> exe (onedir)
+REM  Build AtlasKVM.exe and Core.exe from AtlasKVM.spec (onedir)
 REM  Output: dist\AtlasKVM\AtlasKVM.exe
 REM  Templates stay external at %%USERPROFILE%%\Documents\template
 REM ============================================================
@@ -10,7 +10,7 @@ cd /d "%~dp0"
 REM Version and build info for the title and Log (issue #115). Same step as CI; the build hash is the git short hash.
 python "%~dp0..\tools\write_build_info.py"
 
-python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM --icon assets\bridge.ico --add-data "assets;assets" --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all av --collect-all aiortc --collect-all cv2 ui_app.py
+python -m PyInstaller --noconfirm --clean AtlasKVM.spec
 
 echo.
 echo ============================================================

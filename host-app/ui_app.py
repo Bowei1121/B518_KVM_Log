@@ -1562,7 +1562,7 @@ class AtlasUI(_BaseTk):
         from core_daemon import restart_core_daemon
 
         try:
-            res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=10.0)
+            res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=CORE_START_TIMEOUT_S)
         except Exception as exc:
             res = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
         if res.get("status") == "ok":
@@ -1885,6 +1885,10 @@ def apply_windows_tk_scaling(root: Any) -> Optional[float]:
 _DPI_AWARENESS_MODE = "not-run"
 
 
+# A cold Core.exe start (imports + antivirus scan of a fresh bundle) can take longer than 10 s (#167).
+CORE_START_TIMEOUT_S = 30.0
+
+
 def runtime_self_test() -> List[str]:
     """Import every runtime dependency the Monitor UI needs. Returns the problems found (empty = OK).
 
@@ -1939,7 +1943,17 @@ def main() -> None:
         action="store_true",
         help="Import every runtime dependency, print the result and exit (non-zero on failure)",
     )
+    parser.add_argument("--restart-core", action="store_true", help="Restart Core without opening a window")
     args = parser.parse_args()
+
+    if args.restart_core:
+        from core_daemon import restart_core_daemon, send_tcp_command
+        try:
+            result = restart_core_daemon(host=args.host, port=args.port, timeout=CORE_START_TIMEOUT_S)
+            reply = send_tcp_command("ping", host=args.host, port=args.port)
+            sys.exit(0 if result.get("status") == "ok" and reply.get("data", {}).get("pong") is True else 1)
+        except Exception:
+            sys.exit(1)
 
     if args.self_test:
         problems = runtime_self_test()

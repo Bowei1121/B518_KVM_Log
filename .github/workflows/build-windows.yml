@@ -1,6 +1,6 @@
 # Windows build for the Monitor UI (issue #107).
 # PyInstaller cannot cross-compile, so the Windows exe is built here on windows-latest.
-# The build step mirrors host-app/build_exe.bat flag for flag, so CI and the on-site script produce the same bundle.
+# CI and host-app/build_exe.bat both build from AtlasKVM.spec.
 name: Build Windows Executable
 
 on:
@@ -50,7 +50,7 @@ jobs:
         # Guarded by tests/test_windows_ci_capture_140.py (static workflow check)
         # and the win32 capture check in tests/conftest.py.
         # tests/capture_default_140.py (pytest.ini addopts) also makes sys the Windows default for local runs.
-        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py tests/test_connect_failures_134.py tests/test_kvm_pool_connect_failures_134.py tests/test_core_status_134.py tests/test_station_presentation_134.py tests/test_monitor_hmi_134.py
+        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py tests/test_connect_failures_134.py tests/test_kvm_pool_connect_failures_134.py tests/test_core_status_134.py tests/test_station_presentation_134.py tests/test_monitor_hmi_134.py tests/test_core_exe_167.py
 
   build:
     runs-on: windows-latest
@@ -101,18 +101,29 @@ jobs:
         working-directory: host-app
         shell: bash
         run: |
-          python -m PyInstaller --noconfirm --clean --windowed --name AtlasKVM \
-            --icon assets/bridge.ico --add-data "assets;assets" \
-            --collect-all rapidocr_onnxruntime --collect-all onnxruntime --collect-all av \
-            --collect-all aiortc --collect-all cv2 ui_app.py
+          python -m PyInstaller --noconfirm --clean AtlasKVM.spec
 
       - name: Verify exe exists
         shell: bash
-        run: test -f host-app/dist/AtlasKVM/AtlasKVM.exe
+        run: |
+          test -f host-app/dist/AtlasKVM/AtlasKVM.exe
+          test -f host-app/dist/AtlasKVM/Core.exe
 
       - name: Self-test the frozen exe (catches anything PyInstaller failed to bundle)
         shell: bash
         run: host-app/dist/AtlasKVM/AtlasKVM.exe --self-test
+
+      - name: Exercise packaged Core and frozen bridge launch
+        shell: bash
+        run: python tools/ci_frozen_core_167.py
+
+      - name: Upload Core diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-diagnostics-windows
+          path: ~/Documents/logs
+          if-no-files-found: warn
 
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4

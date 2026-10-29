@@ -316,6 +316,8 @@ class TcpJsonServer:
             for record in build_health(self.device_registry.entries(), [], [], [])
         }
 
+        self.bound_socket = None
+        self.on_started = None
         self._server: Optional[asyncio.Server] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -1171,9 +1173,8 @@ class TcpJsonServer:
                 pass
 
         self._server = await asyncio.start_server(
-            self._client_connected_cb,
-            host=self.host,
-            port=self.port,
+            self._client_connected_cb, **({"sock": self.bound_socket} if self.bound_socket else
+                                         {"host": self.host, "port": self.port})
         )
 
         sockets = self._server.sockets
@@ -1183,6 +1184,8 @@ class TcpJsonServer:
             self.port = sock_name[1]
 
         self._is_running = True
+        if self.on_started:
+            self.on_started()
         self._start_time = time.time()
         await self.kvm_pool.start()
         self._start_event.set()

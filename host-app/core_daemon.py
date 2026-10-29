@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import datetime
 import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -17,6 +18,8 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Union
 import uuid
@@ -42,11 +45,62 @@ except ImportError:
     from .tcp_server import TcpJsonServer  # type: ignore[no-redef]
 
 try:
-    from device_registry import DeviceRegistry, DeviceRegistryError
+    from device_registry import DeviceRegistry, DeviceRegistryError, default_registry_path
 except ImportError:
     from .device_registry import DeviceRegistry, DeviceRegistryError  # type: ignore[no-redef]
 
 logger = logging.getLogger("CoreDaemon")
+
+
+def _user_log_dir() -> Path:
+    from ui_logfile import log_dir_for_template_root
+    return log_dir_for_template_root(Path.home() / "Documents" / "template")
+
+
+def default_status_file() -> Path:
+    """Return the user log directory status path for source and frozen builds."""
+    return _user_log_dir() / "core_status.json"
+
+
+def default_log_file() -> Path:
+    """Return the user log path when frozen, otherwise the source log path."""
+    return _user_log_dir() / "core_service.log" if getattr(sys, "frozen", False) else _DEFAULT_LOG_FILE
+
+
+def default_pid_file() -> Path:
+    """Return the user PID path when frozen, otherwise the source PID path."""
+    return _user_log_dir() / "core_service.pid" if getattr(sys, "frozen", False) else _DEFAULT_PID_FILE
+
+
+def core_launch_command(args: List[str]) -> List[str]:
+    """Launch the bundled Core executable or the source daemon with arguments."""
+    if getattr(sys, "frozen", False):
+        executable = Path(sys.executable).resolve().parent / ("Core.exe" if sys.platform == "win32" else "Core")
+        if not executable.is_file():
+            raise FileNotFoundError(f"Core executable not found: {executable}")
+        return [str(executable), "run", *args]
+    return [sys.executable, str(Path(__file__).resolve()), "run", *args]
+
+
+def write_status(path, state, reason, detail, devices_file, port, pid=None, started_at=None):
+    """Write state, reason, detail, devices_file, port, pid, started_at and updated_at.
+
+    Reasons include devices_missing, devices_invalid, port_in_use and internal_error.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(state=state, reason=reason, detail=detail, devices_file=str(Path(devices_file).resolve()),
+                port=port, pid=pid, started_at=started_at,
+                updated_at=datetime.datetime.now().astimezone().isoformat())
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".core-status-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
 
 
 def setup_rotating_logging(
@@ -95,7 +149,7 @@ def setup_rotating_logging(
             rfh.setFormatter(formatter)
             target_logger.addHandler(rfh)
 
-    if console:
+    if console and sys.stdout is not None:
         existing_console = any(
             isinstance(h, logging.StreamHandler) and not isinstance(h, TimedRotatingFileHandler)
             for h in target_logger.handlers
@@ -261,7 +315,7 @@ def query_status(
     timeout: float = 2.0,
 ) -> Dict[str, Any]:
     """Query Core Service status via TCP and inspect PID file."""
-    effective_pid_file = Path(pid_file) if pid_file else _DEFAULT_PID_FILE
+    effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
     pid = read_pid_file(effective_pid_file)
     is_alive = is_pid_alive(pid) if pid else False
 
@@ -308,7 +362,7 @@ def graceful_stop_core_service(
     timeout: float = 10.0,
 ) -> Dict[str, Any]:
     """Trigger graceful shutdown via TCP shutdown command and confirm process termination."""
-    effective_pid_file = Path(pid_file) if pid_file else _DEFAULT_PID_FILE
+    effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
     pid = read_pid_file(effective_pid_file)
 
     # 1. Send shutdown command
@@ -362,7 +416,7 @@ def force_kill_core_service(
     timeout: float = 5.0,
 ) -> Dict[str, Any]:
     """Aggressively recover from hung/zombie states by terminating lingering processes and releasing ports."""
-    effective_pid_file = Path(pid_file) if pid_file else _DEFAULT_PID_FILE
+    effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
     target_pids: Set[int] = set()
 
     # 1. Read PID from pidfile if present
@@ -417,17 +471,19 @@ def force_kill_core_service(
 
 
 def start_core_daemon(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
     backup_count: int = LOG_RETENTION_DAYS,
     pid_file: Optional[Union[str, Path]] = None,
     timeout: float = 10.0,
+    status_file: Optional[Union[str, Path]] = None,
+    devices_file: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Start Core Daemon as a headless background process and wait until responsive."""
-    effective_log_file = Path(log_file) if log_file else _DEFAULT_LOG_FILE
-    effective_pid_file = Path(pid_file) if pid_file else _DEFAULT_PID_FILE
+    effective_log_file = Path(log_file) if log_file else default_log_file()
+    effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
 
     # Check if already running
@@ -449,18 +505,12 @@ def start_core_daemon(
     if not is_port_free(port, check_host):
         raise RuntimeError(f"Cannot start Core Daemon: Port {port} is already in use.")
 
-    script_path = Path(__file__).resolve()
-    cmd = [
-        sys.executable,
-        str(script_path),
-        "run",
-        "--host", host,
-        "--port", str(port),
-        "--log-file", str(effective_log_file),
-        "--log-level", log_level,
-        "--backup-count", str(backup_count),
-        "--pid-file", str(effective_pid_file),
-    ]
+    cmd = core_launch_command([
+        "--host", host, "--port", str(port), "--log-file", str(effective_log_file),
+        "--log-level", log_level, "--backup-count", str(backup_count),
+        "--pid-file", str(effective_pid_file), "--status-file", str(status_file or default_status_file()),
+        *(["--devices-file", str(devices_file)] if devices_file else []),
+    ])
 
     kwargs: Dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
@@ -511,13 +561,15 @@ def start_core_daemon(
 
 
 def restart_core_daemon(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
     backup_count: int = LOG_RETENTION_DAYS,
     pid_file: Optional[Union[str, Path]] = None,
     timeout: float = 10.0,
+    status_file: Optional[Union[str, Path]] = None,
+    devices_file: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Gracefully restart Core Daemon."""
     stop_res = graceful_stop_core_service(
@@ -534,12 +586,12 @@ def restart_core_daemon(
         log_level=log_level,
         backup_count=backup_count,
         pid_file=pid_file,
-        timeout=timeout,
+        timeout=timeout, status_file=status_file, devices_file=devices_file,
     )
 
 
 def run_service_foreground(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
@@ -547,81 +599,86 @@ def run_service_foreground(
     pid_file: Optional[Union[str, Path]] = None,
     console: bool = True,
     devices_file: Optional[Union[str, Path]] = None,
+    status_file: Optional[Union[str, Path]] = None,
 ) -> None:
-    """Run Core Service synchronously in the foreground with headless configuration."""
-    effective_log_file = Path(log_file) if log_file else _DEFAULT_LOG_FILE
-    effective_pid_file = Path(pid_file) if pid_file else _DEFAULT_PID_FILE
-
-    # 1. Setup rotating logging
-    log = setup_rotating_logging(
-        log_file=effective_log_file,
-        log_level=log_level,
-        backup_count=backup_count,
-        console=console,
-    )
-
-    # 2. Record PID
-    current_pid = os.getpid()
-    write_pid_file(effective_pid_file, current_pid)
-
-    def _cleanup():
-        remove_pid_file(effective_pid_file)
-
-    atexit.register(_cleanup)
-
-    log.info(
-        "Headless CoreDaemon started (PID: %d) listening on %s:%d. Log file: %s",
-        current_pid,
-        host,
-        port,
-        effective_log_file,
-        extra={"zh": "無頭模式 CoreDaemon 已啟動 (PID: %d)，監聽 %s:%d。Log 檔: %s"},
-    )
-
-    # 3. Load device list; refuse to start when it is missing or invalid
+    """Run the Core service in the foreground and record its lifecycle."""
+    log_path = Path(log_file or default_log_file())
+    pid_path = Path(pid_file or default_pid_file())
+    status_path = Path(status_file or default_status_file())
+    devices_path = Path(devices_file or default_registry_path()).resolve()
+    log = setup_rotating_logging(log_path, log_level, backup_count, console)
     try:
-        registry = DeviceRegistry.load(devices_file)
+        registry = DeviceRegistry.load(devices_path)
     except DeviceRegistryError as exc:
         for line in exc.errors:
-            log.error("Device list error: %s", line, extra={"zh": "設備清單錯誤: %s"})
-            print(f"Device list error: {line}", file=sys.stderr)
-        _cleanup()
+            log.error("Device list error (%s): %s", exc.reason, line,
+                      extra={"zh": "設備清單錯誤 (%s)：%s"})
+            if sys.stderr is not None:
+                print(f"Device list error: {line}", file=sys.stderr)
+        write_status(status_path, "failed", exc.reason, exc.errors[0], devices_path, port)
         raise SystemExit(1) from exc
-
-    # 4. Create and configure server
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform == "win32":
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    else:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+        sock.listen(socket.SOMAXCONN)
+        sock.setblocking(False)
+    except OSError as exc:
+        sock.close()
+        try:
+            check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
+            response = send_tcp_command("ping", host=check_host, port=port, timeout=1)
+            if response.get("data", {}).get("pong") is True:
+                log.info("another Core is already running", extra={"zh": "另一個 Core 已在執行"})
+                return
+        except Exception:
+            pass
+        log.error("port_in_use: %s", exc, extra={"zh": "port_in_use：連接埠已被使用：%s"})
+        write_status(status_path, "failed", "port_in_use", str(exc), devices_path, port)
+        raise SystemExit(1) from exc
     server = TcpJsonServer(host=host, port=port, device_registry=registry)
-
-    # 4. Handle OS signals
-    def _signal_handler(signum, frame):
-        log.info("Received termination signal %s; stopping server gracefully...", signum,
-                 extra={"zh": "收到終止訊號 %s，正在優雅停止服務中..."})
+    server.bound_socket = sock
+    started_at = datetime.datetime.now().astimezone().isoformat()
+    current_pid = os.getpid()
+    actual_port = sock.getsockname()[1]
+    def started():
+        write_pid_file(pid_path, current_pid)
+        write_status(status_path, "running", None, "", devices_path, actual_port, current_pid, started_at)
+        log.info("Headless CoreDaemon started (PID: %d) listening on %s:%d. Log file: %s",
+                 current_pid, host, actual_port, log_path,
+                 extra={"zh": "無頭模式 CoreDaemon 已啟動 (PID: %d)，監聽 %s:%d。Log 檔: %s"})
+    server.on_started = started
+    def stop(signum, frame):
         server.stop()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            signal.signal(sig, _signal_handler)
+            signal.signal(sig, stop)
         except (ValueError, OSError):
             pass
-
     try:
         server.serve_forever()
     finally:
-        _cleanup()
-        log.info("CoreDaemon stopped cleanly.", extra={"zh": "CoreDaemon 已正常停止。"})
+        sock.close()
+        remove_pid_file(pid_path)
+    write_status(status_path, "stopped", None, "", devices_path, actual_port, current_pid, started_at)
+    log.info("CoreDaemon stopped cleanly.", extra={"zh": "CoreDaemon 已正常停止。"})
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Headless Core Daemon & Process Management Utility for B518 JetKVM Relay"
     )
     subparsers = parser.add_subparsers(dest="command", help="Management command")
 
     def _add_common_server_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--host", default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
+        p.add_argument("--host", default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
         p.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
         p.add_argument(
             "--log-file",
-            default=str(_DEFAULT_LOG_FILE),
+            default=str(default_log_file()),
             help=f"Rotating log file path (default: {_DEFAULT_LOG_FILE})",
         )
         p.add_argument(
@@ -637,18 +694,16 @@ def parse_args() -> argparse.Namespace:
         )
         p.add_argument(
             "--pid-file",
-            default=str(_DEFAULT_PID_FILE),
+            default=str(default_pid_file()),
             help=f"PID file path (default: {_DEFAULT_PID_FILE})",
         )
+
+        p.add_argument("--status-file", default=str(default_status_file()))
+        p.add_argument("--devices-file", default=None)
 
     # run command (foreground)
     p_run = subparsers.add_parser("run", help="Run Core Service in foreground (blocking)")
     _add_common_server_args(p_run)
-    p_run.add_argument(
-        "--devices-file",
-        default=None,
-        help="Device list JSON (default: ~/Documents/template/devices.json)",
-    )
 
     # start command (background daemon)
     p_start = subparsers.add_parser("start", help="Start Core Service in background daemon mode")
@@ -659,7 +714,7 @@ def parse_args() -> argparse.Namespace:
     p_stop = subparsers.add_parser("stop", help="Gracefully stop Core Service via TCP shutdown")
     p_stop.add_argument("--host", default="127.0.0.1", help="Target host interface")
     p_stop.add_argument("--port", type=int, default=5000, help="Target TCP port")
-    p_stop.add_argument("--pid-file", default=str(_DEFAULT_PID_FILE), help="PID file path")
+    p_stop.add_argument("--pid-file", default=str(default_pid_file()), help="PID file path")
     p_stop.add_argument("--timeout", type=float, default=10.0, help="Stop timeout in seconds")
 
     # restart command
@@ -671,21 +726,22 @@ def parse_args() -> argparse.Namespace:
     p_status = subparsers.add_parser("status", help="Query Core Service status")
     p_status.add_argument("--host", default="127.0.0.1", help="Target host interface")
     p_status.add_argument("--port", type=int, default=5000, help="Target TCP port")
-    p_status.add_argument("--pid-file", default=str(_DEFAULT_PID_FILE), help="PID file path")
+    p_status.add_argument("--pid-file", default=str(default_pid_file()), help="PID file path")
     p_status.add_argument("--timeout", type=float, default=2.0, help="Query timeout in seconds")
 
     # force-kill command
     p_kill = subparsers.add_parser("force-kill", help="Aggressively force kill Core Service processes")
     p_kill.add_argument("--port", type=int, default=5000, help="Target TCP port")
-    p_kill.add_argument("--pid-file", default=str(_DEFAULT_PID_FILE), help="PID file path")
+    p_kill.add_argument("--pid-file", default=str(default_pid_file()), help="PID file path")
     p_kill.add_argument("--host", default="127.0.0.1", help="Target host interface")
     p_kill.add_argument("--timeout", type=float, default=5.0, help="Recovery timeout in seconds")
 
-    return parser.parse_args()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    return parser.parse_args(argv or ["run"])
 
 
-def main() -> None:
-    args = parse_args()
+def main(args: Optional[argparse.Namespace] = None) -> None:
+    args = parse_args() if args is None else args
     cmd = args.command or "run"
 
     if cmd == "run":
@@ -696,7 +752,7 @@ def main() -> None:
             log_level=args.log_level,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
-            devices_file=getattr(args, "devices_file", None),
+            devices_file=args.devices_file, status_file=args.status_file,
         )
     elif cmd == "start":
         res = start_core_daemon(
@@ -706,7 +762,7 @@ def main() -> None:
             log_level=args.log_level,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
-            timeout=args.timeout,
+            timeout=args.timeout, status_file=args.status_file, devices_file=args.devices_file,
         )
         print(json.dumps(res, indent=2))
     elif cmd == "stop":
@@ -725,7 +781,7 @@ def main() -> None:
             log_level=args.log_level,
             backup_count=args.backup_count,
             pid_file=args.pid_file,
-            timeout=args.timeout,
+            timeout=args.timeout, status_file=args.status_file, devices_file=args.devices_file,
         )
         print(json.dumps(res, indent=2))
     elif cmd == "status":
@@ -749,5 +805,28 @@ def main() -> None:
         sys.exit(1)
 
 
+def entrypoint() -> None:
+    """Parse once and run source or frozen Core, recording unexpected failures."""
+    args = parse_args()
+
+    def thread_exception(exc: threading.ExceptHookArgs) -> None:
+        logger.error(
+            "Unhandled Core worker exception",
+            exc_info=(exc.exc_type, exc.exc_value, exc.exc_traceback),
+            extra={"zh": "Core 工作執行緒發生未處理的例外"},
+        )
+
+    threading.excepthook = thread_exception
+    try:
+        main(args)
+    except Exception as exc:
+        setup_rotating_logging(getattr(args, "log_file", None) or default_log_file(), console=False)
+        logger.exception("Unhandled Core exception", extra={"zh": "Core 發生未處理的例外"})
+        write_status(getattr(args, "status_file", None) or default_status_file(), "failed", "internal_error",
+                     str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+                     getattr(args, "devices_file", None) or default_registry_path(), getattr(args, "port", 5000))
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    entrypoint()
