@@ -429,8 +429,13 @@ def test_disconnect_fault_closes_clients_and_gives_no_reply(core):
     # 伺服器仍在聽
     c = core.connect()
     assert c.call("ping", device="")["data"]["pong"] is True
-    # 進行中請求被取消，鎖已釋放
-    assert c.call("check_finish", timeout_sec=0)["error"] != "device_busy"
+    # 進行中請求被取消，鎖已釋放（處理執行緒每 poll 才檢查一次連線，最多等 2 秒）
+    deadline = time.monotonic() + 2.0
+    r = c.call("check_finish", timeout_sec=0)
+    while r["error"] == "device_busy" and time.monotonic() < deadline:
+        time.sleep(0.05)
+        r = c.call("check_finish", timeout_sec=0)
+    assert r["error"] != "device_busy"
 
 
 def test_timeout_fault_waits_full_timeout(make_core):
