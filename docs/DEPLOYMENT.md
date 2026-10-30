@@ -4,7 +4,7 @@
 
 ## 1. 組成
 
-- **上位機（一台 Windows PC）**：Core Service 與 Monitor UI 同機執行。Core 只開一個 TCP 埠（預設 5000），每台設備由 LabVIEW 開一條獨立連線到同一埠（ADR-0006）。
+- **上位機（一台 Windows PC）**：Core Service、Monitor UI 與 LabVIEW 同機執行，Core 只監聽 `127.0.0.1`。Core 只開一個 TCP 埠（預設 5000），每台設備由 LabVIEW 開一條獨立連線到同一埠（ADR-0006）。
 - **九台 JetKVM**：DFU-01～DFU-07、FCT-01、BT-01，各接一台測試機與一台測試機電腦（ADR-0007）。
 - **交換機**：EKI-2720G，非網管交換機。不做 VLAN 或 port 設定，所有設備與上位機以靜態 IP 互連。
 

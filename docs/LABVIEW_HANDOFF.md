@@ -9,11 +9,11 @@
 
 ## 1. 基本規則
 
-- 每台設備一條 TCP 連線，一次只送一筆請求，收到回覆後才送下一筆；每筆請求只會有一筆回覆。
+- LabVIEW 與 Core 在同一台上位機，連線到 `127.0.0.1`；每台設備一條 TCP 連線，一次只送一筆請求，收到回覆後才送下一筆；每筆請求只會有一筆回覆。
 - `req_id` 由 LabVIEW 產生且每筆不同；回覆會原樣帶回 `req_id`、`device`、`cmd`，三者都核對相同才採用。
 - 先看 `status`：`ok` 才看 `data.kind`；`error`／`timeout` 依第 4、5 節處理。
 - `timeout_sec` 是 **LabVIEW 願意等多久**，不是 Log Solution 的測試期限。LabVIEW 的 TCP Read timeout 要比 `timeout_sec` 長（建議多 30 秒）。
-- **只有 `kind = "taken"` 可以觸發設備動作**（分料、良品／不良品處置、放行下一批）。其他任何回覆都不能。
+- `kind = "taken"` 觸發設備動作（分料、良品／不良品處置、放行下一批）。`already_taken` 只在本輪 `RoundActed` 為 false（從未依 `taken` 動作）時可寫入 PLC 一次並設為 true；為 true 時只供重看。其他任何回覆都不能觸發設備動作。
 
 ## 2. 三站呼叫順序
 
@@ -36,7 +36,7 @@
 | --- | --- | --- | --- | --- |
 | `started` | 已確認有通道開始測試；`active` 列出通道與證據。`reason` 為 `activity_confirmed` | `check_start`、`inspect`（Monitor UI） | 空 | 記錄已開始的通道（可顯示在人機畫面），接著送 `check_finish`。`inspect` 只顯示 |
 | `taken` | 本輪完整結果，**第一次**交付 | `check_start`、`check_finish` | 完整 | **依逐格結果做產品處置**：PASS 良品；FAIL／NOTEST／TIMEOUT／STOPPED 不良品交人工。`state = "manual_stop_complete"` 時標記為人工停止、交作業員重工 |
-| `already_taken` | 同一輪結果**再次**交付（重看或通訊中斷後重取），結果與第一次相同 | `check_start`、`check_finish` | 完整（與第一次相同） | 只顯示、核對；**不再做設備動作** |
+| `already_taken` | 同一輪結果**再次**交付（重看或通訊中斷後重取），結果與第一次相同 | `check_start`、`check_finish` | 完整（與第一次相同） | 本輪 `RoundActed` 為 false 時可寫入 PLC 一次並設為 true；為 true 時只顯示、核對 |
 | `waiting` | 還沒有可交付結果：準備中、監控中但尚未開始、測試中 | `check_start`、`check_finish`、`inspect` | 空 | 繼續等或再查；`state` 可顯示目前狀態 |
 | `paused` | Log 異常待確認（衝突、警報、未偵測到測試開始等） | `check_start`、`check_finish`、`inspect` | 空 | 報警、暫停後續設備動作，等人員在 Log Solution 處理完再查 |
 | `unknown` | 畫面看不清楚，判讀不可靠 | `check_start`、`check_finish`、`inspect` | 空 | 視為設備／通訊異常，**不得判產品 FAIL** |
@@ -83,10 +83,10 @@
 
 | 可以 | 不可以 |
 | --- | --- |
-| 收到 `taken` | `started`、`already_taken`、`waiting`、`paused`、`unknown` |
+| 收到 `taken`；或收到 `already_taken` 且本輪 `RoundActed` 為 false 時寫入 PLC 一次並設為 true | `started`、`waiting`、`paused`、`unknown`；或 `already_taken` 且本輪 `RoundActed` 為 true |
 | | 任何 `status = "error"` 或 `"timeout"` |
 
-`already_taken` 可以拿來在人機畫面重新顯示結果，或在通訊中斷後確認上次交付的內容，但設備動作只能在第一次 `taken` 時做一次。重看只在 Log Solution 畫面仍顯示同一輪結果時成立；畫面已改變（例如進入新一輪）就不能再重看，會回 `monitor_not_ready` 或新一輪的狀態。
+`already_taken` 可以重新顯示或核對結果。若本輪 `RoundActed` 為 false（從未依 `taken` 動作，例如回覆在重連時遺失），可依結果寫入 PLC 一次並設為 true；為 true 時只供重看，不再做設備動作。重看只在 Log Solution 畫面仍顯示同一輪結果時成立；畫面已改變（例如進入新一輪）就不能再重看，會回 `monitor_not_ready` 或新一輪的狀態。
 
 ## 7. 尚未包含（協定 1.1 再處理）
 

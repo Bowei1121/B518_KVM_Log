@@ -287,6 +287,8 @@ class TcpJsonServer:
         connect_retry_interval_sec: float = 10.0,
         connect_timeout_sec: float = 10.0,
     ) -> None:
+        if host != "127.0.0.1":
+            raise ValueError("Core only listens on 127.0.0.1")
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
         self.template_root = template_root

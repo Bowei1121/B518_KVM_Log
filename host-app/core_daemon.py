@@ -417,7 +417,7 @@ def force_kill_core_service(
 
 
 def start_core_daemon(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
@@ -511,7 +511,7 @@ def start_core_daemon(
 
 
 def restart_core_daemon(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
@@ -539,7 +539,7 @@ def restart_core_daemon(
 
 
 def run_service_foreground(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 5000,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
@@ -617,7 +617,7 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", help="Management command")
 
     def _add_common_server_args(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--host", default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
+        p.add_argument("--host", default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
         p.add_argument("--port", type=int, default=5000, help="Port to listen on (default: 5000)")
         p.add_argument(
             "--log-file",

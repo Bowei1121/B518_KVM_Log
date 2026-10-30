@@ -2,7 +2,7 @@
 """TE Operator Management Utility for B518 JetKVM Relay Core Service.
 
 Usage:
-    python tools/manage_core.py start [--port 5000] [--host 0.0.0.0]
+    python tools/manage_core.py start [--port 5000] [--host 127.0.0.1]
     python tools/manage_core.py stop [--port 5000]
     python tools/manage_core.py restart [--port 5000]
     python tools/manage_core.py status [--port 5000]
@@ -162,7 +162,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="action", help="Management action")
 
     def _add_common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--host", default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
+        p.add_argument("--host", default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
         p.add_argument("--port", type=int, default=5000, help="TCP port (default: 5000)")
         p.add_argument("--pid-file", default=None, help="PID file path (optional)")
         p.add_argument("--timeout", type=float, default=10.0, help="Timeout in seconds")

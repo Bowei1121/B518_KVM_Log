@@ -15,7 +15,7 @@
 
 | 項目 | 規定 |
 | --- | --- |
-| 傳輸層 | TCP，Core Service 預設 port `5000` |
+| 傳輸層 | TCP，Core Service 預設 port `5000`，只監聽 `127.0.0.1`（只接受本機連線）；LabVIEW 須與 Core 在同一台上位機 |
 | 編碼 | UTF-8，不加 BOM |
 | 分隔 | 一行一個 JSON 物件，以 `\n`（LF, 0x0A）結尾。Core 容忍 `\r\n`，LabVIEW 送出時請用 `\n` |
 | 連線 | 每台設備一條獨立 TCP 連線（ADR-0006）。同一條連線上**一次只送一筆請求**，收到回覆後才送下一筆 |
@@ -93,7 +93,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 - `monitor_start` 成功只代表 Log Solution 已準備好收集本輪資料，不代表 ATE 已開始測試。每一輪都要重新 `monitor_start`。
 - `check_start` 確認 ATE 真的開始測試，並回已開始的通道。可省略、可重複；重複呼叫不消耗結果。
 - `check_finish` 取得整輪結果。它不回 `started`。
-- 只有 `kind = "taken"` 可以觸發設備動作。`already_taken` 附相同結果，只供重看。
+- `taken` 觸發設備動作。`already_taken` 附相同結果：若 LabVIEW 本輪的 `RoundActed` 為 false（從未依 `taken` 動作，例如 `taken` 回覆在重連時遺失），可依此結果寫入 PLC 一次並將 `RoundActed` 設為 true；為 true 時只供重看，不再做設備動作。
 
 ## 5. 各指令
 
@@ -199,8 +199,8 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 | `kind` | 出現在 | 意義 | `results` | LabVIEW 動作 |
 | --- | --- | --- | --- | --- |
 | `started` | `check_start`、`inspect` | 連續兩張新鮮影格確認有通道開始。`reason` 為 `activity_confirmed` | `[]` | 記錄 `active`，接著 `check_finish`。`inspect` 只顯示，不做設備動作 |
-| `taken` | `check_start`、`check_finish` | 本輪完整結果**第一次**交付 | 完整 | **唯一**可做設備動作的回覆。PASS 良品；FAIL／NOTEST／TIMEOUT／STOPPED 不良。`state = "manual_stop_complete"` 標記人工停止並交作業員重工 |
-| `already_taken` | `check_start`、`check_finish` | 同一輪再次交付，結果與第一次相同 | 與第一次相同 | 只顯示、核對，不再做設備動作 |
+| `taken` | `check_start`、`check_finish` | 本輪完整結果**第一次**交付 | 完整 | 做設備動作（`already_taken` 只在 `RoundActed` 為 false 時可補做一次）。PASS 良品；FAIL／NOTEST／TIMEOUT／STOPPED 不良。`state = "manual_stop_complete"` 標記人工停止並交作業員重工 |
+| `already_taken` | `check_start`、`check_finish` | 同一輪再次交付，結果與第一次相同 | 與第一次相同 | 本輪 `RoundActed` 為 false 時可寫入 PLC 一次並設為 true；為 true 時只顯示、核對 |
 | `waiting` | 三者 | 還沒有可交付結果 | `[]` | 繼續等或再查 |
 | `paused` | 三者 | 畫面是待確認（`state = "review"`） | `[]` | 暫停設備動作，等人員處理後再查 |
 | `unknown` | 三者 | 畫面看不清楚 | `[]` | 設備／通訊異常，不得判產品 FAIL |
