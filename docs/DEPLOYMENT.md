@@ -4,7 +4,7 @@
 
 ## 1. 組成
 
-- **上位機（一台 Windows PC）**：Core Service 與 Monitor UI 同機執行。Core 只開一個 TCP 埠（預設 5000），每台設備由 LabVIEW 開一條獨立連線到同一埠（ADR-0006）。
+- **上位機（一台 Windows PC）**：Core Service、Monitor UI 與 LabVIEW 同機執行，Core 只監聽 `127.0.0.1`。Core 只開一個 TCP 埠（預設 5000），每台設備由 LabVIEW 開一條獨立連線到同一埠（ADR-0006）。
 - **九台 JetKVM**：DFU-01～DFU-07、FCT-01、BT-01，各接一台測試機與一台測試機電腦（ADR-0007）。
 - **交換機**：EKI-2720G，非網管交換機。不做 VLAN 或 port 設定，所有設備與上位機以靜態 IP 互連。
 
@@ -92,9 +92,11 @@ python host-app/core_daemon.py restart --port 5000
 
 ## 7. 防火牆與連線
 
-- Core 預設只監聽 `127.0.0.1`（本機），可用 `--host` 覆寫（例如 `--host 0.0.0.0`）；只有改為對外監聽時，才需允許入站 TCP 5000（或所用埠）給 LabVIEW 所在的電腦。待使用者確認。
-- 設定頁「重啟 Core」及 `--restart-core` 使用 UI 的 host（預設為 `127.0.0.1`）與預設設備清單重啟，不會自動沿用先前 Core 的 `--host 0.0.0.0` 或 `--devices-file`；UI 可用 `--host` 指定其他 host。
+- Core 只監聽 `127.0.0.1`（本機）；LabVIEW 與 Core 同機，不需開放入站 TCP 5000。
+- 設定頁「重啟 Core」與 `--restart-core` 一律以 `127.0.0.1` 與預設設備清單重啟，不沿用先前 Core 的 `--devices-file`；UI 的 `--host` 只決定 UI 連線目標。
 - 上位機需能對九台 KVM 的 80 埠發起 TCP 連線（設定頁測試與 Core 連線都需要）。
+
+Core 狀態檔的失敗原因包含 `devices_missing`、`devices_invalid`、`invalid_host`、`port_in_use` 與 `internal_error`；`invalid_host` 表示監聽位址不是 `127.0.0.1`。
 
 ## 8. 未驗證與待現場確認
 

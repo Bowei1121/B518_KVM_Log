@@ -265,6 +265,11 @@ def _kvm_lost(ctx: CommandContext) -> Dict[str, Any]:
     }
 
 
+def validate_core_host(host: str) -> None:
+    if host != "127.0.0.1":
+        raise ValueError(f"Core only listens on 127.0.0.1 (got {host!r})")
+
+
 class TcpJsonServer:
     """Headless TCP Server using newline-delimited JSON protocol."""
 
@@ -287,6 +292,7 @@ class TcpJsonServer:
         connect_retry_interval_sec: float = 10.0,
         connect_timeout_sec: float = 10.0,
     ) -> None:
+        validate_core_host(host)
         self.host = host
         # None → TemplateCatalog.default_root() at check time (~/Documents/template)
         self.template_root = template_root
