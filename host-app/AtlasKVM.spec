@@ -52,8 +52,18 @@ exe = EXE(
     # Windows exe icon (issue #115). macOS takes its icon from the .app bundle.
     icon='assets/bridge.ico' if sys.platform.startswith('win') else None,
 )
+core = Analysis(
+    ['core_daemon.py'], pathex=[], binaries=binaries, datas=datas,
+    hiddenimports=hiddenimports, hookspath=[], hooksconfig={}, runtime_hooks=[],
+    excludes=[], noarchive=False, optimize=0,
+)
+core_pyz = PYZ(core.pure)
+core_exe = EXE(core_pyz, core.scripts, [], exclude_binaries=True, name='Core',
+               debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
+               console=False, disable_windowed_traceback=True,
+               icon='assets/bridge.ico' if sys.platform.startswith('win') else None)
 coll = COLLECT(
-    exe,
+    exe, core_exe, core.binaries, core.datas,
     a.binaries,
     a.datas,
     strip=False,

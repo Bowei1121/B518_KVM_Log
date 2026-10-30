@@ -85,3 +85,5 @@ git clone --recurse-submodules <repo-url>
 ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工廠內網可用性未定，目前同樣按人工配對更新準備。自動更新列為後續可能性。
 
 顯示契約 1.3 另以 header 的兩格排數標記明確區分一排／兩排。`check_finish` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。
+
+Windows 打包產物 `AtlasKVM` 資料夾同時包含 `AtlasKVM.exe` 與無主控台的 `Core.exe`。Core 預設只監聽 `127.0.0.1:5000`，可透過 `--host` 指定其他介面；打包版的 log、PID 與狀態分別位於 `%USERPROFILE%\Documents\logs\core_service.log`、`%USERPROFILE%\Documents\logs\core_service.pid`、`%USERPROFILE%\Documents\logs\core_status.json`（繁體中文 Windows 顯示為 `文件\logs`）。
