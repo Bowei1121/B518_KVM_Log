@@ -9,14 +9,15 @@ envelope 欄位、`data` 預設形狀、錯誤碼與 message 照 `host-app/tcp_s
 python tools/fake_core/fake_core.py
 ```
 
-預設聽 `0.0.0.0:5000`（區網上的 LabVIEW 電腦可連），啟動後印出 `listening on HOST:PORT` 與區網位址。
+預設聽 `127.0.0.1:5000`，只接受本機連線；啟動後印出 `listening on HOST:PORT`。
+跨機器測試時，使用 `--host 0.0.0.0` 監聽所有網卡，或使用 `--host <網卡位址>` 指定網卡；監聽 `0.0.0.0` 時也會嘗試印出區網位址。
 視窗會留著，直接在視窗輸入指令觸發故障（見下）。沒有終端機（stdin 結束）時伺服器仍繼續跑，Ctrl-C 或 `quit` 結束。
 
 ## 參數
 
 | 參數 | 預設 | 說明 |
 | --- | --- | --- |
-| `--host` | `0.0.0.0` | 監聽位址 |
+| `--host` | `127.0.0.1` | 監聽位址；跨機器測試可指定 `0.0.0.0` 或網卡位址 |
 | `--port` | `5000` | TCP port；`0` 由系統指派（實際 port 看 `listening on` 那行） |
 | `--device` | `BT-01` | 設備 ID |
 | `--station` | `BT` | 站別 `BT`／`DFU`／`FCT`（FCT 沒有治具訊號，`monitor_start` 成功即視為治具已推入） |
