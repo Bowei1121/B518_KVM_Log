@@ -49,6 +49,9 @@ def handle_start(args: argparse.Namespace) -> int:
             pid_file=args.pid_file,
             timeout=args.timeout,
         )
+        if res.get("status") == "error":
+            print(f"[ERROR] {res.get('message')}", file=sys.stderr)
+            return 1
         if res.get("status") == "already_running":
             print(f"[WARN] {res.get('message')}")
             return 0
@@ -91,6 +94,9 @@ def handle_restart(args: argparse.Namespace) -> int:
             pid_file=args.pid_file,
             timeout=args.timeout,
         )
+        if res.get("status") == "error":
+            print(f"[ERROR] {res.get('message')}", file=sys.stderr)
+            return 1
         print(f"[OK] {res.get('message')}")
         return 0
     except Exception as exc:

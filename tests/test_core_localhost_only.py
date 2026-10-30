@@ -1,6 +1,7 @@
 import asyncio
 import json
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -79,14 +80,58 @@ def test_foreground_rejects_nonlocal_host(host, tmp_path, monkeypatch):
     assert repr(host) in data["detail"]
 
 
-def test_invalid_host_does_not_stop_or_spawn(monkeypatch):
+def test_invalid_host_does_not_stop_or_spawn(monkeypatch, tmp_path):
     def fail(*args, **kwargs):
         pytest.fail("invalid host reached process management")
     for name in ("graceful_stop_core_service", "force_kill_core_service", "send_tcp_command", "is_port_free", "read_pid_file"):
         monkeypatch.setattr(core_daemon, name, fail)
     monkeypatch.setattr(core_daemon.subprocess, "Popen", fail)
-    for result in (core_daemon.restart_core_daemon(host="localhost"), core_daemon.start_core_daemon(host="0.0.0.0")):
+    paths = {name: tmp_path / name for name in ("pid_file", "log_file", "status_file")}
+    for result in (core_daemon.restart_core_daemon(host="localhost", **paths), core_daemon.start_core_daemon(host="0.0.0.0", **paths)):
         assert result["status"] == "error"
+    assert all(not path.exists() for path in paths.values())
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_manage_cli_invalid_host(action, tmp_path, monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        pytest.fail("invalid host reached socket, server, or process")
+    monkeypatch.setattr(socket, "socket", fail)
+    monkeypatch.setattr(core_daemon.subprocess, "Popen", fail)
+    monkeypatch.setattr(asyncio, "start_server", fail)
+    pid, log, status = (tmp_path / name for name in ("pid", "log", "status"))
+    monkeypatch.setattr(sys, "argv", ["manage_core.py", action, "--host", "0.0.0.0",
+                                     "--pid-file", str(pid), "--log-file", str(log)])
+    with pytest.raises(SystemExit) as exc:
+        manage_core.main()
+    assert exc.value.code != 0
+    output = capsys.readouterr()
+    assert "[OK]" not in output.out + output.err
+    assert "[ERROR]" in output.err
+    assert all(not path.exists() for path in (pid, log, status))
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_daemon_cli_invalid_host(action, tmp_path, monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        pytest.fail("invalid host reached socket, server, or process")
+    pid, log, status = (tmp_path / name for name in ("pid", "log", "status"))
+    args = [action, "--host", "0.0.0.0", "--pid-file", str(pid),
+            "--log-file", str(log), "--status-file", str(status)]
+    with monkeypatch.context() as guard:
+        guard.setattr(socket, "socket", fail)
+        guard.setattr(core_daemon.subprocess, "Popen", fail)
+        guard.setattr(asyncio, "start_server", fail)
+        with pytest.raises(SystemExit) as exc:
+            core_daemon.main(core_daemon.parse_args(args))
+        assert exc.value.code != 0
+    assert json.loads(capsys.readouterr().out)["status"] == "error"
+    assert all(not path.exists() for path in (pid, log, status))
+    result = subprocess.run([sys.executable, str(ROOT / "host-app" / "core_daemon.py"), *args],
+                            cwd=ROOT, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert json.loads(result.stdout)["status"] == "error"
+    assert all(not path.exists() for path in (pid, log, status))
 
 
 def test_ui_settings_restart_uses_localhost(monkeypatch):

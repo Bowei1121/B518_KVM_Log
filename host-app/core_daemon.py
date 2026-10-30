@@ -510,13 +510,11 @@ def start_core_daemon(
         return {"status": "error", "message": str(exc)}
     effective_log_file = Path(log_file) if log_file else default_log_file()
     effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
-    check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-
     # Check if already running
     existing_pid = read_pid_file(effective_pid_file)
     if existing_pid and is_pid_alive(existing_pid):
         try:
-            resp = send_tcp_command("ping", host=check_host, port=port, timeout=1.0)
+            resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
             if resp.get("status") == "ok":
                 return {
                     "status": "already_running",
@@ -528,7 +526,7 @@ def start_core_daemon(
         except Exception:
             pass
 
-    if not is_port_free(port, check_host):
+    if not is_port_free(port, host):
         raise RuntimeError(f"Cannot start Core Daemon: Port {port} is already in use.")
 
     cmd = core_launch_command([
@@ -563,7 +561,7 @@ def start_core_daemon(
         if proc.poll() is not None:
             break
         try:
-            resp = send_tcp_command("ping", host=check_host, port=port, timeout=1.0)
+            resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
             if resp.get("status") == "ok":
                 started = True
                 break
@@ -676,8 +674,7 @@ def run_service_foreground(
     except OSError as exc:
         sock.close()
         try:
-            check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
-            response = send_tcp_command("ping", host=check_host, port=port, timeout=1)
+            response = send_tcp_command("ping", host=host, port=port, timeout=1)
             if response.get("data", {}).get("pong") is True:
                 log.info("another Core is already running", extra={"zh": "另一個 Core 已在執行"})
                 return
@@ -812,6 +809,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             timeout=args.timeout, status_file=args.status_file, devices_file=args.devices_file,
         )
         print(json.dumps(res, indent=2))
+        if res.get("status") == "error":
+            sys.exit(1)
     elif cmd == "stop":
         res = graceful_stop_core_service(
             host=args.host,
@@ -831,6 +830,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             timeout=args.timeout, status_file=args.status_file, devices_file=args.devices_file,
         )
         print(json.dumps(res, indent=2))
+        if res.get("status") == "error":
+            sys.exit(1)
     elif cmd == "status":
         res = query_status(
             host=args.host,
