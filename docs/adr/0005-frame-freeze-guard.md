@@ -38,7 +38,7 @@ Accepted
 1. 移除凍結判定超過 5 秒即不再顯示 FROZEN 的規則。設備一旦判定畫面凍結，`core_status` 與 `status` 持續保留該設備的凍結狀態，直到同一設備再次觀察到 PTS 前進才解除，不需人工確認。
 2. 換串流仍重置 PTS 比較基準，但不解除狀態回報中的凍結。新串流首張影格只建立基準，第一次 PTS 前進才解除凍結。
 3. 送 HID 前的主動窗口（`FrameStream.wait_live`）、`FrameStream.is_frozen` 與輪次閘門的判斷規則不變；本次修訂只調整狀態回報的凍結保留方式。
-4. 只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，輪詢不會解除。KVM 重連換串流後至少需兩次讀取：首張建立基準，後續須有 PTS 前進。LabVIEW 應送唯讀的 `inspect` 重新判斷，必要時重複送出，不應只輪詢 `status` 等待 `frozen=false`。
+4. 只有讀取影格的指令（`check_start`、`check_finish`、`inspect`、`input`、`start_test`、`monitor_start`）能觀察 PTS 前進並解除凍結；`status`／`core_status` 不讀取影格，輪詢不會解除。KVM 重連換串流後至少需兩次讀取：首張建立基準，後續須有 PTS 前進。LabVIEW 不使用 `inspect`、不設計解除凍結的步驟，解除凍結由橋接程式處理；LabVIEW 不應輪詢 `status` 等待 `frozen=false`（2026-10-30 使用者決定，修正原本「LabVIEW 應送 `inspect` 重新判斷」的說法，與 PROTOCOL.md 第 4 節、5.8 一致）。
 5. KVM 斷線不會解除凍結。唯一例外範圍很窄：某次讀取判定 FROZEN，而該次讀取的回覆是 `kvm_connect_failed`（不是 `frame_frozen`；包括讀取超過 inspection timeout、在背景完成時 KVM 已斷線的那次讀取），只撤銷這個判定剛新增的凍結 latch。理由：LabVIEW 從未因這次讀取收到 `frame_frozen`，而且這個凍結判定可能只是 KVM 在讀取途中斷線造成的假象。同一 latch 一旦有任何命令已向 LabVIEW 回覆 `frame_frozen`，就不再適用此例外，即使建立 latch 的原讀取後來回覆 `kvm_connect_failed` 也必須保留，直到 PTS 前進。斷線前就已存在的凍結 latch 一律保留。
 6. 已鎖定凍結的設備後續 KVM 斷線時，依使用者決定（2026-10-26）繼續顯示凍結：`status` 維持 `frozen=true`、`connected=false`，`core_status` 的 `stations[].status` 為 `FROZEN`、`is_connected=false`；Monitor UI 該列維持紅底 Frame frozen、紅燈不閃，狀態文字不變；列上的 KVM 連線小燈照當下 `is_connected` 顯示：斷線為 Offline（白色 3px 空心圈，中間不填色），重新連線回到 Online；整列 tooltip 另寫出 KVM 連線狀態（使用者決定 2026-10-26 選 B，#144；所有紅色列一律照實際連線顯示小燈，取代原先「列上不顯示 Offline、連線狀態只放在 tooltip」的說法）。凍結只在畫面重新前進（PTS 前進）時解除，目的是讓人看得出設備在斷線前已經異常。
 7. 同一串流 PTS 倒退時，依 2026-10-16 第 3 點，須等 PTS 超過原值才算前進；凍結 latch 持續顯示直到此時。
