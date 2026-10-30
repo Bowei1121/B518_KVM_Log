@@ -43,7 +43,8 @@ def default_registry_path() -> Path:
 class DeviceRegistryError(Exception):
     """Raised when the device list is missing or invalid; ``errors`` lists every problem."""
 
-    def __init__(self, errors: List[str]) -> None:
+    def __init__(self, errors: List[str], reason: str = "devices_invalid") -> None:
+        self.reason = reason
         self.errors = list(errors)
         super().__init__("; ".join(self.errors))
 
@@ -60,7 +61,7 @@ class DeviceRegistry:
         """Load and validate the device list at ``path`` (defaults to the template root)."""
         file_path = Path(path) if path is not None else default_registry_path()
         if not file_path.is_file():
-            raise DeviceRegistryError([f"device list not found: {file_path}"])
+            raise DeviceRegistryError([f"device list not found: {file_path}"], reason="devices_missing")
         try:
             text = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
