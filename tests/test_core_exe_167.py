@@ -235,24 +235,13 @@ def test_wildcard_host_single_instance(tmp_path):
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     cmd = [sys.executable, core.__file__, 'run', '--host', '0.0.0.0', '--port', str(port), '--devices-file', str(devices), '--status-file', str(tmp_path / 'status'), '--log-file', str(tmp_path / 'log'), '--pid-file', str(tmp_path / 'pid')]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            try:
-                if core.send_tcp_command('ping', host='127.0.0.1', port=port, timeout=.2)['data']['pong']:
-                    break
-            except OSError:
-                time.sleep(.1)
-        else:
-            pytest.fail('Core did not start')
-        assert subprocess.run(cmd, timeout=20).returncode == 0
-        core.send_tcp_command('shutdown', port=port)
-        assert proc.wait(timeout=20) == 0
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=20)
+    result = subprocess.run(cmd, capture_output=True, timeout=20)
+    assert result.returncode != 0
+    with pytest.raises(OSError):
+        core.send_tcp_command('ping', host='127.0.0.1', port=port, timeout=.2)
+    status = json.loads((tmp_path / 'status').read_text(encoding='utf-8'))
+    assert status['state'] == 'failed' and status['reason'] == 'invalid_host'
+    assert not (tmp_path / 'pid').exists()
 
 
 def test_is_pid_alive_for_current_and_finished_process():

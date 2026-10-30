@@ -40,9 +40,9 @@ _DEFAULT_PID_FILE = _REPO_ROOT / "run" / "core_service.pid"
 LOG_RETENTION_DAYS = 30
 
 try:
-    from tcp_server import TcpJsonServer
+    from tcp_server import TcpJsonServer, validate_core_host
 except ImportError:
-    from .tcp_server import TcpJsonServer  # type: ignore[no-redef]
+    from .tcp_server import TcpJsonServer, validate_core_host  # type: ignore[no-redef]
 
 try:
     from device_registry import DeviceRegistry, DeviceRegistryError, default_registry_path
@@ -85,7 +85,7 @@ def core_launch_command(args: List[str]) -> List[str]:
 def write_status(path, state, reason, detail, devices_file, port, pid=None, started_at=None):
     """Write state, reason, detail, devices_file, port, pid, started_at and updated_at.
 
-    Reasons include devices_missing, devices_invalid, port_in_use and internal_error.
+    Reasons include devices_missing, devices_invalid, invalid_host, port_in_use and internal_error.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -504,6 +504,10 @@ def start_core_daemon(
     devices_file: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Start Core Daemon as a headless background process and wait until responsive."""
+    try:
+        validate_core_host(host)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     effective_log_file = Path(log_file) if log_file else default_log_file()
     effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
     check_host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
@@ -603,6 +607,10 @@ def restart_core_daemon(
     devices_file: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Gracefully restart Core Daemon."""
+    try:
+        validate_core_host(host)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
     stop_res = graceful_stop_core_service(
         host=host, port=port, pid_file=pid_file, timeout=timeout
     )
@@ -633,6 +641,14 @@ def run_service_foreground(
     status_file: Optional[Union[str, Path]] = None,
 ) -> None:
     """Run the Core service in the foreground and record its lifecycle."""
+    try:
+        validate_core_host(host)
+    except ValueError as exc:
+        log = setup_rotating_logging(Path(log_file or default_log_file()), log_level, backup_count, console)
+        log.error("invalid_host: %s", exc, extra={"zh": "invalid_host：監聽位址不是 127.0.0.1：%s"})
+        write_status(status_file or default_status_file(), "failed", "invalid_host", str(exc),
+                     devices_file or default_registry_path(), port, os.getpid())
+        raise SystemExit(1) from exc
     log_path = Path(log_file or default_log_file())
     pid_path = Path(pid_file or default_pid_file())
     status_path = Path(status_file or default_status_file())

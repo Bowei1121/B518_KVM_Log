@@ -1562,7 +1562,7 @@ class AtlasUI(_BaseTk):
         from core_daemon import restart_core_daemon
 
         try:
-            res = restart_core_daemon(host=self.client.host, port=self.client.port, timeout=CORE_START_TIMEOUT_S)
+            res = restart_core_daemon(host="127.0.0.1", port=self.client.port, timeout=CORE_START_TIMEOUT_S)
         except Exception as exc:
             res = {"status": "error", "message": f"{type(exc).__name__}: {exc}"}
         if res.get("status") == "ok":
@@ -1952,9 +1952,9 @@ def main() -> None:
     if args.restart_core:
         from core_daemon import restart_core_daemon, send_tcp_command
         try:
-            result = restart_core_daemon(host=args.host, port=args.port, timeout=CORE_START_TIMEOUT_S,
+            result = restart_core_daemon(host="127.0.0.1", port=args.port, timeout=CORE_START_TIMEOUT_S,
                                          pid_file=args.pid_file, log_file=args.log_file, status_file=args.status_file)
-            reply = send_tcp_command("ping", host=args.host, port=args.port)
+            reply = send_tcp_command("ping", host="127.0.0.1", port=args.port)
             sys.exit(0 if result.get("status") == "ok" and reply.get("data", {}).get("pong") is True else 1)
         except Exception:
             sys.exit(1)
