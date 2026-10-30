@@ -1,6 +1,7 @@
 """fake_core 的 pytest：全部走真的 TCP socket，每次讀取都有硬逾時，不會卡住。"""
 
 import ast
+import io
 import json
 import socket
 import subprocess
@@ -19,6 +20,41 @@ ENVELOPE_KEYS = ["protocol_version", "req_id", "device", "cmd", "status", "error
 UNKNOWN_DEFAULT = {"kind": "unknown", "state": "", "reason": "", "capacity": 0, "active": [], "results": []}
 READ_TIMEOUT = 10.0
 DEV = "BT-01"
+
+
+def test_constructor_default_binds_loopback():
+    core = fake_core.FakeCore(port=0)
+    try:
+        core.start()
+        assert core._server.socket.getsockname()[0] == "127.0.0.1"
+    finally:
+        core.stop()
+
+
+@pytest.mark.parametrize("host_args, expected", [([], "127.0.0.1"), (["--host", "0.0.0.0"], "0.0.0.0")])
+def test_cli_binds_requested_address(monkeypatch, capsys, host_args, expected):
+    addresses = []
+    original_start = fake_core.FakeCore.start
+
+    def start_and_record(core):
+        port = original_start(core)
+        addresses.append(core._server.socket.getsockname()[0])
+        return port
+
+    monkeypatch.setattr(fake_core.FakeCore, "start", start_and_record)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("quit\n"))
+    assert fake_core.main(["--port", "0", *host_args]) == 0
+    output = capsys.readouterr().out
+    assert addresses == [expected]
+    assert f"listening on {expected}:" in output
+    if not host_args:
+        assert "區網連線位址" not in output
+
+
+def test_host_help_describes_default_and_remote_use():
+    help_text = fake_core.build_parser().format_help()
+    assert "127.0.0.1" in help_text and "0.0.0.0" in help_text
+    assert "跨機器測試" in help_text
 
 
 class Client:
@@ -115,7 +151,7 @@ def test_envelope_has_nine_keys_in_order_and_ends_with_lf(cli):
 
 def test_default_port_is_5000_in_argparse():
     args = fake_core.build_parser().parse_args([])
-    assert args.port == 5000 and args.host == "0.0.0.0"
+    assert args.port == 5000 and args.host == "127.0.0.1"
     assert args.device == "BT-01" and args.station == "BT" and args.channels == 4
     assert args.finish_delay == 5 and args.monitor_delay == 0.5 and args.not_found_delay == 30 and args.poll == 0.5
     assert args.result == "PASS"
@@ -393,8 +429,13 @@ def test_disconnect_fault_closes_clients_and_gives_no_reply(core):
     # 伺服器仍在聽
     c = core.connect()
     assert c.call("ping", device="")["data"]["pong"] is True
-    # 進行中請求被取消，鎖已釋放
-    assert c.call("check_finish", timeout_sec=0)["error"] != "device_busy"
+    # 進行中請求被取消，鎖已釋放（處理執行緒每 poll 才檢查一次連線，最多等 2 秒）
+    deadline = time.monotonic() + 2.0
+    r = c.call("check_finish", timeout_sec=0)
+    while r["error"] == "device_busy" and time.monotonic() < deadline:
+        time.sleep(0.05)
+        r = c.call("check_finish", timeout_sec=0)
+    assert r["error"] != "device_busy"
 
 
 def test_timeout_fault_waits_full_timeout(make_core):
