@@ -64,7 +64,9 @@ def render_frame(state, statuses, scale=2, origin=(23, 31), heartbeat=0):
     for slot in range(1, rows * 10 + 1):
         row, col = divmod(slot - 1, 10)
         status = statuses[slot - 1] if slot <= len(statuses) else "OUTSIDE"
-        rect(col * 34, 34 + row * 27, 34, 26, (0, 0, 0) if status == "OUTSIDE" else COLORS[status])
+        rect(col * 34, 34 + row * 27, 34, 26, (0, 0, 0))
+        if status != "OUTSIDE":
+            rect(col * 34 + 1, 35 + row * 27, 32, 24, COLORS[status])
     return frame
 
 

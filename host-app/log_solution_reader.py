@@ -214,6 +214,14 @@ def _sample_status(frame, x, y, scale):
     # Four interior corner patches avoid the centered status text and cell border.
     points = ((x + 6 * scale, y + 5 * scale), (x + 28 * scale, y + 5 * scale),
              (x + 6 * scale, y + 21 * scale), (x + 28 * scale, y + 21 * scale))
+    # The top border is one display unit wide. Allow edge blending after resampling.
+    bx = int(round(x + 17 * scale))
+    by = int(round(y + 0.5 * scale))
+    if not (0 <= bx < frame.shape[1] and 0 <= by < frame.shape[0]):
+        return None
+    border = frame[max(0, by - 1):min(frame.shape[0], by + 2), bx]
+    if not any(np.max(pixel) <= 160 for pixel in border):
+        return None
     votes = []
     for px, py in points:
         sample = _median_patch(frame, px, py, max(1, scale * 0.7))
@@ -227,13 +235,7 @@ def _sample_status(frame, x, y, scale):
             votes.append("OUTSIDE")
         else:
             votes.append("UNKNOWN")
-    if len(votes) < 3:
-        return None
-    counts = {}
-    for value in votes:
-        counts[value] = counts.get(value, 0) + 1
-    winner, count = max(counts.items(), key=lambda item: item[1])
-    return winner if count >= 3 else None
+    return votes[0] if len(votes) == 4 and len(set(votes)) == 1 else None
 
 
 def _marker_cells(frame, x0, y0, scale, origin):
