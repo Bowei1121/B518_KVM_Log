@@ -15,6 +15,7 @@ CORNERS = [(6, 5), (28, 5), (6, 21), (28, 21)]
 
 
 def paint(frame, scale, x, y, width, height, color):
+    # Same origin as render_frame default so covers land on the drawn border pixels.
     ox, oy = 23, 31
     frame[round(oy + y * scale):round(oy + (y + height) * scale),
           round(ox + x * scale):round(ox + (x + width) * scale)] = color
@@ -68,10 +69,10 @@ def test_unoccluded_statuses_read_unchanged(status, scale):
     [1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], range(1, 6),
     ['top', 'bottom', 'left', 'right'], [1, 11, 12])))
 def test_inset_occlusion(scale, color, inset, side, slot):
-    if scale < 1.9 and inset * scale < 3.5:
-        # Residual: a strip of the original colour under ~3 px sits inside the resampling
-        # blend next to the border and cannot be told from it without a contract change.
-        pytest.xfail("thin original-colour strip below resampling resolution")
+    if inset == 1:
+        # Residual (option 1): one-sided inset-1 can still leave a strip too thin to sample
+        # after resampling; full inset-1 cover is pixel-identical to PASS (see exact_fill).
+        pytest.xfail("inset-1 residual: thin/identical-to-PASS without display-contract change")
     capacity = 12 if slot >= 11 else 4
     frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
     row, col = divmod(slot - 1, 10)
@@ -153,6 +154,28 @@ def test_cover_over_cell_borders_never_reads_pass(scale, color, slot, borders):
         y, h = y + 1, 24
     elif borders == 'top_bottom':
         x, w = x + 1, 32
+    paint(frame, scale, x, y, w, h, color)
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses), obs
+
+
+@pytest.mark.parametrize('scale,color,inset,side,slot', list(itertools.product(
+    [1.0, 1.5, 2.0, 2.5], [COLORS[0], COLORS[3]], range(2, 6),
+    ['top', 'bottom', 'left', 'right'], [1, 2, 4, 12])))
+def test_option1_inset_2_to_5_original_ring_detected(scale, color, inset, side, slot):
+    """Option 1: a 2–5 unit inset must leave an original-colour ring that blocks PASS."""
+    capacity = 12 if slot >= 11 else 4
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
+    row, col = divmod(slot - 1, 10)
+    x, y, w, h = col * 34 + 1, 34 + row * 27 + 1, 32, 24
+    if side == 'top':
+        y += inset; h -= inset
+    elif side == 'bottom':
+        h -= inset
+    elif side == 'left':
+        x += inset; w -= inset
+    else:
+        w -= inset
     paint(frame, scale, x, y, w, h, color)
     obs = inspect_app_frame(frame, 10, 10)
     assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses), obs
