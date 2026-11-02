@@ -64,9 +64,9 @@ def test_unoccluded_statuses_read_unchanged(status, scale):
     assert obs.reliable, obs.reason
     assert obs.statuses == (status,) * 4
 
-@pytest.mark.parametrize('scale,color,inset,side,slot', itertools.product(
+@pytest.mark.parametrize('scale,color,inset,side,slot', list(itertools.product(
     [1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], range(1, 6),
-    ['top', 'bottom', 'left', 'right'], [1, 11, 12]))
+    ['top', 'bottom', 'left', 'right'], [1, 11, 12])))
 def test_inset_occlusion(scale, color, inset, side, slot):
     if scale < 1.9 and inset * scale < 3.5:
         # Residual: a strip of the original colour under ~3 px sits inside the resampling
@@ -91,7 +91,7 @@ def test_inset_occlusion(scale, color, inset, side, slot):
     assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses)
 
 
-@pytest.mark.parametrize('scale,color,row', itertools.product([1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], [0, 1]))
+@pytest.mark.parametrize('scale,color,row', list(itertools.product([1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], [0, 1])))
 def test_wide_window(scale, color, row):
     capacity = 14 if row else 4
     frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
@@ -131,3 +131,28 @@ def test_status_after_outside_is_unreliable():
     frame[31 + 34 * 2:31 + 60 * 2, 23 + 6 * 34 * 2:23 + 7 * 34 * 2] = source
     obs = inspect_app_frame(frame, 10, 10)
     assert not obs.reliable and obs.reason == "non_contiguous_capacity"
+
+
+@pytest.mark.parametrize('scale', [1.4, 1.9, 2.5])
+@pytest.mark.parametrize('status', ['PASS', 'FAIL', 'NOTEST', 'TIMEOUT', 'STOPPED', 'WAITING'])
+def test_unoccluded_reads_at_extra_scales(scale, status):
+    obs = inspect_app_frame(render_frame(MarkerState.COMPLETE, (status,) * 12, scale=scale), 10, 10)
+    assert obs.reliable, obs.reason
+    assert obs.statuses == (status,) * 12
+
+
+@pytest.mark.parametrize('scale,color,slot,borders', list(itertools.product(
+    [1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], [2, 4, 5, 12], ['left_right', 'top_bottom', 'all'])))
+def test_cover_over_cell_borders_never_reads_pass(scale, color, slot, borders):
+    # Capacity 4: slot 5 is out-of-capacity black; slot 12 lies in row 2 of a capacity-12 band.
+    capacity = 12 if slot == 12 else 4
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
+    row, col = divmod(slot - 1, 10)
+    x, y, w, h = col * 34, 34 + row * 27, 34, 26
+    if borders == 'left_right':
+        y, h = y + 1, 24
+    elif borders == 'top_bottom':
+        x, w = x + 1, 32
+    paint(frame, scale, x, y, w, h, color)
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses), obs

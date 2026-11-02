@@ -227,11 +227,15 @@ def _sample_status(frame, x, y, scale):
         borders.extend(((x + 0.5 * scale, y + offset * scale, 1, 0),
                         (x + 33.5 * scale, y + offset * scale, 1, 0)))
     reach = max(1, int(round(scale)))
+    x_lo, x_hi = int(np.floor(x)), int(np.ceil(x + 34 * scale)) - 1
+    y_lo, y_hi = int(np.floor(y)), int(np.ceil(y + 26 * scale)) - 1
     for px, py, dx, dy in borders:
         bx, by = int(round(px)), int(round(py))
         if not (0 <= bx < frame.shape[1] and 0 <= by < frame.shape[0]):
             return None
-        candidates = [(bx + d * dx, by + d * dy) for d in range(-reach, reach + 1)]
+        # Stay inside this cell so a neighbouring cell's border cannot stand in for ours.
+        candidates = [(bx + d * dx, by + d * dy) for d in range(-reach, reach + 1)
+                      if x_lo <= bx + d * dx <= x_hi and y_lo <= by + d * dy <= y_hi]
         if not any(0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]
                    and np.max(frame[cy, cx]) <= 160 for cx, cy in candidates):
             return None
@@ -243,12 +247,15 @@ def _sample_status(frame, x, y, scale):
     ring = ((6, d), (17, d), (28, d), (6, 26 - d), (17, 26 - d), (28, 26 - d),
             (d, 5), (d, 13), (d, 21), (34 - d, 5), (34 - d, 13), (34 - d, 21))
     corners = ((6, 5), (28, 5), (6, 21), (28, 21))
+    e = 1.7
     if scale >= 1.9:
         # Just inside the 1-unit border: a thicker black frame means an occluded black cell.
-        e = 1.6
         ring += ((17, e), (17, 26 - e), (e, 13), (34 - e, 13))
     for px, py in corners + ring:
-        if (px, py) in corners:
+        if px in (e, 34 - e) or py in (e, 26 - e):
+            # A patch this close to the border would take in border pixels at large scales.
+            sample = _pixel(frame, x + px * scale, y + py * scale)
+        elif (px, py) in corners:
             sample = _median_patch(frame, x + px * scale, y + py * scale, max(1, scale * 0.7))
         else:
             # One pixel at small scales keeps the patch off the blended border.
