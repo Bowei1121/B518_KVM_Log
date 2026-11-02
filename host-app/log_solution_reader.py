@@ -279,31 +279,44 @@ def _sample_status(frame, x, y, scale):
 
     # Option 1 — shallow original-colour ring for insets 2–5, just inside the black border.
     # A disagreeing *status* colour rejects only when the sample is clearly far from the
-    # corner colour (border blends of WAITING↔STOPPED otherwise false-trigger). Black
-    # against a coloured corner rejects when several shallow points agree (OOC cover).
+    # corner colour (border blends of WAITING↔STOPPED otherwise false-trigger).
+    # Black / OOC cover against a coloured corner:
+    #   - nominal scale >= 1.9 (locator threshold 1.85): mid-edge 1.7u black rejects
+    #     (bf88620 semantics); also if all 3 shallow points on one side are black.
+    #   - any scale >= 1.0: >=4 black hits across sides (multi-side reinforcement).
+    # Below ~1.9, e=1.7 can land on the cell's own black border after resampling, so
+    # single-side / mid-edge black gates stay off there.
     if scale >= 1.0:
         e = 1.7
-        shallow = ((17, e), (17, 26 - e), (e, 13), (34 - e, 13),
-                   (6, e), (28, e), (6, 26 - e), (28, 26 - e),
-                   (e, 5), (e, 21), (34 - e, 5), (34 - e, 21))
+        mid_edge = ((17, e), (17, 26 - e), (e, 13), (34 - e, 13))
+        shallow_sides = (((17, e), (6, e), (28, e)),
+                         ((17, 26 - e), (6, 26 - e), (28, 26 - e)),
+                         ((e, 13), (e, 5), (e, 21)),
+                         ((34 - e, 13), (34 - e, 5), (34 - e, 21)))
         corner_color = np.asarray(STATUS_COLORS[corner_vote], dtype=float) if corner_vote != "OUTSIDE" else None
         outside_hits = 0
-        for px, py in shallow:
-            sample = _pixel(frame, x + px * scale, y + py * scale)
-            label = _classify(sample)
-            if label is None or label == corner_vote:
-                continue
-            if label == "OUTSIDE":
-                if corner_vote != "OUTSIDE":
-                    outside_hits += 1
-                continue
-            if corner_color is not None:
-                dist_corner = float(np.linalg.norm(sample.astype(float) - corner_color))
-                # Blends near the border often land inside COLOR_TOLERANCE of a neighbour
-                # grey (WAITING↔STOPPED) while still ~40 from the true corner colour.
-                if dist_corner <= COLOR_TOLERANCE + 55:
+        for side in shallow_sides:
+            side_outside_hits = 0
+            for px, py in side:
+                sample = _pixel(frame, x + px * scale, y + py * scale)
+                label = _classify(sample)
+                if label is None or label == corner_vote:
                     continue
-            return None
+                if label == "OUTSIDE":
+                    if corner_vote != "OUTSIDE":
+                        outside_hits += 1
+                        side_outside_hits += 1
+                        if scale >= 1.85 and (px, py) in mid_edge:
+                            return None
+                    continue
+                if corner_color is not None:
+                    dist_corner = float(np.linalg.norm(sample.astype(float) - corner_color))
+                    # Border blends can classify as a neighbouring grey status.
+                    if dist_corner <= COLOR_TOLERANCE + 55:
+                        continue
+                return None
+            if scale >= 1.85 and side_outside_hits == 3:
+                return None
         if outside_hits >= 4:
             return None
 

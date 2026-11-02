@@ -69,10 +69,11 @@ def test_unoccluded_statuses_read_unchanged(status, scale):
     [1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], range(1, 6),
     ['top', 'bottom', 'left', 'right'], [1, 11, 12])))
 def test_inset_occlusion(scale, color, inset, side, slot):
-    if inset == 1:
-        # Residual (option 1): one-sided inset-1 can still leave a strip too thin to sample
-        # after resampling; full inset-1 cover is pixel-identical to PASS (see exact_fill).
-        pytest.xfail("inset-1 residual: thin/identical-to-PASS without display-contract change")
+    # Narrow residual xfails: thin original strip missed after resampling.
+    if inset == 1 and (
+            (scale == 1.0 and side in ('top', 'left')) or
+            (scale == 1.5 and side == 'left')):
+        pytest.xfail("Inset-1 original-colour strip falls between sampled pixels")
     capacity = 12 if slot >= 11 else 4
     frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
     row, col = divmod(slot - 1, 10)
@@ -160,11 +161,14 @@ def test_cover_over_cell_borders_never_reads_pass(scale, color, slot, borders):
 
 
 @pytest.mark.parametrize('scale,color,inset,side,slot', list(itertools.product(
-    [1.0, 1.5, 2.0, 2.5], [COLORS[0], COLORS[3]], range(2, 6),
-    ['top', 'bottom', 'left', 'right'], [1, 2, 4, 12])))
+    [1.0, 1.4, 1.5, 1.9, 2.0, 2.5], [COLORS[0], COLORS[3]], range(2, 6),
+    ['top', 'bottom', 'left', 'right'], [1, 2, 4, 5, 12, 13])))
 def test_option1_inset_2_to_5_original_ring_detected(scale, color, inset, side, slot):
     """Option 1: a 2–5 unit inset must leave an original-colour ring that blocks PASS."""
-    capacity = 12 if slot >= 11 else 4
+    # OOC slot at scale 1.0 inset 2 top/left: black strip still missed (same residual as OOC matrix).
+    if slot == 5 and scale == 1.0 and inset == 2 and side in ('top', 'left'):
+        pytest.xfail("OOC inset-2 residual at scale 1.0: 1.7u sample lands on green cover")
+    capacity = 11 if slot == 13 else 12 if slot >= 11 else 4
     frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
     row, col = divmod(slot - 1, 10)
     x, y, w, h = col * 34 + 1, 34 + row * 27 + 1, 32, 24
@@ -179,3 +183,269 @@ def test_option1_inset_2_to_5_original_ring_detected(scale, color, inset, side, 
     paint(frame, scale, x, y, w, h, color)
     obs = inspect_app_frame(frame, 10, 10)
     assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses), obs
+
+
+@pytest.mark.parametrize('scale,inset,side,slot', [
+    pytest.param(1.0, 1, 'top', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 1, 'top', 13),
+    pytest.param(1.0, 1, 'bottom', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 1, 'bottom', 13),
+    pytest.param(1.0, 1, 'left', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 1, 'left', 13),
+    pytest.param(1.0, 1, 'right', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 1, 'right', 13),
+    pytest.param(1.0, 2, 'top', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 2, 'top', 13),
+    (1.0, 2, 'bottom', 5),
+    (1.0, 2, 'bottom', 13),
+    pytest.param(1.0, 2, 'left', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.0, 2, 'left', 13),
+    (1.0, 2, 'right', 5),
+    (1.0, 2, 'right', 13),
+    (1.0, 3, 'top', 5),
+    (1.0, 3, 'top', 13),
+    (1.0, 3, 'bottom', 5),
+    (1.0, 3, 'bottom', 13),
+    (1.0, 3, 'left', 5),
+    (1.0, 3, 'left', 13),
+    (1.0, 3, 'right', 5),
+    (1.0, 3, 'right', 13),
+    (1.0, 4, 'top', 5),
+    (1.0, 4, 'top', 13),
+    (1.0, 4, 'bottom', 5),
+    (1.0, 4, 'bottom', 13),
+    (1.0, 4, 'left', 5),
+    (1.0, 4, 'left', 13),
+    (1.0, 4, 'right', 5),
+    (1.0, 4, 'right', 13),
+    (1.0, 5, 'top', 5),
+    (1.0, 5, 'top', 13),
+    (1.0, 5, 'bottom', 5),
+    (1.0, 5, 'bottom', 13),
+    (1.0, 5, 'left', 5),
+    (1.0, 5, 'left', 13),
+    (1.0, 5, 'right', 5),
+    (1.0, 5, 'right', 13),
+    pytest.param(1.4, 1, 'top', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.4, 1, 'top', 13),
+    pytest.param(1.4, 1, 'bottom', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.4, 1, 'bottom', 13),
+    pytest.param(1.4, 1, 'left', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.4, 1, 'left', 13),
+    pytest.param(1.4, 1, 'right', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.4, 1, 'right', 13),
+    (1.4, 2, 'top', 5),
+    (1.4, 2, 'top', 13),
+    (1.4, 2, 'bottom', 5),
+    (1.4, 2, 'bottom', 13),
+    (1.4, 2, 'left', 5),
+    (1.4, 2, 'left', 13),
+    (1.4, 2, 'right', 5),
+    (1.4, 2, 'right', 13),
+    (1.4, 3, 'top', 5),
+    (1.4, 3, 'top', 13),
+    (1.4, 3, 'bottom', 5),
+    (1.4, 3, 'bottom', 13),
+    (1.4, 3, 'left', 5),
+    (1.4, 3, 'left', 13),
+    (1.4, 3, 'right', 5),
+    (1.4, 3, 'right', 13),
+    (1.4, 4, 'top', 5),
+    (1.4, 4, 'top', 13),
+    (1.4, 4, 'bottom', 5),
+    (1.4, 4, 'bottom', 13),
+    (1.4, 4, 'left', 5),
+    (1.4, 4, 'left', 13),
+    (1.4, 4, 'right', 5),
+    (1.4, 4, 'right', 13),
+    (1.4, 5, 'top', 5),
+    (1.4, 5, 'top', 13),
+    (1.4, 5, 'bottom', 5),
+    (1.4, 5, 'bottom', 13),
+    (1.4, 5, 'left', 5),
+    (1.4, 5, 'left', 13),
+    (1.4, 5, 'right', 5),
+    (1.4, 5, 'right', 13),
+    (1.5, 1, 'top', 5),
+    (1.5, 1, 'top', 13),
+    (1.5, 1, 'bottom', 5),
+    (1.5, 1, 'bottom', 13),
+    pytest.param(1.5, 1, 'left', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.5, 1, 'left', 13),
+    (1.5, 1, 'right', 5),
+    (1.5, 1, 'right', 13),
+    (1.5, 2, 'top', 5),
+    (1.5, 2, 'top', 13),
+    (1.5, 2, 'bottom', 5),
+    (1.5, 2, 'bottom', 13),
+    (1.5, 2, 'left', 5),
+    (1.5, 2, 'left', 13),
+    (1.5, 2, 'right', 5),
+    (1.5, 2, 'right', 13),
+    (1.5, 3, 'top', 5),
+    (1.5, 3, 'top', 13),
+    (1.5, 3, 'bottom', 5),
+    (1.5, 3, 'bottom', 13),
+    (1.5, 3, 'left', 5),
+    (1.5, 3, 'left', 13),
+    (1.5, 3, 'right', 5),
+    (1.5, 3, 'right', 13),
+    (1.5, 4, 'top', 5),
+    (1.5, 4, 'top', 13),
+    (1.5, 4, 'bottom', 5),
+    (1.5, 4, 'bottom', 13),
+    (1.5, 4, 'left', 5),
+    (1.5, 4, 'left', 13),
+    (1.5, 4, 'right', 5),
+    (1.5, 4, 'right', 13),
+    (1.5, 5, 'top', 5),
+    (1.5, 5, 'top', 13),
+    (1.5, 5, 'bottom', 5),
+    (1.5, 5, 'bottom', 13),
+    (1.5, 5, 'left', 5),
+    (1.5, 5, 'left', 13),
+    (1.5, 5, 'right', 5),
+    (1.5, 5, 'right', 13),
+    pytest.param(1.9, 1, 'top', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.9, 1, 'top', 13),
+    (1.9, 1, 'bottom', 5),
+    (1.9, 1, 'bottom', 13),
+    pytest.param(1.9, 1, 'left', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (1.9, 1, 'left', 13),
+    (1.9, 1, 'right', 5),
+    (1.9, 1, 'right', 13),
+    (1.9, 2, 'top', 5),
+    (1.9, 2, 'top', 13),
+    (1.9, 2, 'bottom', 5),
+    (1.9, 2, 'bottom', 13),
+    (1.9, 2, 'left', 5),
+    (1.9, 2, 'left', 13),
+    (1.9, 2, 'right', 5),
+    (1.9, 2, 'right', 13),
+    (1.9, 3, 'top', 5),
+    (1.9, 3, 'top', 13),
+    (1.9, 3, 'bottom', 5),
+    (1.9, 3, 'bottom', 13),
+    (1.9, 3, 'left', 5),
+    (1.9, 3, 'left', 13),
+    (1.9, 3, 'right', 5),
+    (1.9, 3, 'right', 13),
+    (1.9, 4, 'top', 5),
+    (1.9, 4, 'top', 13),
+    (1.9, 4, 'bottom', 5),
+    (1.9, 4, 'bottom', 13),
+    (1.9, 4, 'left', 5),
+    (1.9, 4, 'left', 13),
+    (1.9, 4, 'right', 5),
+    (1.9, 4, 'right', 13),
+    (1.9, 5, 'top', 5),
+    (1.9, 5, 'top', 13),
+    (1.9, 5, 'bottom', 5),
+    (1.9, 5, 'bottom', 13),
+    (1.9, 5, 'left', 5),
+    (1.9, 5, 'left', 13),
+    (1.9, 5, 'right', 5),
+    (1.9, 5, 'right', 13),
+    (2.0, 1, 'top', 5),
+    (2.0, 1, 'top', 13),
+    (2.0, 1, 'bottom', 5),
+    (2.0, 1, 'bottom', 13),
+    (2.0, 1, 'left', 5),
+    (2.0, 1, 'left', 13),
+    (2.0, 1, 'right', 5),
+    (2.0, 1, 'right', 13),
+    (2.0, 2, 'top', 5),
+    (2.0, 2, 'top', 13),
+    (2.0, 2, 'bottom', 5),
+    (2.0, 2, 'bottom', 13),
+    (2.0, 2, 'left', 5),
+    (2.0, 2, 'left', 13),
+    (2.0, 2, 'right', 5),
+    (2.0, 2, 'right', 13),
+    (2.0, 3, 'top', 5),
+    (2.0, 3, 'top', 13),
+    (2.0, 3, 'bottom', 5),
+    (2.0, 3, 'bottom', 13),
+    (2.0, 3, 'left', 5),
+    (2.0, 3, 'left', 13),
+    (2.0, 3, 'right', 5),
+    (2.0, 3, 'right', 13),
+    (2.0, 4, 'top', 5),
+    (2.0, 4, 'top', 13),
+    (2.0, 4, 'bottom', 5),
+    (2.0, 4, 'bottom', 13),
+    (2.0, 4, 'left', 5),
+    (2.0, 4, 'left', 13),
+    (2.0, 4, 'right', 5),
+    (2.0, 4, 'right', 13),
+    (2.0, 5, 'top', 5),
+    (2.0, 5, 'top', 13),
+    (2.0, 5, 'bottom', 5),
+    (2.0, 5, 'bottom', 13),
+    (2.0, 5, 'left', 5),
+    (2.0, 5, 'left', 13),
+    (2.0, 5, 'right', 5),
+    (2.0, 5, 'right', 13),
+    pytest.param(2.5, 1, 'top', 5, marks=pytest.mark.xfail(strict=True, reason='Inset residual: 1.7u sample lands on green/cover after resampling')),
+    (2.5, 1, 'top', 13),
+    (2.5, 1, 'bottom', 5),
+    (2.5, 1, 'bottom', 13),
+    (2.5, 1, 'left', 5),
+    (2.5, 1, 'left', 13),
+    (2.5, 1, 'right', 5),
+    (2.5, 1, 'right', 13),
+    (2.5, 2, 'top', 5),
+    (2.5, 2, 'top', 13),
+    (2.5, 2, 'bottom', 5),
+    (2.5, 2, 'bottom', 13),
+    (2.5, 2, 'left', 5),
+    (2.5, 2, 'left', 13),
+    (2.5, 2, 'right', 5),
+    (2.5, 2, 'right', 13),
+    (2.5, 3, 'top', 5),
+    (2.5, 3, 'top', 13),
+    (2.5, 3, 'bottom', 5),
+    (2.5, 3, 'bottom', 13),
+    (2.5, 3, 'left', 5),
+    (2.5, 3, 'left', 13),
+    (2.5, 3, 'right', 5),
+    (2.5, 3, 'right', 13),
+    (2.5, 4, 'top', 5),
+    (2.5, 4, 'top', 13),
+    (2.5, 4, 'bottom', 5),
+    (2.5, 4, 'bottom', 13),
+    (2.5, 4, 'left', 5),
+    (2.5, 4, 'left', 13),
+    (2.5, 4, 'right', 5),
+    (2.5, 4, 'right', 13),
+    (2.5, 5, 'top', 5),
+    (2.5, 5, 'top', 13),
+    (2.5, 5, 'bottom', 5),
+    (2.5, 5, 'bottom', 13),
+    (2.5, 5, 'left', 5),
+    (2.5, 5, 'left', 13),
+    (2.5, 5, 'right', 5),
+    (2.5, 5, 'right', 13)
+])
+def test_outside_single_side_green_cover(scale, inset, side, slot):
+    capacity = 11 if slot >= 12 else 4
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
+    row, col = divmod(slot - 1, 10)
+    x, y, w, h = col * 34 + 1, 34 + row * 27 + 1, 32, 24
+    if side == 'top':
+        y += inset; h -= inset
+    elif side == 'bottom':
+        h -= inset
+    elif side == 'left':
+        x += inset; w -= inset
+    else:
+        w -= inset
+    paint(frame, scale, x, y, w, h, COLORS[0])
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses), obs
+
+def test_outside_four_side_inset_one_at_scale_two():
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * 4, scale=2.0)
+    paint(frame, 2.0, 4 * 34 + 2, 36, 30, 22, COLORS[0])
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or (obs.capacity == 4 and 'PASS' not in obs.statuses), obs
