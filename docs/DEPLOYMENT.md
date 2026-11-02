@@ -60,9 +60,30 @@
 
 ## 5. 啟動與重啟
 
-Core Service 的唯一進入點是 `core_daemon.py run`（或 `start` / `restart`）。`tcp_server.py` 已不可直接執行。
+Windows CI artifact 內有 `Core.exe`（無主控台視窗）、`AtlasKVM.exe`（橋接程式）、`install-core.bat`／`remove-core.bat` 與 `core-scheduler.json`。上位機不需要安裝 Python，解壓即可。
 
-Core Service 在上位機上以前景或背景方式執行：
+**自動啟動**：雙擊 `install-core.bat`（不需系統管理員，以目前登入使用者執行）。它在工作排程器建立 `B518 Core`：使用者登入時啟動，並每 1 分鐘重複觸發一次，沒有次數與期限；每次觸發執行 `Core.exe start`，先 ping `127.0.0.1:5000`，沒回應才帶起 Core。已有執行個體時不啟動新的（`IgnoreNew`），不限執行時間，使用電池時仍啟動且不停止。重複執行會覆蓋同名工作；`remove-core.bat` 移除。不用 Windows 服務，也不用啟動資料夾。
+
+> 工作排程器的「失敗時重新啟動」對已啟動後結束或被強制結束的程式無效（CI 探針 run 40923852878，2026-10-29），所以採用每分鐘重複觸發加 ping。
+
+重複間隔（`interval_minutes`）與橋接程式轉紅的門檻（`red_threshold_seconds`）只寫在 `core-scheduler.json`，安裝腳本與橋接程式都讀它；改值後重跑安裝腳本。
+
+**橋接程式與備援帶起**：橋接程式啟動時先 ping Core，沒回應才用同資料夾的 `Core.exe` 帶起，ping 得到就不帶起。若備援帶起與排程器同時啟動，只有一個 Core 綁得到 port 5000，另一個發現已有 Core 回 ping 即安靜結束（結束碼 0）。已知限制：備援帶起的 Core 若之後當掉，要等下一次每分鐘觸發才會被排程器帶回。設定頁「重啟 Core」同樣走 `Core.exe`。關閉橋接程式不會跳確認視窗，也不會關閉 Core。
+
+**橋接程式頂列 Core 燈號**（顏色、符號、文字；時間值來自 `core-scheduler.json`）：
+
+| 狀態 | 顏色 | 符號 | 文字 |
+| --- | --- | --- | --- |
+| 啟動中 | 灰 | ○ | Core 啟動中… |
+| 正常 | 綠 | √ | Core 已連線；曾被自動重開時小字「Core 曾自動重啟 hh:mm」 |
+| 等待重開 | 橘 | △ | Core 已停止，系統正在自動重開（約 1 分鐘） |
+| 停止超過門檻 | 紅 | × | Core 停止超過 2 分鐘沒有恢復，請通知 TE 工程師；小字為 `文件\logs\core_service.log` |
+| 啟動失敗 | 紅 | × | 原因（找不到 devices.json、格式錯誤、port 被占用）＋「請通知 TE 工程師檢查設定檔」＋檔案路徑 |
+| 設定錯誤 | 紅 | × | Core 設定錯誤，無法啟動，請通知 TE 工程師；小字「設定的連線位址不是本機」＋log 路徑 |
+
+Core Service 的原始碼入口是 `core_daemon.py run`（或 `start` / `restart`）；`tcp_server.py` 已不可直接執行。
+
+下列原始碼指令僅供開發使用：
 
 ```sh
 python host-app/core_daemon.py run --port 5000
@@ -72,11 +93,12 @@ python host-app/core_daemon.py restart --port 5000
 
 - 清單位置預設為 `~/Documents/template/devices.json`。可用 `--devices-file` 指定（僅 `run` 支援），或設定環境變數 `B518_DEVICES_FILE`。
 - `start` 與 `restart` 啟動的子行程不會傳遞 `--devices-file`，只會使用環境變數或預設位置。若要指定其他清單位置，請改用 `run` 或設定環境變數。
-- Core 缺檔或清單有誤時拒絕啟動，錯誤會寫入 log 與終端機。
+- Core 缺檔或清單有誤時拒絕啟動，錯誤會寫入 log，並寫入狀態檔 `core_status.json`（橋接程式燈號讀它）。
 
 ## 6. 上線前檢查清單
 
 1. 設備清單儲存成功，設定頁沒有錯誤列。
+1a. 已執行 `install-core.bat`，工作排程器有 `B518 Core`；登入後橋接程式頂列 Core 燈號為綠色 √。
 2. Core 啟動成功（`core_daemon.py status` 回報 running）。
    Monitor UI 的 `python host-app/ui_app.py --headless-check` 印出的是協定回覆攤平後的 JSON：`status` 為 `ok`（不再是 `running`），並帶 `error`、`message`、`elapsed_sec`、`req_id`、`device`。現場腳本不要再 grep 這個輸出裡的 `running`。
 3. Monitor UI 設備下拉選單列出九台。
@@ -90,9 +112,9 @@ python host-app/core_daemon.py restart --port 5000
 10a. Log Solution 為顯示契約 1.3（狀態標記在 (250, 0)、心跳在 (278, 0)），且與本橋接版本同時部署。
 11. 逐站依 `docs/PROTOCOL.md` 第 4.1 節順序實測：`monitor_start` 成功、`start_test` 點擊正確、`check` 取得 `taken`（或 `paused`）。
 
-## 7. 防火牆與連線
+## 7. 連線
 
-- Core 只監聽 `127.0.0.1`（本機）；LabVIEW 與 Core 同機，不需開放入站 TCP 5000。
+- Core 只監聽 `127.0.0.1`（本機）；LabVIEW 與 Core 同機。
 - 設定頁「重啟 Core」與 `--restart-core` 一律以 `127.0.0.1` 與預設設備清單重啟，不沿用先前 Core 的 `--devices-file`；UI 的 `--host` 只決定 UI 連線目標。
 - 上位機需能對九台 KVM 的 80 埠發起 TCP 連線（設定頁測試與 Core 連線都需要）。
 

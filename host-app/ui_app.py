@@ -59,6 +59,7 @@ if str(_HOST_APP_DIR) not in sys.path:
 import alarm_banner
 from app_info import about_text, asset_path, is_ci_build, version
 from core_channel import CoreChannel, channel_name_for
+from core_indicator import CoreIndicator
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics, note_for_language
 from station_list_hint import list_hint_text
@@ -571,11 +572,17 @@ class AtlasUI(_BaseTk):
         # Core Service state: None until the first poll answers; True/False after that.
         self._service_ok: Optional[bool] = None
         self._service_info: Dict[str, Any] = {}
+        from core_daemon import default_log_file, default_status_file  # lazy: Core's modules are heavy
+
+        self._core_status_path = default_status_file()
+        self._core_ind = CoreIndicator(self._clock(), datetime.datetime.now(), str(default_log_file()))
+        self._core_view = None  # last Indicator shown by the Core light
 
         # Polling
         self._is_closing = False
 
         self._build_widgets()
+        self._observe_core(False, None)  # "starting" until the first poll answers
         ui_i18n.on_language_change(self._on_language_changed)
 
         self._fit_window()
@@ -645,12 +652,21 @@ class AtlasUI(_BaseTk):
         # Uptime and connection count are in its hover tip.
         self.light_core = StatusLight(top_frame, bg=WINDOW_BG)
         self.light_core.pack(side="left", padx=(12, 2))
-        self.light_core.set_light("red")
+        self.light_core.set_light("grey")
         self.lbl_core_caption = tk.Label(top_frame, font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG)
         bind(self.lbl_core_caption, "core_caption")
         self.lbl_core_caption.pack(side="left")
+        # Symbol + words next to the lamp (state is never colour only), then the small details text.
+        core_text = tk.Frame(top_frame, bg=WINDOW_BG)
+        core_text.pack(side="left", padx=(6, 0))
+        self.lbl_core_state = tk.Label(core_text, text="○", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)
+        self.lbl_core_state.pack(side="left")
+        # Same row as the words, so the top bar keeps its one-line height and the HMI layout below does not move.
+        self.lbl_core_small = tk.Label(core_text, text="", font=self.f_mono, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)
+        self.lbl_core_small.pack(side="left", padx=(6, 0))
         self._core_tip = Tooltip(self.light_core, self._core_tooltip_text)
         Tooltip(self.lbl_core_caption, self._core_tooltip_text)
+        Tooltip(self.lbl_core_state, self._core_tooltip_text)
 
         # ----------------------------------------------------------------------
         # Body: fixed 200 px station panel on the left (issue #126), live view, controls and Log on the right
@@ -1375,6 +1391,7 @@ class AtlasUI(_BaseTk):
                 w["state"]["row"], core_connected=w["state"]["core_connected"]),
                 core_connected=w["state"]["core_connected"])
         self._refresh_station_list_marks()
+        self._show_core(self._core_view)
         self.btn_live_stream.config(text=t("btn_live_stop") if self._streaming_active else t("btn_live"))
         if str(self.btn_run_check.cget("state")) != "disabled":
             self.btn_run_check.config(text=t("btn_check"))
@@ -1391,23 +1408,55 @@ class AtlasUI(_BaseTk):
         self.after(1500, self._poll_status)
 
     def _core_tooltip_text(self) -> str:
-        """Hover tip for the Core Service lamp: uptime, connection count and busy devices."""
+        """Hover tip for the Core light: the shown words, plus the busy devices while Core answers."""
+        view = self._core_view
+        text = t(view.text_key, **view.text_args)
+        if view.small_key:
+            text += "\n" + t(view.small_key, **view.small_args)
         if self._service_ok:
             info = self._service_info
             busy_list = info.get("busy_devices", []) or []
             busy = t("sep_list").join(str(d) for d in busy_list) or t("core_none")
-            return (
-                t("core_ok_tip", seconds=info.get("uptime_seconds", 0), clients=info.get("active_connections", 0))
-                + "\n"
-                + t("core_busy", busy=busy)
-            )
-        return t("core_down")
+            text += "\n" + t("core_ind_detail", seconds=info.get("uptime_seconds", 0),
+                             clients=info.get("active_connections", 0)) + "\n" + t("core_busy", busy=busy)
+        return text
+
+    def _observe_core(self, ping_ok: bool, uptime: Optional[float]) -> None:
+        """Feed one poll result to the Core indicator and show what it says."""
+        status = None
+        if not ping_ok:
+            try:
+                status = json.loads(self._core_status_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+        view = self._core_ind.observe(ping_ok, uptime, self._clock(), datetime.datetime.now(), status)
+        self._show_core(view)
+
+    def _show_core(self, view: Any) -> None:
+        self._core_view = view
+        self.light_core.set_light(view.light)
+        self.lbl_core_state.config(text=f"{view.symbol} {t(view.text_key, **view.text_args)}")
+        self.lbl_core_small.config(text=t(view.small_key, **view.small_args) if view.small_key else "")
+
+    def start_core_fallback(self) -> None:
+        """At startup: if nothing answers ping on this PC, start Core.exe (the scheduler may do the same)."""
+        from core_daemon import ensure_core_running, start_core_daemon
+
+        def launch(**kwargs: Any) -> Dict[str, Any]:
+            self._core_ind.mark_launch(self._clock(), datetime.datetime.now())
+            return start_core_daemon(timeout=CORE_START_TIMEOUT_S, **kwargs)
+
+        def work() -> None:
+            if ensure_core_running("127.0.0.1", self.client.port, start=launch) == "failed":
+                self._ui_queue.put(lambda: self._log_key("log_restart_fail", level="error", detail="Core fallback start"))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _update_status_ui(self, status_res: Dict[str, Any]) -> None:
         if status_res.get("status") == "ok":
             self._service_ok = True
             self._service_info = status_res
-            self.light_core.set_light("green")
+            self._observe_core(True, status_res.get("uptime_seconds"))
 
             # Update stations list if returned
             stations = status_res.get("stations")
@@ -1434,7 +1483,7 @@ class AtlasUI(_BaseTk):
             was_ok = self._service_ok
             self._service_ok = False
             self._service_info = status_res
-            self.light_core.set_light("red")
+            self._observe_core(False, None)
             if was_ok is not False:
                 msg = status_res.get("message") or status_res.get("error")
                 error = (str(msg), str(msg)) if msg else pair("err_conn_lost")
@@ -1561,6 +1610,7 @@ class AtlasUI(_BaseTk):
         """
         from core_daemon import restart_core_daemon
 
+        self._core_ind.mark_launch(self._clock(), datetime.datetime.now())  # the light shows "starting", not "waiting"
         try:
             res = restart_core_daemon(host="127.0.0.1", port=self.client.port, timeout=CORE_START_TIMEOUT_S)
         except Exception as exc:
@@ -1972,6 +2022,8 @@ def main() -> None:
         sys.exit(0 if status.get("status") == "ok" else 1)
 
     app = AtlasUI(core_host=args.host, core_port=args.port)
+    if args.host in ("127.0.0.1", "localhost"):
+        app.start_core_fallback()
     app.mainloop()
 
 

@@ -128,6 +128,7 @@ def test_manual_stop_complete_accepts_input_only_after_the_round_is_settled(rig)
     """
     srv, kvm = rig
     terminal = ["STOPPED", "PASS", "FAIL", "NOTEST"]
+    srv._slot("DFU-01").round.note_start()  # This round began after Core started.
     kvm.log_state = "manual_stop_complete"
     kvm.log_statuses = terminal
 
@@ -164,6 +165,7 @@ def _cmd(srv, device, cmd, extra, req_id):
 
 def test_complete_round_not_yet_taken_refuses_input(rig):
     srv, kvm = rig
+    srv._slot("DFU-01").round.note_start()  # This round began after Core started.
     kvm.log_state = "complete"
 
     resp = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN1"}])
@@ -222,3 +224,19 @@ def test_checkbox_count_mismatch_is_hid_failed_and_types_nothing(rig, tmp_path):
     assert resp["error"] == "hid_failed"
     assert resp["data"]["entered"] == []
     assert not any(event[0] == "type" for event in kvm.events)
+
+
+@pytest.mark.parametrize("finished_state", ["complete", "manual_stop_complete"])
+def test_finished_screen_at_core_start_allows_input_every_time_until_a_round_starts(rig, finished_state):
+    """#168: a finished screen seen before any round started since Core boot is settled; input is not limited to once."""
+    srv, kvm = rig
+    kvm.log_state = finished_state
+
+    for n in range(3):
+        resp = _input(srv, "DFU-01", [{"slot": 1, "sn": f"SN{n}"}], req_id=f"boot-{n}")
+        assert resp["status"] == "ok", resp
+        assert resp["data"] == {"entered": [1]}
+
+    srv._slot("DFU-01").round.note_start()  # A new round begins after Core started.
+    resp = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN9"}], req_id="after-start")
+    assert resp["error"] == "log_solution_busy"

@@ -1,8 +1,8 @@
 # Domain Glossary
 
 ## Architecture
-- **Core Service**: 獨立運作的 Headless 背景程序（Python Process），負責維護所有 KVM 連線、畫面辨識流水線，並提供 TCP JSON 介面給 LabVIEW。不帶任何 Tkinter GUI 元件。
-- **Monitor UI**: 用於觀測畫面、維護 Pattern、手動操作的 Tkinter GUI。它降級為一般的 Client，只透過 TCP 與 Core Service 溝通，不再自己直接去連 WebRTC 或管理 TCP Server。
+- **Core／Core Service（Core 服務）**: 獨立運作的 Headless 背景程序（Python Process），負責維護所有 KVM 連線、畫面辨識流水線，並提供 TCP JSON 介面給 LabVIEW。不帶任何 Tkinter GUI 元件。
+- **橋接程式／Monitor UI（AtlasKVM 監控畫面）**: 用於觀測畫面、維護 Pattern、手動操作的 Tkinter GUI。它降級為一般的 Client，只透過 TCP 與 Core Service 溝通，不再自己直接去連 WebRTC 或管理 TCP Server。
 
 ## Connections & Concurrency
 - **設備 ID**: 一台設備（測試機＋測試機電腦＋JetKVM）的固定、跨站唯一識別，格式 `<站別>-<兩位數>`，例如 `DFU-01`。所有模組與協定以它為唯一設備 key；不同於 `req_id` 與輪次 ID。（ADR-0007，Accepted）
@@ -24,7 +24,7 @@
 整個自動化測試流程的控制者，決定何時輸入 SN、啟動測試、等待結果及執行後續設備動作。
 
 **橋接程式**：
-LabVIEW 與 ATE 測試機之間的指令及視覺結果中繼，依 LabVIEW 指令操作測試機並回報畫面辨識結果；後續流程決定屬於 LabVIEW。
+AtlasKVM 監控畫面，透過 TCP 觀測及維護 Core；Core 依 LabVIEW 指令操作測試機並回報畫面辨識結果，後續流程決定屬於 LabVIEW。
 
 **Log Solution 正式結果來源**：
 DFU、FCT、BT 所有工站共同的測試結果來源，讀取 ATE Log、管理測試輪次與人工確認，透過人機畫面的狀態標記及結果色帶提供結果。

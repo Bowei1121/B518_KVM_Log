@@ -114,7 +114,7 @@ except tk.TclError:
     pytest.skip("no Tk display", allow_module_level=True)
 
 import ui_app  # noqa: E402
-from ui_widgets import LED_GREEN, LED_GREY, LED_RED, LED_RED_DIM, LED_YELLOW, StatusLight, Tooltip  # noqa: E402
+from ui_widgets import LED_GREEN, LED_GREY, LED_RED, LED_RED_DIM, LED_YELLOW, LED_ORANGE, StatusLight, Tooltip  # noqa: E402
 
 _TK_CLASSES = {"Frame", "Labelframe", "Label", "Button", "Canvas", "Text", "Entry",
                "Listbox", "Checkbutton", "Scrollbar", "Toplevel"}
@@ -210,7 +210,9 @@ def test_warning_line_is_orange_tag(ui):
     assert not ui.log_text.tag_ranges("error")
 
 
-def test_core_service_lamp_shows_detail_in_tip_and_logs_each_outage_once(ui):
+def test_core_service_lamp_shows_detail_in_tip_and_logs_each_outage_once(ui, tmp_path):
+    ui._core_status_path = tmp_path / "core_status.json"
+    ui._clock = lambda: ui._core_ind.launch_at + ui._core_ind.grace_s + 1
     ui._update_status_ui({"status": "ok", "uptime_seconds": 49, "active_connections": 2, "busy_devices": []})
     assert ui.light_core.current_fill() == LED_GREEN
     assert "Running for 49 s" in ui._core_tooltip_text()
@@ -219,9 +221,12 @@ def test_core_service_lamp_shows_detail_in_tip_and_logs_each_outage_once(ui):
     down = {"status": "error", "message": "Communication error with Core Service: timed out"}
     ui._update_status_ui(down)
     ui._update_status_ui(down)
-    assert ui.light_core.current_fill() == LED_RED
-    assert ui._core_tooltip_text() == "Service not connected (see log)"
+    assert ui.light_core.current_fill() == LED_ORANGE
+    assert ui._core_tooltip_text() == "Core stopped; restarting automatically (about 1 min)"
     assert ui.log_text.get("1.0", "end").count("Core Service not connected") == 1
+    ui._update_status_ui({"status": "ok", "uptime_seconds": 50, "stations": []})
+    ui._update_status_ui(down)
+    assert ui.log_text.get("1.0", "end").count("Core Service not connected") == 2
 
 
 def test_frozen_station_is_solid_red_then_recovers(ui):

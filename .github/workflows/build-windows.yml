@@ -50,7 +50,7 @@ jobs:
         # Guarded by tests/test_windows_ci_capture_140.py (static workflow check)
         # and the win32 capture check in tests/conftest.py.
         # tests/capture_default_140.py (pytest.ini addopts) also makes sys the Windows default for local runs.
-        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py tests/test_connect_failures_134.py tests/test_kvm_pool_connect_failures_134.py tests/test_core_status_134.py tests/test_station_presentation_134.py tests/test_monitor_hmi_134.py tests/test_core_exe_167.py tests/test_core_localhost_only.py tools/fake_core/test_fake_core.py
+        run: python -m pytest -o faulthandler_timeout=120 --capture=sys -q -rs tests/test_windows_dpi_107.py tests/test_monitor_hmi_106.py tests/test_monitor_hmi_115.py tests/test_monitor_hmi_117.py tests/test_monitor_hmi_126_scroll.py tests/test_windows_ci_capture_140.py tests/test_monitor_hmi_144.py tests/test_station_presentation.py tests/test_monitor_hmi_126.py tests/test_station_presentation_130.py tests/test_monitor_hmi_130.py tests/test_connect_failures_134.py tests/test_kvm_pool_connect_failures_134.py tests/test_core_status_134.py tests/test_station_presentation_134.py tests/test_monitor_hmi_134.py tests/test_core_exe_167.py tests/test_core_localhost_only.py tests/test_device_round.py tests/test_core_indicator_168.py tests/test_monitor_hmi_168.py tools/fake_core/test_fake_core.py tests/test_green_occlusion_172.py
 
   build:
     runs-on: windows-latest
@@ -116,6 +116,47 @@ jobs:
       - name: Exercise packaged Core and frozen bridge launch
         shell: bash
         run: python tools/ci_frozen_core_167.py
+
+      - name: Include scheduler installation files
+        shell: bash
+        run: cp windows/* host-app/dist/AtlasKVM/
+
+      - name: Install scheduled task, trigger it, ping Core, remove it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'host-app/dist/AtlasKVM'
+          $template = Join-Path $HOME 'Documents/template'
+          New-Item -ItemType Directory -Force -Path $template | Out-Null
+          if (!(Test-Path "$template/devices.json")) { Copy-Item config/devices.example.json "$template/devices.json" }
+          function Ping-Core {
+            try {
+              $c = [Net.Sockets.TcpClient]::new('127.0.0.1', 5000)
+              $w = [IO.StreamWriter]::new($c.GetStream()); $w.WriteLine('{"protocol_version":"1.0","req_id":"ci","device":"","cmd":"ping"}'); $w.Flush()
+              $line = [IO.StreamReader]::new($c.GetStream()).ReadLine(); $c.Close()
+              return $line -match '"pong"\s*:\s*true'
+            } catch { return $false }
+          }
+          Get-Process Core -ErrorAction SilentlyContinue | Stop-Process -Force
+          & "$dist/install-core.ps1"
+          & "$dist/install-core.ps1"   # second run overwrites; still exactly one task
+          if (@(Get-ScheduledTask -TaskName 'B518 Core').Count -ne 1) { throw 'expected exactly one task' }
+          $t = Get-ScheduledTask -TaskName 'B518 Core'
+          $s = $t.Settings; $cfg = Get-Content "$dist/core-scheduler.json" -Raw | ConvertFrom-Json
+          if ($t.Principal.RunLevel -ne 'Limited') { throw 'RunLevel must be Limited' }
+          if ($s.ExecutionTimeLimit -ne 'PT0S') { throw "ExecutionTimeLimit $($s.ExecutionTimeLimit)" }
+          if ($s.MultipleInstances -ne 'IgnoreNew') { throw 'MultipleInstances' }
+          if ($s.DisallowStartIfOnBatteries -or $s.StopIfGoingOnBatteries) { throw 'battery settings' }
+          if ([Xml.XmlConvert]::ToTimeSpan($t.Triggers[1].Repetition.Interval).TotalMinutes -ne $cfg.interval_minutes) { throw 'repeat interval' }
+          if ($t.Triggers[1].Repetition.Duration) { throw "repeat must have no end, got $($t.Triggers[1].Repetition.Duration)" }
+          if ($t.Actions[0].WorkingDirectory -ne $dist) { throw "WorkingDirectory $($t.Actions[0].WorkingDirectory)" }
+          Start-ScheduledTask -TaskName 'B518 Core'
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) { Start-Sleep -Seconds 3; $ok = Ping-Core }
+          if (-not $ok) { throw 'Core did not answer ping after the task was triggered' }
+          Get-Process Core -ErrorAction SilentlyContinue | Stop-Process -Force
+          & "$dist/remove-core.ps1"
+          if (Get-ScheduledTask -TaskName 'B518 Core' -ErrorAction SilentlyContinue) { throw 'task still exists after remove' }
 
       - name: Upload Core diagnostics
         if: always()

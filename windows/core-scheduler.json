@@ -1,0 +1,4 @@
+{
+  "interval_minutes": 1,
+  "red_threshold_seconds": 120
+}

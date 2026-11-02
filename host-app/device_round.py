@@ -43,6 +43,7 @@ class DeviceRound:
         self.max_frame_gap = float(max_frame_gap)
         # Set by a shortcut or a Preparing seen in monitor_start; spent by taken or manual_verification_required.
         self.start_requested = False
+        self._started_since_boot = False
         self.input_released = False
         self.armed = False
         self.taken = False
@@ -58,6 +59,7 @@ class DeviceRound:
 
     def note_start(self):
         """Shortcut sent, or monitor_start is looking at Preparing. Keeps an existing request."""
+        self._started_since_boot = True
         self.start_requested = True
 
     def begin_start(self):
@@ -65,6 +67,7 @@ class DeviceRound:
 
         Keeps a request that monitor_not_started did not clear.
         """
+        self._started_since_boot = True
         self.clear_delivery()
         self.input_released = False
 
@@ -89,6 +92,10 @@ class DeviceRound:
     def released_for_input(self):
         """True after settle() and before the next new round: SN input may go in on a finished screen."""
         return self.input_released
+
+    def finished_screen_allows_input(self):
+        """A finished screen at Core startup belongs to an already settled round."""
+        return not self._started_since_boot or self.input_released
 
     # ---- what the reader's observations do -----------------------------------------------
 
@@ -195,6 +202,7 @@ class DeviceRound:
         The previous delivery goes and no SN input is released. Preparing also disarms the round;
         Monitoring arms it when a start was requested.
         """
+        self._started_since_boot = True
         if observation.state == MarkerState.PREPARING:
             self.clear_delivery()
             self.input_released = False

@@ -250,3 +250,19 @@ def test_new_stream_starts_its_own_freeze_baseline(monkeypatch):
 
     assert first.reason not in ("frame_frozen", "out_of_order_source_frame")
     assert gate.is_frozen is False
+
+
+def test_finished_screen_at_core_start_is_settled_for_input():
+    rnd = DeviceRound("DFU-01")
+    assert rnd.finished_screen_allows_input()
+    rnd.note_start()
+    assert not rnd.finished_screen_allows_input()
+    rnd.settle()
+    assert rnd.finished_screen_allows_input()
+
+
+def test_observed_new_round_is_not_treated_as_settled_at_boot():
+    for observation in (preparing(), monitoring()):
+        rnd = DeviceRound("1")
+        rnd.judge(observation, 1, 1.0)
+        assert not rnd.finished_screen_allows_input()

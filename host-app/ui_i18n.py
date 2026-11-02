@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tkinter as tk
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -54,10 +53,22 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "tip_pt_cancel": "Close this window without saving.",
         "tip_pt_save": "Save the boxed area as the template. Drag a box on the picture first.",
         "core_caption": "Service",
-        "core_ok_tip": "Service connected. Running for {seconds} s; {clients} program(s) connected.",
+        "core_ind_starting": "Core starting…",
+        "core_ind_ok": "Core connected",
+        "core_ind_restarted": "Core restarted automatically at {time}",
+        "core_ind_waiting": "Core stopped; restarting automatically (about {minutes} min)",
+        "core_ind_stopped_long": "Core has been stopped for over {minutes} min without recovering. Please notify a TE engineer",
+        "core_ind_path": "{path}",
+        "core_ind_detail": "Running for {seconds} s; {clients} program(s) connected.",
+        "core_ind_check_config": "Please notify a TE engineer to check the settings file: {path}",
+        "core_ind_fail_devices_missing": "Core cannot start: devices.json not found",
+        "core_ind_fail_devices_invalid": "Core cannot start: devices.json has a format error ({detail})",
+        "core_ind_fail_port_in_use": "Core cannot start: port {port} is in use by another program",
+        "core_ind_fail_internal_error": "Core cannot start: internal error ({detail})",
+        "core_ind_invalid_host": "Core configuration error, cannot start. Please notify a TE engineer",
+        "core_ind_invalid_host_small": "The configured address is not this PC. Log: {path}",
         "core_busy": "Busy machines: {busy}",
         "core_none": "none",
-        "core_down": "Service not connected (see log)",
         # ---- station dashboard
         "dash_title": "Test machine status",
         "dash_empty": "No machines yet. Press ⚙ at the top right to add one.",
@@ -344,10 +355,22 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "tip_pt_cancel": "不儲存，直接關閉視窗。",
         "tip_pt_save": "把框選的範圍存成模板。請先在畫面上拖曳框選。",
         "core_caption": "服務",
-        "core_ok_tip": "服務連線正常。已連線 {seconds} 秒，目前有 {clients} 個程式在用。",
+        "core_ind_starting": "Core 啟動中…",
+        "core_ind_ok": "Core 已連線",
+        "core_ind_restarted": "Core 曾自動重啟 {time}",
+        "core_ind_waiting": "Core 已停止，系統正在自動重開（約 {minutes} 分鐘）",
+        "core_ind_stopped_long": "Core 停止超過 {minutes} 分鐘沒有恢復，請通知 TE 工程師",
+        "core_ind_path": "{path}",
+        "core_ind_detail": "已連線 {seconds} 秒，目前有 {clients} 個程式在用。",
+        "core_ind_check_config": "請通知 TE 工程師檢查設定檔：{path}",
+        "core_ind_fail_devices_missing": "Core 無法啟動：找不到 devices.json",
+        "core_ind_fail_devices_invalid": "Core 無法啟動：devices.json 格式錯誤（{detail}）",
+        "core_ind_fail_port_in_use": "Core 無法啟動：port {port} 被其他程式占用",
+        "core_ind_fail_internal_error": "Core 無法啟動：內部錯誤（{detail}）",
+        "core_ind_invalid_host": "Core 設定錯誤，無法啟動，請通知 TE 工程師",
+        "core_ind_invalid_host_small": "設定的連線位址不是本機。日誌：{path}",
         "core_busy": "忙碌機台：{busy}",
         "core_none": "無",
-        "core_down": "服務未連線（詳見日誌）",
         # ---- station dashboard
         "dash_title": "測試機台即時狀態",
         "dash_empty": "還沒有設定機台，請按右上角 ⚙ 新增。",
@@ -656,6 +679,7 @@ def off_language_change(callback: Callable[[], None]) -> None:
 
 
 def _alive(widget: Any) -> bool:
+    import tkinter as tk
     try:
         return bool(widget.winfo_exists())
     except tk.TclError:
@@ -698,6 +722,9 @@ def set_language(lang: str) -> None:
     if lang not in STRINGS:
         raise ValueError(f"unknown UI language: {lang!r}")
     _current = lang
+    if not _bound and not _listeners:
+        return
+    import tkinter as tk
     _bound[:] = [entry for entry in _bound if _alive(entry[0])]
     for entry in list(_bound):
         try:
