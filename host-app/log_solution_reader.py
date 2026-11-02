@@ -199,6 +199,13 @@ def _median_patch(frame, x, y, radius):
     return np.median(patch.reshape(-1, 3), axis=0)
 
 
+def _pixel(frame, x, y):
+    cx, cy = int(round(x)), int(round(y))
+    if 0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]:
+        return frame[cy, cx].astype(float)
+    return None
+
+
 def _marker_bit(sample):
     if sample is None:
         return None
@@ -211,31 +218,64 @@ def _marker_bit(sample):
 
 
 def _sample_status(frame, x, y, scale):
-    # Four interior corner patches avoid the centered status text and cell border.
-    points = ((x + 6 * scale, y + 5 * scale), (x + 28 * scale, y + 5 * scale),
-             (x + 6 * scale, y + 21 * scale), (x + 28 * scale, y + 21 * scale))
-    # The top border is one display unit wide. Allow edge blending after resampling.
-    bx = int(round(x + 17 * scale))
-    by = int(round(y + 0.5 * scale))
-    if not (0 <= bx < frame.shape[1] and 0 <= by < frame.shape[0]):
-        return None
-    border = frame[max(0, by - 1):min(frame.shape[0], by + 2), bx]
-    if not any(np.max(pixel) <= 160 for pixel in border):
-        return None
+    # Search along each border's normal, including near both corners.
+    borders = []
+    for offset in (3, 17, 31):
+        borders.extend(((x + offset * scale, y + 0.5 * scale, 0, 1),
+                        (x + offset * scale, y + 25.5 * scale, 0, 1)))
+    for offset in (3, 13, 23):
+        borders.extend(((x + 0.5 * scale, y + offset * scale, 1, 0),
+                        (x + 33.5 * scale, y + offset * scale, 1, 0)))
+    reach = max(1, int(round(scale)))
+    for px, py, dx, dy in borders:
+        bx, by = int(round(px)), int(round(py))
+        if not (0 <= bx < frame.shape[1] and 0 <= by < frame.shape[0]):
+            return None
+        candidates = [(bx + d * dx, by + d * dy) for d in range(-reach, reach + 1)]
+        if not any(0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]
+                   and np.max(frame[cy, cx]) <= 160 for cx, cy in candidates):
+            return None
+
     votes = []
-    for px, py in points:
-        sample = _median_patch(frame, px, py, max(1, scale * 0.7))
+    # Four interior corner patches avoid the centred status text and cell border. Corner patches plus a ring 3 units inside each border (clear of resampling blend),
+    # so a green window inset from one side leaves the original colour visible.
+    d = 2.5 if scale >= 1.4 else max(3.0, 3.0 / scale)
+    ring = ((6, d), (17, d), (28, d), (6, 26 - d), (17, 26 - d), (28, 26 - d),
+            (d, 5), (d, 13), (d, 21), (34 - d, 5), (34 - d, 13), (34 - d, 21))
+    corners = ((6, 5), (28, 5), (6, 21), (28, 21))
+    if scale >= 1.9:
+        # Just inside the 1-unit border: a thicker black frame means an occluded black cell.
+        e = 1.6
+        ring += ((17, e), (17, 26 - e), (e, 13), (34 - e, 13))
+    for px, py in corners + ring:
+        if (px, py) in corners:
+            sample = _median_patch(frame, x + px * scale, y + py * scale, max(1, scale * 0.7))
+        else:
+            # One pixel at small scales keeps the patch off the blended border.
+            sample = _median_patch(frame, x + px * scale, y + py * scale, scale * 0.7) \
+                if scale >= 1.4 else _pixel(frame, x + px * scale, y + py * scale)
         if sample is None:
-            continue
-        distances = sorted((float(np.linalg.norm(sample - np.asarray(color))), name)
+            return None
+        distances = sorted((float(np.linalg.norm(sample.astype(float) - np.asarray(color))), name)
                            for name, color in STATUS_COLORS.items())
         if distances[0][0] <= COLOR_TOLERANCE:
             votes.append(distances[0][1])
-        elif float(np.linalg.norm(sample)) <= 35:
+        elif float(np.linalg.norm(sample.astype(float))) <= 35:
             votes.append("OUTSIDE")
-        else:
-            votes.append("UNKNOWN")
-    return votes[0] if len(votes) == 4 and len(set(votes)) == 1 else None
+        elif (px, py) in corners:
+            return None
+        # A ring sample blurred by codec noise matches nothing and is skipped; one that
+        # matches a different status or black still rejects the cell below.
+    if len(set(votes)) != 1:
+        return None
+    if votes[0] == "OUTSIDE":
+        # Out-of-capacity cells are solid black: the centre and mid-edges must be black too,
+        # so a partial occluder cannot turn one into a status cell or back.
+        for px, py in ((17, 13), (17, 4), (17, 22), (4, 13), (30, 13)):
+            sample = _median_patch(frame, x + px * scale, y + py * scale, max(1, scale * 0.7))
+            if sample is None or float(np.linalg.norm(sample.astype(float))) > 35:
+                return None
+    return votes[0]
 
 
 def _marker_cells(frame, x0, y0, scale, origin):

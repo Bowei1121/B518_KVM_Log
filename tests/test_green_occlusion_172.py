@@ -63,3 +63,71 @@ def test_unoccluded_statuses_read_unchanged(status, scale):
     obs = inspect_app_frame(render_frame(MarkerState.COMPLETE, (status,) * 4, scale=scale), 10, 10)
     assert obs.reliable, obs.reason
     assert obs.statuses == (status,) * 4
+
+@pytest.mark.parametrize('scale,color,inset,side,slot', itertools.product(
+    [1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], range(1, 6),
+    ['top', 'bottom', 'left', 'right'], [1, 11, 12]))
+def test_inset_occlusion(scale, color, inset, side, slot):
+    if scale < 1.9 and inset * scale < 3.5:
+        # Residual: a strip of the original colour under ~3 px sits inside the resampling
+        # blend next to the border and cannot be told from it without a contract change.
+        pytest.xfail("thin original-colour strip below resampling resolution")
+    capacity = 12 if slot >= 11 else 4
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
+    row, col = divmod(slot - 1, 10)
+    x, y, w, h = col * 34 + 1, 34 + row * 27 + 1, 32, 24
+    if side == 'top':
+        y += inset; h -= inset
+    elif side == 'bottom':
+        h -= inset
+    elif side == 'left':
+        x += inset; w -= inset
+    else:
+        w -= inset
+    paint(frame, scale, x, y, w, h, color)
+    obs = inspect_app_frame(frame, 10, 10)
+    print(f'inset={inset} side={side} slot={slot} scale={scale} color={color} '
+          f'reliable={obs.reliable} statuses={obs.statuses} reason={obs.reason}', flush=True)
+    assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses)
+
+
+@pytest.mark.parametrize('scale,color,row', itertools.product([1.0, 1.5, 2.0], [COLORS[0], COLORS[3]], [0, 1]))
+def test_wide_window(scale, color, row):
+    capacity = 14 if row else 4
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * capacity, scale=scale)
+    paint(frame, scale, 0, 34 + row * 27 + 2, 136, 22, color)
+    obs = inspect_app_frame(frame, 10, 10)
+    print(f'wide row={row} scale={scale} color={color} reliable={obs.reliable} '
+          f'statuses={obs.statuses} reason={obs.reason}', flush=True)
+    assert not obs.reliable or (obs.capacity == capacity and 'PASS' not in obs.statuses)
+
+
+@pytest.mark.xfail(strict=True, reason="Inset-1 full-interior PASS cover is pixel-identical to a genuine PASS cell")
+def test_exact_fill_accepted_limit():
+    frame = render_frame(MarkerState.COMPLETE, ('FAIL',) * 4, scale=2)
+    paint(frame, 2, 1, 35, 32, 24, COLORS[0])
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or obs.statuses[0] != 'PASS'
+
+
+@pytest.mark.parametrize("slot,inset", [
+    pytest.param(slot, inset, marks=pytest.mark.xfail(strict=True, reason="Inset-1 full-interior PASS cover is pixel-identical to a genuine PASS cell"))
+    if inset == 1 and slot in (5, 12) else (slot, inset)
+    for slot in (5, 6, 12, 13) for inset in range(6)
+])
+def test_outside_cell_green_cover_never_increases_capacity(slot, inset):
+    capacity = 11 if slot >= 12 else 4
+    frame = render_frame(MarkerState.COMPLETE, ("FAIL",) * capacity, scale=2)
+    row, col = divmod(slot - 1, 10)
+    paint(frame, 2, col * 34 + inset, 34 + row * 27 + inset,
+          34 - 2 * inset, 26 - 2 * inset, COLORS[0])
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable or (obs.capacity <= capacity and "PASS" not in obs.statuses)
+
+
+def test_status_after_outside_is_unreliable():
+    frame = render_frame(MarkerState.COMPLETE, ("FAIL",) * 4, scale=2)
+    source = frame[31 + 34 * 2:31 + 60 * 2, 23:23 + 34 * 2].copy()
+    frame[31 + 34 * 2:31 + 60 * 2, 23 + 6 * 34 * 2:23 + 7 * 34 * 2] = source
+    obs = inspect_app_frame(frame, 10, 10)
+    assert not obs.reliable and obs.reason == "non_contiguous_capacity"
