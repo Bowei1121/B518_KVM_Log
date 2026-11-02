@@ -199,6 +199,13 @@ def _median_patch(frame, x, y, radius):
     return np.median(patch.reshape(-1, 3), axis=0)
 
 
+def _pixel(frame, x, y):
+    cx, cy = int(round(x)), int(round(y))
+    if 0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]:
+        return frame[cy, cx].astype(float)
+    return None
+
+
 def _marker_bit(sample):
     if sample is None:
         return None
@@ -211,29 +218,117 @@ def _marker_bit(sample):
 
 
 def _sample_status(frame, x, y, scale):
-    # Four interior corner patches avoid the centered status text and cell border.
-    points = ((x + 6 * scale, y + 5 * scale), (x + 28 * scale, y + 5 * scale),
-             (x + 6 * scale, y + 21 * scale), (x + 28 * scale, y + 21 * scale))
-    votes = []
-    for px, py in points:
-        sample = _median_patch(frame, px, py, max(1, scale * 0.7))
+    # Search along each border's normal, including near both corners. Stay inside
+    # this cell so a neighbouring cell's border cannot stand in for ours.
+    borders = []
+    for offset in (3, 17, 31):
+        borders.extend(((x + offset * scale, y + 0.5 * scale, 0, 1),
+                        (x + offset * scale, y + 25.5 * scale, 0, 1)))
+    for offset in (3, 13, 23):
+        borders.extend(((x + 0.5 * scale, y + offset * scale, 1, 0),
+                        (x + 33.5 * scale, y + offset * scale, 1, 0)))
+    reach = max(1, int(round(scale)))
+    x_lo, x_hi = int(np.floor(x)), int(np.ceil(x + 34 * scale)) - 1
+    y_lo, y_hi = int(np.floor(y)), int(np.ceil(y + 26 * scale)) - 1
+    for px, py, dx, dy in borders:
+        bx, by = int(round(px)), int(round(py))
+        if not (0 <= bx < frame.shape[1] and 0 <= by < frame.shape[0]):
+            return None
+        candidates = [(bx + d * dx, by + d * dy) for d in range(-reach, reach + 1)
+                      if x_lo <= bx + d * dx <= x_hi and y_lo <= by + d * dy <= y_hi]
+        if not any(0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]
+                   and np.max(frame[cy, cx]) <= 160 for cx, cy in candidates):
+            return None
+
+    def _classify(sample):
         if sample is None:
-            continue
-        distances = sorted((float(np.linalg.norm(sample - np.asarray(color))), name)
+            return None
+        distances = sorted((float(np.linalg.norm(sample.astype(float) - np.asarray(color))), name)
                            for name, color in STATUS_COLORS.items())
         if distances[0][0] <= COLOR_TOLERANCE:
-            votes.append(distances[0][1])
-        elif float(np.linalg.norm(sample)) <= 35:
-            votes.append("OUTSIDE")
-        else:
-            votes.append("UNKNOWN")
-    if len(votes) < 3:
+            return distances[0][1]
+        if float(np.linalg.norm(sample.astype(float))) <= 35:
+            return "OUTSIDE"
         return None
-    counts = {}
-    for value in votes:
-        counts[value] = counts.get(value, 0) + 1
-    winner, count = max(counts.items(), key=lambda item: item[1])
-    return winner if count >= 3 else None
+
+    # Four interior corner patches avoid the centred status text and cell border.
+    corners = ((6, 5), (28, 5), (6, 21), (28, 21))
+    votes = []
+    for px, py in corners:
+        label = _classify(_median_patch(frame, x + px * scale, y + py * scale,
+                                        max(1, scale * 0.7)))
+        if label is None:
+            return None
+        votes.append(label)
+    if len(set(votes)) != 1:
+        return None
+    corner_vote = votes[0]
+
+    # Deeper ring (~2.5–3 u): a thick occluder that still leaves original colour farther in.
+    d = 2.5 if scale >= 1.4 else max(3.0, 3.0 / scale)
+    deep_ring = ((6, d), (17, d), (28, d), (6, 26 - d), (17, 26 - d), (28, 26 - d),
+                 (d, 5), (d, 13), (d, 21), (34 - d, 5), (34 - d, 13), (34 - d, 21))
+    for px, py in deep_ring:
+        sample = (_median_patch(frame, x + px * scale, y + py * scale, scale * 0.7)
+                  if scale >= 1.4 else _pixel(frame, x + px * scale, y + py * scale))
+        label = _classify(sample)
+        if label is None:
+            continue
+        if label != corner_vote:
+            return None
+
+    # Option 1 — shallow original-colour ring for insets 2–5, just inside the black border.
+    # A disagreeing *status* colour rejects only when the sample is clearly far from the
+    # corner colour (border blends of WAITING↔STOPPED otherwise false-trigger).
+    # Black / OOC cover against a coloured corner:
+    #   - nominal scale >= 1.9 (locator threshold 1.85): mid-edge 1.7u black rejects
+    #     (bf88620 semantics); also if all 3 shallow points on one side are black.
+    #   - any scale >= 1.0: >=4 black hits across sides (multi-side reinforcement).
+    # Below ~1.9, e=1.7 can land on the cell's own black border after resampling, so
+    # single-side / mid-edge black gates stay off there.
+    if scale >= 1.0:
+        e = 1.7
+        mid_edge = ((17, e), (17, 26 - e), (e, 13), (34 - e, 13))
+        shallow_sides = (((17, e), (6, e), (28, e)),
+                         ((17, 26 - e), (6, 26 - e), (28, 26 - e)),
+                         ((e, 13), (e, 5), (e, 21)),
+                         ((34 - e, 13), (34 - e, 5), (34 - e, 21)))
+        corner_color = np.asarray(STATUS_COLORS[corner_vote], dtype=float) if corner_vote != "OUTSIDE" else None
+        outside_hits = 0
+        for side in shallow_sides:
+            side_outside_hits = 0
+            for px, py in side:
+                sample = _pixel(frame, x + px * scale, y + py * scale)
+                label = _classify(sample)
+                if label is None or label == corner_vote:
+                    continue
+                if label == "OUTSIDE":
+                    if corner_vote != "OUTSIDE":
+                        outside_hits += 1
+                        side_outside_hits += 1
+                        if scale >= 1.85 and (px, py) in mid_edge:
+                            return None
+                    continue
+                if corner_color is not None:
+                    dist_corner = float(np.linalg.norm(sample.astype(float) - corner_color))
+                    # Border blends can classify as a neighbouring grey status.
+                    if dist_corner <= COLOR_TOLERANCE + 55:
+                        continue
+                return None
+            if scale >= 1.85 and side_outside_hits == 3:
+                return None
+        if outside_hits >= 4:
+            return None
+
+    if corner_vote == "OUTSIDE":
+        # Out-of-capacity cells are solid black: the centre and mid-edges must be black too,
+        # so a partial occluder cannot turn one into a status cell or back.
+        for px, py in ((17, 13), (17, 4), (17, 22), (4, 13), (30, 13)):
+            sample = _median_patch(frame, x + px * scale, y + py * scale, max(1, scale * 0.7))
+            if sample is None or float(np.linalg.norm(sample.astype(float))) > 35:
+                return None
+    return corner_vote
+
 
 
 def _marker_cells(frame, x0, y0, scale, origin):
