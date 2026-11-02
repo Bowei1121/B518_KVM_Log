@@ -96,5 +96,3 @@ def test_every_indicator_text_exists_in_english_and_chinese_with_exact_words():
     assert "請通知 TE 工程師檢查設定檔" in t("core_ind_check_config", "zh", path="P")
 
 
-# ---- bridge startup fallback ----------------------------------------------------------
-

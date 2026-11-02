@@ -314,7 +314,7 @@ class FakeCore:
               "connect_failed": "connect_failed", "cf": "connect_failed", "shutdown": "shutdown",
               "sd": "shutdown", "not_found": "not_found", "nf": "not_found"}
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 5000, device: str = "BT-01", station: str = "BT",
+    def __init__(self, host: str = "127.0.0.1", port: int = 5000, device: str = "BT-01", station: str = "BT",
                  channels: int = 4, finish_delay: float = 5.0, monitor_delay: float = 0.5,
                  result: str = "PASS", not_found_delay: float = 30.0, poll: float = 0.5,
                  log: Optional[Callable[[str], None]] = None, scenario: Optional[str] = None) -> None:
@@ -762,7 +762,7 @@ def _station_arg(value: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="模擬 Core（fake core）：讓 LabVIEW 沒有 KVM 也能測 Core Client")
-    p.add_argument("--host", default="0.0.0.0", help="監聽位址（預設 0.0.0.0，區網 LabVIEW 電腦可連）")
+    p.add_argument("--host", default="127.0.0.1", help="監聽位址（預設 127.0.0.1；跨機器測試可指定 0.0.0.0 或網卡位址）")
     p.add_argument("--port", type=int, default=5000, help="TCP port（預設 5000；0 = 系統指派）")
     p.add_argument("--device", default="BT-01", help="設備 ID（預設 BT-01）")
     p.add_argument("--station", default="BT", type=_station_arg,

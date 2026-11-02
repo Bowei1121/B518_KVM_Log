@@ -47,7 +47,7 @@ def load_scheduler_settings(path: Optional[Path] = None) -> Dict[str, Any]:
     """Interval (minutes) and red threshold (seconds); defaults when the file is missing or invalid."""
     settings = dict(DEFAULT_SETTINGS)
     try:
-        data = json.loads(Path(path or scheduler_settings_path()).read_text(encoding="utf-8"))
+        data = json.loads(Path(path or scheduler_settings_path()).read_text(encoding="utf-8-sig"))
         for key in settings:
             if isinstance(data.get(key), (int, float)) and data[key] > 0:
                 settings[key] = data[key]
@@ -96,6 +96,9 @@ class CoreIndicator:
         """The bridge started Core (fallback or Settings "Restart Core"): back to "starting"."""
         self.launch_at = now
         self.launch_wall = wall
+        # A bridge-started Core is not an automatic restart: forget the old process.
+        self.last_uptime = None
+        self.was_down = False
 
     def observe(self, ping_ok: bool, uptime: Optional[float], now: float, wall: datetime.datetime,
                 status_file: Optional[Dict[str, Any]] = None) -> Indicator:

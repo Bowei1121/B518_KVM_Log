@@ -161,3 +161,16 @@ def test_core_wins_race_between_initial_ping_and_port_check(monkeypatch):
     monkeypatch.setattr(core, "send_tcp_command", lambda *a, **k: next(responses))
     monkeypatch.setattr(core, "is_port_free", lambda *a, **k: False)
     assert core.start_core_daemon()["status"] == "already_running"
+
+
+def test_manual_restart_is_not_reported_as_automatic_restart():
+    c = make()
+    c.observe(True, 500, 100.0, wall(100))
+    c.mark_launch(101.0, wall(101))
+    assert c.observe(True, 2, 103.0, wall(103)).small_key is None
+
+
+def test_settings_file_with_utf8_bom_is_read(tmp_path):
+    f = tmp_path / "s.json"
+    f.write_bytes(b"\xef\xbb\xbf" + json.dumps({"interval_minutes": 3, "red_threshold_seconds": 400}).encode())
+    assert ci.load_scheduler_settings(f) == {"interval_minutes": 3, "red_threshold_seconds": 400}
