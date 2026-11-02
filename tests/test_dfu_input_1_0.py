@@ -128,6 +128,7 @@ def test_manual_stop_complete_accepts_input_only_after_the_round_is_settled(rig)
     """
     srv, kvm = rig
     terminal = ["STOPPED", "PASS", "FAIL", "NOTEST"]
+    srv._slot("DFU-01").round.note_start()  # This round began after Core started.
     kvm.log_state = "manual_stop_complete"
     kvm.log_statuses = terminal
 
@@ -164,6 +165,7 @@ def _cmd(srv, device, cmd, extra, req_id):
 
 def test_complete_round_not_yet_taken_refuses_input(rig):
     srv, kvm = rig
+    srv._slot("DFU-01").round.note_start()  # This round began after Core started.
     kvm.log_state = "complete"
 
     resp = _input(srv, "DFU-01", [{"slot": 1, "sn": "SN1"}])

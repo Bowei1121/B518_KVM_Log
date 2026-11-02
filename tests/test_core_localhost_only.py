@@ -140,7 +140,8 @@ def test_ui_settings_restart_uses_localhost(monkeypatch):
     from types import SimpleNamespace
     calls = []
     monkeypatch.setattr(core_daemon, "restart_core_daemon", lambda **kw: calls.append(kw) or {"status": "ok"})
-    ui = SimpleNamespace(client=SimpleNamespace(host="192.0.2.1", port=5000))
+    ui = SimpleNamespace(client=SimpleNamespace(host="192.0.2.1", port=5000),
+                         _core_ind=SimpleNamespace(mark_launch=lambda *args: None), _clock=lambda: 0)
     assert ui_app.AtlasUI._restart_core_daemon(ui)["status"] == "ok"
     assert calls[0]["host"] == "127.0.0.1"
 

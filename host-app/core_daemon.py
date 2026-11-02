@@ -510,23 +510,23 @@ def start_core_daemon(
         return {"status": "error", "message": str(exc)}
     effective_log_file = Path(log_file) if log_file else default_log_file()
     effective_pid_file = Path(pid_file) if pid_file else default_pid_file()
-    # Check if already running
+    # A healthy Core may have been started by another launcher without our PID file.
     existing_pid = read_pid_file(effective_pid_file)
-    if existing_pid and is_pid_alive(existing_pid):
-        try:
-            resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
-            if resp.get("status") == "ok":
-                return {
-                    "status": "already_running",
-                    "pid": existing_pid,
-                    "host": host,
-                    "port": port,
-                    "message": f"Core daemon is already active (PID: {existing_pid}, Port: {port})",
-                }
-        except Exception:
-            pass
+    try:
+        resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
+        if resp.get("status") == "ok" and resp.get("data", {}).get("pong") is True:
+            return {"status": "already_running", "pid": existing_pid, "host": host,
+                    "port": port, "message": "Core daemon is already active"}
+    except Exception:
+        pass
 
     if not is_port_free(port, host):
+        try:
+            resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
+            if resp.get("status") == "ok" and resp.get("data", {}).get("pong") is True:
+                return {"status": "already_running", "pid": read_pid_file(effective_pid_file), "host": host, "port": port}
+        except Exception:
+            pass
         raise RuntimeError(f"Cannot start Core Daemon: Port {port} is already in use.")
 
     cmd = core_launch_command([
@@ -570,6 +570,12 @@ def start_core_daemon(
 
     if not started:
         if proc.poll() is not None:
+            try:
+                resp = send_tcp_command("ping", host=host, port=port, timeout=1.0)
+                if resp.get("status") == "ok" and resp.get("data", {}).get("pong") is True:
+                    return {"status": "already_running", "pid": read_pid_file(effective_pid_file), "host": host, "port": port}
+            except Exception:
+                pass
             detail = ""
             try:
                 data = json.loads(Path(status_file or default_status_file()).read_text(encoding="utf-8"))
@@ -591,6 +597,30 @@ def start_core_daemon(
         "log_file": str(effective_log_file),
         "message": f"Core daemon started successfully (PID: {recorded_pid}, Port: {port}).",
     }
+
+
+def ensure_core_running(host: str = "127.0.0.1", port: int = 5000, ping=None, start=None, **start_kwargs) -> str:
+    """Bridge startup fallback: ping Core and start it only when nobody answers.
+
+    Returns ``"running"`` (Core answered, nothing started), ``"started"`` (we launched it) or
+    ``"failed"``. If the scheduler launches Core at the same moment, only one process can bind the
+    port; ``start_core_daemon`` and ``Core.exe run`` treat "port taken and answers ping" as success.
+    """
+    ping = ping or (lambda: send_tcp_command("ping", host=host, port=port, timeout=1.0))
+    start = start or start_core_daemon
+    try:
+        if ping().get("data", {}).get("pong") is True:
+            return "running"
+    except Exception:
+        pass
+    try:
+        result = start(host=host, port=port, **start_kwargs)
+    except Exception:
+        logger.exception("Core fallback start failed", extra={"zh": "備援帶起 Core 失敗"})
+        return "failed"
+    if result.get("status") == "already_running":
+        return "running"
+    return "started" if result.get("status") == "ok" else "failed"
 
 
 def restart_core_daemon(

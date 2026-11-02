@@ -417,7 +417,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
 | `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
 | `monitor_not_ready` | error | `check_start`／`check_finish` 沒有本輪開始請求（含交付後簽章已變、又沒有新一輪信號）；或 `start_test` 時不是監控中 | 先完成本輪的 `monitor_start` |
-| `log_solution_not_visible` | error | `check_start`／`check_finish` 連續 30 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 暫停，不得判產品 FAIL |
+| `log_solution_not_visible` | error | `check_start`／`check_finish` 連續 30 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 暫停，復位後整輪 NG，交 TE 重測 |
 | `manual_verification_required` | error | 有本輪開始請求，但沒看到本次監控中，畫面卻已可交付（準備逾時、或快捷鍵後直接人工停止） | 不交付、不自動重測；暫停並請人員核對。此回覆清除本輪開始請求 |
 | `round_lost` | error | 本輪已見監控中之後 Log Solution 回到待命 | 本輪結果已無法取得，暫停 |
 | `timeout` | timeout | `check_start`／`check_finish`／`inspect` 長輪詢逾時 | 依 `data.state` 決定再查或交人工 |
@@ -429,7 +429,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 ## 7. 連線中斷
 
 - LabVIEW 在長輪詢中斷線時，Core 取消該請求並釋放設備鎖，不回覆。本輪開始請求留在 Core 存活期間，不因這次逾時或斷線清除。
-- 重連後重新送原指令。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在簽章未變時，重送 `check_finish` 得到 `already_taken` 並附原結果；此時本輪開始請求已因交付結清，不需仍在。KVM 重連（stream_id 改變）不影響這個重問：交付紀錄保留，但重連後須重新見到 Monitoring 才能取用新結果，重連前已 armed 而尚未交付的輪次，取得結果時仍回 `manual_verification_required`。範圍限同一 Core 行程內。
+- 重連後測試進行中送 `check_finish`，不重送 `start_test`。結果重傳、ACK 與重啟恢復屬 1.1。同一輪在簽章未變時，重送 `check_finish` 得到 `already_taken` 並附原結果；此時本輪開始請求已因交付結清，不需仍在。KVM 重連（stream_id 改變）不影響這個重問：交付紀錄保留，但重連後須重新見到 Monitoring 才能取用新結果，重連前已 armed 而尚未交付的輪次，取得結果時仍回 `manual_verification_required`。範圍限同一 Core 行程內。
 
 ## 8. LabVIEW typedef 清單（建議）
 
@@ -635,3 +635,12 @@ Log Solution 仍在準備中時：
 - **FCT 推入前訊號的現場時序**：決定 Log Solution FCT profile 的 start 期限（建議先設 120 秒）。
 - **JetKVM 靜態 IP**：正式版是否提供靜態 IP 設定，待現場確認（見 `docs/DEPLOYMENT.md`）。
 - **協定 1.1**：輪次 UUID、ACK、重啟後重傳。不在本次範圍。
+
+
+## LabVIEW 初始化、重連與 Core 重啟（#168）
+
+初始化先 ping `127.0.0.1:5000`，每 5 秒一次、最多 90 秒；期間顯示橘色 △「等待 Core 啟動（已等 N 秒）」。斷線後同樣每 5 秒重連、最多 90 秒，顯示橘色 △「Core 連線中斷，自動重連中（已等 N 秒）」。90 秒仍不通顯示紅色 ×「Core 沒有回應，請通知 TE 工程師檢查上位機」。
+
+不等待 `devices[].connected = true`；根據 `kvm_connect_failed` 與 `devices[].connect_failed` 處理連線異常。重連後若測試進行中，送 `check_finish`，不重送 `start_test`。不確定進度可送 `check_start`；它可能回 `taken`，須依首次交付處理。
+
+`core_restarted`：比較 `status.core_uptime_sec`，秒數變小表示 Core 重開；記憶體內的本輪開始與交付記錄已消失，`check_start`／`check_finish` 回 `monitor_not_ready`。重開期間的輪次整輪 NG，在 HMI 交人工確認，由 TE 重測，不自動重新開測。

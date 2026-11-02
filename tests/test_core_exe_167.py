@@ -162,7 +162,7 @@ def test_failed_start_preserves_running_core_status(tmp_path):
         before = json.loads(status.read_text(encoding='utf-8'))
         assert before['state'] == 'running' and before['pid'] == proc.pid
         result = subprocess.run([sys.executable, core.__file__, 'start', *common, '--pid-file', str(tmp_path / 'pid2'), '--timeout', '5'], capture_output=True, timeout=20)
-        assert result.returncode != 0
+        assert result.returncode == 0  # A healthy existing Core makes a concurrent start successful.
         after = json.loads(status.read_text(encoding='utf-8'))
         assert after['state'] == 'running' and after['pid'] == proc.pid
         assert core.send_tcp_command('ping', port=port, timeout=1)['data']['pong']

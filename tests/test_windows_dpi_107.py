@@ -109,13 +109,16 @@ def test_main_declares_dpi_awareness_before_creating_the_tk_root(monkeypatch):
         def __init__(self, **_kw):
             calls.append("tk_root")
 
+        def start_core_fallback(self):
+            calls.append("fallback")
+
         def mainloop(self):
             calls.append("mainloop")
 
     monkeypatch.setattr(ui_app, "AtlasUI", FakeUI)
     monkeypatch.setattr(sys, "argv", ["ui_app"])
     ui_app.main()
-    assert calls == ["dpi", "tk_root", "mainloop"]
+    assert calls == ["dpi", "tk_root", "fallback", "mainloop"]
     assert ui_app._DPI_AWARENESS_MODE == "shcore"
 
 

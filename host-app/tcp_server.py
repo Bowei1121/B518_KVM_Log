@@ -679,7 +679,7 @@ class TcpJsonServer:
         # complete and manual_stop_complete are both READY. Input waits until this round
         # was delivered or manual_verification_required was already returned.
         if observation.finished:
-            if self._slot(entry.device_id).round.released_for_input():
+            if self._slot(entry.device_id).round.finished_screen_allows_input():
                 return None
             return "log_solution_busy", "round result not yet taken"
         return "log_solution_busy", f"Log Solution state is {observation.state.value}"
