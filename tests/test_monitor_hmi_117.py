@@ -259,7 +259,9 @@ def test_enlarging_the_window_enlarges_the_live_view(make_ui):
 
 def test_full_preview_is_kept_when_the_usable_height_is_enough(make_ui):
     app = make_ui((1920, 1080), 4 / 3)
-    assert int(app.canvas_preview.cget("height")) == 270
+    # Height alone allows 270; width-fit to ≤960 may still shrink to PREVIEW_MIN_SHARE (M1).
+    height = int(app.canvas_preview.cget("height"))
+    assert round(270 * ui_app.PREVIEW_MIN_SHARE) <= height <= 270
 
 
 def test_language_switch_never_changes_the_window_geometry(make_ui, monkeypatch):
@@ -552,11 +554,18 @@ def test_long_results_keep_every_widget_in_place_across_a_language_switch(make_u
     assert _cut_texts(app) == []
 
 
-def test_open_geometry_caps_large_content_at_960_and_keeps_top_right():
+def test_open_geometry_prefers_960_when_content_is_smaller():
+    area = placement.Rect(0, 0, 2880, 1728)
+    frame = placement.Frame(8, 8, 31, 8)
+    width, _height, _x, _y = _parse(placement.open_geometry(area, frame, (2880, 1800), (800, 500)))
+    assert width == 960
+
+
+def test_open_geometry_never_narrower_than_content_and_keeps_top_right():
     area = placement.Rect(0, 0, 1920, 1032)
     frame = placement.Frame(8, 8, 31, 8)
     width, height, x, y = _parse(placement.open_geometry(area, frame, (1920, 1080), (1400, 2000)))
-    assert width == 960
+    assert width == 1400
     assert x == 1920 - width - frame.left - frame.right
     assert y == 0
     assert height == area.height - frame.top - frame.bottom

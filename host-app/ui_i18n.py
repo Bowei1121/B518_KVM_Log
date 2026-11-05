@@ -105,6 +105,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "btn_live_stop": "⏹ Stop",
         "tip_live": "Keep playing the machine's picture like a monitor. Press again to stop.",
         "btn_popout": "⧉ Pop-out window",
+        "btn_popout_short": "⧉",
+        "btn_live_short": "▶",
         "tip_popout": "Open the picture in another large window, handy for a second screen.",
         "preview_info": "Size: {w}x{h} | Time: {time}",
         # ---- manual check and tools
@@ -409,6 +411,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "btn_live_stop": "⏹ 停止",
         "tip_live": "持續播放機台畫面，像看監視器一樣。再按一次就停止。",
         "btn_popout": "⧉ 放大視窗",
+        "btn_popout_short": "⧉",
+        "btn_live_short": "▶",
         "tip_popout": "把畫面開在另一個大視窗，方便放到第二個螢幕上看。",
         "preview_info": "解析度：{w}x{h} | 時間：{time}",
         # ---- manual check and tools

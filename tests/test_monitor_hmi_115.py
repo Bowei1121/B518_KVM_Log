@@ -346,21 +346,31 @@ def test_window_opens_at_85_percent_height_and_half_width(make_ui, monkeypatch):
     app = make_ui((2880, 1800), 4 / 3)
     width, height = (int(v) for v in requested[-1].split("+")[0].split("x"))
     assert height == max(app.minsize()[1], 1530)  # 85% of 1800, or the content if that is taller
-    assert width == max(app.minsize()[0], 1440)  # 50% of 2880, or the content if that is wider
+    assert width == max(app.minsize()[0], 960)  # preferred width is capped at 960, or the content if that is wider
 
 
 def test_window_is_never_narrower_than_its_content(make_ui, monkeypatch):
     requested = _spy_geometry(monkeypatch)
     app = make_ui((2880, 1800), 8 / 3)
     width, height = (int(v) for v in requested[-1].split("+")[0].split("x"))
-    assert width == max(app.minsize()[0], 1440)
+    assert width >= app.minsize()[0]
+    assert width >= app.winfo_reqwidth()  # never narrower than content (M1)
+    assert width == max(app.winfo_reqwidth(), 960)  # prefer 960 only when content fits; high DPI opens at content
     assert height == max(app.minsize()[1], 1530)
 
 
+def test_1920_at_100_percent_opens_within_960_without_cutting(make_ui):
+    app = make_ui((1920, 1080), 4 / 3)
+    app.update_idletasks()
+    assert app.winfo_width() <= 960
+    assert app.winfo_width() >= app.winfo_reqwidth()
+
+
 def test_live_preview_scales_with_dpi_and_never_shrinks_below_its_floor(make_ui):
-    # Issue #117 decision: when the usable height is short, the live view may shrink to PREVIEW_MIN_SHARE (70%) of its
-    # DPI size and no further, so at 200% the floor is 672×378. The bound is the shared constant, not a looser number.
-    assert make_ui((2880, 1800), 4 / 3).canvas_preview.winfo_reqwidth() == 480
+    # Issue #117 / M1: the live view may shrink to PREVIEW_MIN_SHARE (70%) for height or to keep content ≤960, and no
+    # further. At 100% that floor is 336; at 200% it is 672×378. The bound is the shared constant, not a looser number.
+    w100 = make_ui((2880, 1800), 4 / 3).canvas_preview.winfo_reqwidth()
+    assert round(480 * ui_app.PREVIEW_MIN_SHARE) <= w100 <= 480
     preview = make_ui((2880, 1800), 8 / 3).canvas_preview
     width, height = preview.winfo_reqwidth(), preview.winfo_reqheight()
     assert round(960 * ui_app.PREVIEW_MIN_SHARE) <= width <= 960

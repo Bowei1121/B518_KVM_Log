@@ -84,12 +84,14 @@ def usable_client_size(area: Rect, frame: Frame) -> Tuple[int, int]:
 def open_geometry(area: Rect, frame: Frame, screen: Tuple[int, int], content: Tuple[int, int]) -> str:
     """Tk ``geometry`` string for the opening window: ``WxH+X+Y`` with the outer frame flush top-right.
 
-    Width is max(content, 50% of the screen) capped at 960 pixels, height is max(content, 85% of the screen), each capped to the
-    usable client size, so the window never leaves the work area. ``content`` is the measured minimum.
+    Width prefers min(50% of the screen, 960) but is never narrower than ``content`` (a cut-off window is worse than a
+    wide one); height is max(content, 85% of the screen). Both are capped to the usable client size, so the window
+    never leaves the work area. ``content`` is the measured minimum.
     """
     screen_w, screen_h = screen
     max_w, max_h = usable_client_size(area, frame)
-    width = min(max(content[0], int(screen_w * 0.5)), 960, max_w)
+    preferred = min(int(screen_w * 0.5), 960)
+    width = min(max(content[0], preferred), max_w)
     height = min(max(content[1], int(screen_h * 0.85)), max_h)
     outer_w = width + frame.left + frame.right
     x = area.x + area.width - outer_w

@@ -37,4 +37,4 @@ def test_connection_failure_copy_and_core_copy():
 def test_open_geometry_caps_width_and_preserves_top_right():
     area = placement.Rect(0, 0, 1920, 1032)
     frame = placement.Frame(8, 8, 31, 8)
-    assert placement.open_geometry(area, frame, (1920, 1080), (1400, 2000)) == "960x993+944+0"
+    assert placement.open_geometry(area, frame, (1920, 1080), (1400, 2000)) == "1400x993+504+0"  # never narrower than content (M1)
