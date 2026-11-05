@@ -195,7 +195,7 @@ def test_core_down_turns_the_failure_row_to_offline_and_back(ui):
 def test_banner_shows_the_connection_failure(ui):
     feed(ui, failed())
     assert ui.lbl_alarm_main.cget("text") == "■✕ DFU-07 Connection failure"
-    assert ui.lbl_alarm_l2.cget("text") == ""
+    assert ui.lbl_alarm_l2.cget("text") == "Check JetKVM power and network cable"
     icon = ui.alarm_icon
     assert [icon.itemcget(i, "text") for i in icon.find_all() if icon.type(i) == "text"] == ["✕"]
     assert any(icon.type(i) == "rectangle" for i in icon.find_all())

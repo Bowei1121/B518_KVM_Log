@@ -87,3 +87,7 @@ ATE 設備只有 SFC 網路，Log App 更新由 TE 人工搬入；上位機工�
 顯示契約 1.3 另以 header 的兩格排數標記明確區分一排／兩排。`check_finish` 拒絕缺少排數標記的 1.0 畫面，避免把不可讀的第二排當成單排完成。新本機 Tk 容量回放可用 `tools/verify_ticket16_layout_frames.py --app-evidence <App-layout-evidence> --output <report.json>` 重現，輸入為未分類的 BGR 像素。
 
 Windows 打包產物 `AtlasKVM` 資料夾同時包含 `AtlasKVM.exe` 與無主控台的 `Core.exe`。Core 只監聽 `127.0.0.1:5000`；打包版的 log、PID 與狀態分別位於 `%USERPROFILE%\Documents\logs\core_service.log`、`%USERPROFILE%\Documents\logs\core_service.pid`、`%USERPROFILE%\Documents\logs\core_status.json`（繁體中文 Windows 顯示為 `文件\logs`）。
+
+開啟 AtlasKVM 時，若 Core 尚未運作，程式會自動嘗試啟動 Core 作為備援。
+Core 指示燈不可點擊；🔄 僅重新連線 TCP，需重啟時請至設定選擇「重啟 Core」。
+部署與操作詳見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。

@@ -41,7 +41,7 @@ def limit(n):
 def test_one_device_main_line_and_hint(lang, expected):
     ui_i18n.set_language(lang)
     assert banner_lines(frozen("DFU-05"), [], [], always, always) == expected
-    assert banner_lines(frozen("DFU-05"), [], [], limit(8), always)[0] == "▲ DFU-05"  # main line never cut
+    assert banner_lines(frozen("DFU-05"), [], [], limit(8), always)[0] == "▲ DFU-0…"  # truncated on a glyph boundary
 
 
 @pytest.mark.parametrize("lang,expected", [
@@ -64,7 +64,7 @@ def test_list_shortens_to_ids_then_drops_ids_with_a_count(lang, ids_only, two, m
     assert len(full) > len(ids_only)
     assert banner_lines(abnormal, [], [], always, limit(len(ids_only)))[1] == ids_only
     assert banner_lines(abnormal, [], [], always, limit(len(two + GAP + more) + 1))[1] == two + GAP + more
-    assert banner_lines(abnormal, [], [], always, never)[1] == ui_i18n.t("alarm_more", n=5)  # nothing fits: shortest
+    assert banner_lines(abnormal, [], [], always, never)[1] == ""
 
 
 def test_hints_shorten_to_a_count_of_the_rest(monkeypatch):
@@ -76,7 +76,7 @@ def test_hints_shorten_to_a_count_of_the_rest(monkeypatch):
         hint = f"▲ {t('alarm_hint_frozen')}"
         assert banner_lines(abnormal, [], [], always, always)[2] == hint + GAP + f"■ {t('alarm_hint_frozen')}"
         assert banner_lines(abnormal, [], [], always, limit(len(hint + GAP + more)))[2] == hint + GAP + more
-        assert banner_lines(abnormal, [], [], always, never)[2] == hint + GAP + more  # the first hint is never reduced to the count alone
+        assert banner_lines(abnormal, [], [], always, never)[2] == ""
 
 
 @pytest.mark.parametrize("lang,down,up,both,count", [
@@ -103,7 +103,7 @@ def test_scroll_prompt_forms(lang, down, up, both, count):
     assert third(["DFU-05"], ["BT-02"], limit(len(full_both + tail) - 1)) == both + tail
     assert third(["DFU-05"], ["BT-02"], limit(len(both + tail) - 1)) == count + tail
     short = ui_i18n.t("alarm_scroll_short", a=1, b=1)
-    assert third(["DFU-05"], ["BT-02"], never) == short + tail  # the shortest form, never cut
+    assert third(["DFU-05"], ["BT-02"], never) == ""
 
 
 def test_scroll_prompt_for_several_ids_on_one_side():
@@ -147,7 +147,7 @@ def test_hint_stays_whole_while_the_scroll_prompt_shortens_first(lang):
     assert third(limit(len(full + GAP + hint))) == full + GAP + hint
     assert third(limit(len(full + GAP + hint) - 1)) == both + GAP + hint  # the "▲▼ ids" form + hint still fits
     assert third(limit(len(both + GAP + hint) - 1)) == count + GAP + hint
-    assert third(never) == ui_i18n.t("alarm_scroll_short", a=2, b=2) + GAP + hint
+    assert third(never) == ""
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
@@ -156,7 +156,7 @@ def test_never_fits_gives_the_shortest_prompt_and_the_whole_first_hint(lang):
     short = ui_i18n.t("alarm_scroll_short", a=1, b=1)
     hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
     two = frozen("DFU-05", "BT-02")
-    assert banner_lines(two, ["DFU-05"], ["BT-02"], always, never)[2] == short + GAP + hint
+    assert banner_lines(two, ["DFU-05"], ["BT-02"], always, never)[2] == ""
     if lang == "zh":
         assert short + GAP + hint == "▲ 上方 1 台　▼ 下方 1 台　▲ 請檢查 JetKVM"
 
@@ -179,9 +179,9 @@ def test_hints_shorten_only_after_every_scroll_prompt_failed_and_keep_the_first_
     assert third(limit(shortest_whole)).endswith(GAP + both_hints)
     shrunk = third(limit(shortest_whole - 1))
     assert shrunk.endswith(GAP + hint + GAP + more) and shrunk[:-len(GAP + hint + GAP + more)] in prompts
-    assert third(never) == prompts[-1] + GAP + hint + GAP + more
+    assert third(never) == ""
     # no scroll prompt: the first hint is likewise kept whole
-    assert banner_lines(abnormal, [], [], always, never)[2] == hint + GAP + more
+    assert banner_lines(abnormal, [], [], always, never)[2] == ""
 
 
 # --- one side / both sides: the scroll prompt shrinks in four steps while the hint stays whole (review item 1) ------
@@ -222,7 +222,7 @@ def test_one_side_prompt_steps_full_then_first_few_and_count_then_count_then_sho
         assert _one_side_third(side, ids, limit(length)) == first + GAP + hint
         reached += first == variant
     assert reached >= 1 + 3 + 2  # full, several first-few variants, count and short are all hit exactly
-    assert _one_side_third(side, ids, never) == variants[-1] + GAP + hint  # never fits: the shortest + whole hint
+    assert _one_side_third(side, ids, never) == ""
     assert _one_side_third(side, ids, always) == variants[0] + GAP + hint
 
 
@@ -242,22 +242,23 @@ def test_one_side_zh_exact_strings(side, ids):
     assert [got[0], got[6], got[7], got[8], got[9]] == expected
     assert _one_side_third(side, ids, limit(len(expected[1] + hint))) == expected[1] + hint
     assert _one_side_third(side, ids, limit(len(expected[3] + hint))) == expected[3] + hint
-    assert _one_side_third(side, ids, never) == expected[4] + hint
+    assert _one_side_third(side, ids, never) == ""
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
 @pytest.mark.parametrize("side", ["up", "down"])
-def test_single_off_screen_device_skips_the_first_few_variant(lang, side):
+def test_single_off_screen_device_uses_fitting_variant_or_truncates(lang, side):
     ui_i18n.set_language(lang)
     hint = "▲ " + ui_i18n.t("alarm_hint_frozen")
     variants = _one_side_variants(side, ["DFU-05"])
     assert len(variants) == 3  # full, count, short
     lengths = [len(v + GAP + hint) for v in variants]
     for length in (lengths[1], lengths[2], lengths[1] - 1, lengths[2] - 1):  # first fit in rule order: 1 -> 3 -> 4
-        first = next((v for v in variants if len(v + GAP + hint) <= length), variants[-1])
-        assert _one_side_third(side, ["DFU-05"], limit(length)) == first + GAP + hint
+        first = next((v + GAP + hint for v in variants if len(v + GAP + hint) <= length), None)
+        expected = first if first is not None else alarm_banner.truncate(variants[-1] + GAP + hint, limit(length))
+        assert _one_side_third(side, ["DFU-05"], limit(length)) == expected
     assert _one_side_third(side, ["DFU-05"], limit(lengths[2])) in (variants[0] + GAP + hint, variants[2] + GAP + hint)
-    assert _one_side_third(side, ["DFU-05"], never) == variants[2] + GAP + hint
+    assert _one_side_third(side, ["DFU-05"], never) == ""
 
 
 @pytest.mark.parametrize("lang", ["en", "zh"])
@@ -279,7 +280,7 @@ def test_both_sides_reach_the_short_form_with_the_whole_hint(lang):
         first = next(v for v in candidates if len(v + GAP + hint) <= length)
         assert third(limit(length)) == first + GAP + hint
     assert third(limit(len(short + GAP + hint))) in (count + GAP + hint, short + GAP + hint)  # reaches the 4th form
-    assert third(never) == short + GAP + hint
+    assert third(never) == ""
     assert short == ("▲ 上方 2 台　▼ 下方 6 台" if lang == "zh" else "▲ 2 above　▼ 6 below")
 
 
@@ -509,12 +510,15 @@ def test_banner_logs_once_per_event(ui, monkeypatch):
     assert len(lines()) == 3
 
 
-def test_core_disconnect_hides_the_banner(ui):
+def test_core_disconnect_shows_core_not_started_banner(ui):
     show(ui, ("BT-02",))
     assert ui.alarm_banner.winfo_ismapped()
     ui._update_status_ui({"status": "error"})
     ui.update()
-    assert not ui.alarm_banner.winfo_ismapped()
+    assert ui.alarm_banner.winfo_ismapped()
+    assert ui.alarm_banner.cget("bg") == "#37474F"
+    assert ui.alarm_bar.cget("bg") == "#FFB300"
+    assert ui.lbl_alarm_main.cget("text") == "Core not started"
 
 
 def test_two_way_prompt_with_real_font_width_keeps_the_hint_whole(ui):
@@ -556,7 +560,7 @@ def test_core_disconnect_and_reconnect_do_not_log_cleared_or_shown_again(ui, mon
     show(ui, ("BT-02",))
     assert lines() == [SHOWN_1]
     _core_down(ui)
-    assert not ui.alarm_banner.winfo_ismapped()  # cannot see status: hidden, but not "cleared"
+    assert ui.alarm_banner.winfo_ismapped()  # Core outage is displayed without clearing the alarm
     assert lines() == [SHOWN_1]
     _core_down(ui)
     assert lines() == [SHOWN_1]
@@ -735,3 +739,30 @@ def test_banner_click_selects_the_heartbeat_device_first(ui):
     ui.lbl_alarm_main.event_generate("<Button-1>", x=5, y=5)
     ui.update()
     assert ui.var_sel_device.get() == "DFU-04"
+
+
+def test_banner_single_line_survives_width_fix_and_disconnect_hides_raw_error(ui):
+    from ui_widgets import fix_text_widths
+    show(ui, ("BT-02",))
+    fix_text_widths(ui, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
+    for label in (ui.lbl_alarm_main, ui.lbl_alarm_l2, ui.lbl_alarm_l3):
+        assert int(label.cget("wraplength")) == 0
+    ui_i18n.set_language("zh")
+    try:
+        ui._update_status_ui({"status": "error", "message": "Snapshot failed: ws://192.168.1.2/path"})
+        ui.update()
+        assert ui.alarm_banner.cget("bg") == "#37474F"
+        assert ui.alarm_bar.cget("bg") == "#FFB300"
+        assert ui.alarm_bar.winfo_ismapped()
+        assert labels(ui)[:2] == ["Core 未啟動", "請按「重新連線」；仍失敗請通知 TE"]
+        assert all("192.168" not in line and "Snapshot" not in line and "ws://" not in line for line in labels(ui))
+        show(ui, ("BT-02",))
+        assert ui.alarm_banner.cget("bg") == RED
+        assert not ui.alarm_bar.winfo_ismapped()
+    finally:
+        ui_i18n.set_language("en")
+
+
+def test_truncate_preserves_combining_and_joined_glyphs():
+    assert alarm_banner.truncate("A e\u0301 xyz", lambda s: len(s) <= 4) == "A…"
+    assert alarm_banner.truncate("A 👩\u200d💻 xyz", lambda s: len(s) <= 5) == "A…"

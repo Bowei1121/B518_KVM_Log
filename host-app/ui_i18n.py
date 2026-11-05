@@ -305,6 +305,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} devices abnormal",
         "alarm_connect_failed": "Connection failure",
+        "alarm_hint_connect_failed": "Check JetKVM power and network cable",
+        "alarm_core_down": "Core not started",
+        "alarm_core_down_hint": "Press Reconnect; if it fails, call TE",
         "alarm_hint_frozen": "Check JetKVM",
         "alarm_hint_heartbeat": "Check test PC and Log Solution",
         "alarm_hint_heartbeat_not_found": "Check Log Solution window is visible",
@@ -606,6 +609,9 @@ STRINGS: Dict[str, Dict[str, str]] = {
         # Alarm banner (spec v5.3 §13, §14.4, §14.12; issue #127)
         "alarm_devices": "{n} 台設備異常",
         "alarm_connect_failed": "連線失敗異常",
+        "alarm_hint_connect_failed": "檢查 JetKVM 電源與網路線",
+        "alarm_core_down": "Core 未啟動",
+        "alarm_core_down_hint": "請按「重新連線」；仍失敗請通知 TE",
         "alarm_hint_frozen": "請檢查 JetKVM",
         "alarm_hint_heartbeat": "請檢查測試電腦和 Log Solution",
         "alarm_hint_heartbeat_not_found": "請確認 Log Solution 視窗沒有被遮住",

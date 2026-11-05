@@ -400,7 +400,7 @@ class MatchResultsWindow(_BaseToplevel):
         wheel_scroll.install(self)
         self.catalog = catalog
         bind(self, "match_title", option="title")
-        self.geometry("980x700")
+        self.geometry("960x700")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
         apply_window_icon(self)
@@ -960,7 +960,7 @@ class AtlasUI(_BaseTk):
         frame = frame_size()
         max_w, max_h = usable_client_size(area, frame)
         width, height = self._fit_preview_to(max_h)
-        self.minsize(min(width, max_w), min(height, max_h))
+        self.minsize(min(width, 960, max_w), min(height, max_h))
         geometry = open_geometry(area, frame, (self.winfo_screenwidth(), self.winfo_screenheight()), (width, height))
         self.geometry(geometry)
         self._append_log(
@@ -1111,14 +1111,18 @@ class AtlasUI(_BaseTk):
         self._banner_line_font = tkfont.Font(root=self, family=family, size=-20, weight="bold")
         banner = self.alarm_banner = tk.Frame(self, bg=ALARM_RED, height=BANNER_H)
         banner.pack_propagate(False)
+        self.alarm_bar = tk.Frame(banner, bg="#FFB300", width=8)
         self.alarm_icon = tk.Canvas(banner, width=BANNER_ICON, height=BANNER_ICON, bg=ALARM_RED, highlightthickness=0)
         self.alarm_icon.pack(side="left", padx=(BANNER_PAD, BANNER_GAP))
-        text = tk.Frame(banner, bg=ALARM_RED)
-        text.pack(side="left", anchor="w")
+        text = self.alarm_text = tk.Frame(banner, bg=ALARM_RED)
+        text.pack(side="left", anchor="w", fill="x", expand=True)
         options = dict(bg=ALARM_RED, fg="#ffffff", anchor="w", bd=0, padx=0, pady=0)
         self.lbl_alarm_main = tk.Label(text, font=self._banner_main_font, **options)
         self.lbl_alarm_l2 = tk.Label(text, font=self._banner_line_font, **options)
         self.lbl_alarm_l3 = tk.Label(text, font=self._banner_line_font, **options)
+        for label in (self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
+            label._banner_single_line = True
+            label.configure(wraplength=0)
         self.lbl_alarm_main.pack(anchor="w")
         self.lbl_alarm_l2.pack(anchor="w")
         for widget in (banner, self.alarm_icon, text, self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
@@ -1155,26 +1159,36 @@ class AtlasUI(_BaseTk):
         if self._service_ok is not False and len(abnormal) != self._banner_count:  # one Log line per event
             self._banner_count = len(abnormal)
             self._log_key("log_alarm_shown" if abnormal else "log_alarm_cleared", n=len(abnormal))
-        if not abnormal:
+        core_down = self._service_ok is False
+        if not abnormal and not core_down:
             self._banner_key = None
             if banner.winfo_manager():
                 banner.pack_forget()
             return
         if not banner.winfo_manager():
             banner.pack(fill="x", after=self.top_frame)
-        kinds = [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
+        kinds = [] if core_down else [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
         shapes = alarm_banner.shapes(kinds)
-        width = self._banner_text_width(len(shapes))
+        width = max(0, self._banner_text_width(1 if core_down else len(shapes)) - (8 if core_down else 0))
         above, below = self._alarm_off_screen
-        key = (tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
+        key = (core_down, tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
         if key == self._banner_key:
             return
         self._banner_key = key
         self._banner_redraws += 1
-        lines = alarm_banner.banner_lines(
-            abnormal, above, below,
-            lambda text: self._banner_main_font.measure(text) <= width,
-            lambda text: self._banner_line_font.measure(text) <= width)
+        bg = "#37474F" if core_down else ALARM_RED
+        for widget in (banner, self.alarm_icon, self.alarm_text, self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
+            widget.configure(bg=bg)
+        if core_down:
+            self.alarm_bar.pack(side="left", fill="y", before=self.alarm_icon)
+            lines = (alarm_banner.truncate(t("alarm_core_down"), lambda text: self._banner_main_font.measure(text) <= width),
+                     alarm_banner.truncate(t("alarm_core_down_hint"), lambda text: self._banner_line_font.measure(text) <= width), "")
+        else:
+            self.alarm_bar.pack_forget()
+            lines = alarm_banner.banner_lines(
+                abnormal, above, below,
+                lambda text: self._banner_main_font.measure(text) <= width,
+                lambda text: self._banner_line_font.measure(text) <= width)
         for label, text in zip((self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3), lines):
             label.configure(text=text)
         if lines[2]:
@@ -1182,7 +1196,7 @@ class AtlasUI(_BaseTk):
         else:
             self.lbl_alarm_l3.pack_forget()
         self.alarm_icon.delete("all")
-        self.alarm_icon.configure(width=BANNER_ICON * len(shapes))
+        self.alarm_icon.configure(width=BANNER_ICON * max(1, len(shapes)))
         for index, shape in enumerate(shapes):  # one icon per distinct shape present, in category order
             draw = {"■✕": draw_alarm_square_x, "♥": draw_alarm_heart}.get(shape, draw_alarm_triangle)
             draw(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])

@@ -93,7 +93,7 @@ def test_open_geometry_uses_half_width_and_85_percent_height_when_content_is_sma
     area = placement.Rect(0, 0, 2880, 1728)
     frame = placement.Frame(8, 8, 31, 8)
     width, height, _x, _y = _parse(placement.open_geometry(area, frame, (2880, 1800), (900, 500)))
-    assert width == 1440
+    assert width == 960
     assert height == min(int(1800 * 0.85), area.height - frame.top - frame.bottom)
 
 
@@ -550,3 +550,13 @@ def test_long_results_keep_every_widget_in_place_across_a_language_switch(make_u
     ui_i18n.set_language("en")
     assert moved == {}, f"{len(moved)} widgets moved after the language switch: {moved}"
     assert _cut_texts(app) == []
+
+
+def test_open_geometry_caps_large_content_at_960_and_keeps_top_right():
+    area = placement.Rect(0, 0, 1920, 1032)
+    frame = placement.Frame(8, 8, 31, 8)
+    width, height, x, y = _parse(placement.open_geometry(area, frame, (1920, 1080), (1400, 2000)))
+    assert width == 960
+    assert x == 1920 - width - frame.left - frame.right
+    assert y == 0
+    assert height == area.height - frame.top - frame.bottom

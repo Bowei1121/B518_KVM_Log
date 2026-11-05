@@ -178,6 +178,8 @@ def iter_widgets(widget: tk.Misc):
 
 def _width_is_free(widget: tk.Misc) -> bool:
     """A text Label or Button whose width nothing has fixed yet. Images and text variables keep their own size."""
+    if getattr(widget, "_banner_single_line", False):
+        return False
     if widget.winfo_class() not in ("Label", "Button", "TLabel", "TButton"):  # tk and ttk (PatternCropper is ttk)
         return False
     if int(str(widget.cget("width")) or 0) != 0:

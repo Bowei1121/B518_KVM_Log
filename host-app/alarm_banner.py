@@ -6,12 +6,13 @@ characters are never cut off and lines never wrap. On the hint line the category
 prompt shrinks first (full list, first few ids + a count, a count, a short count).
 """
 from typing import Callable, List, Sequence, Tuple
+import unicodedata
 
 from ui_i18n import t
 
 # Abnormal categories in click / list order (§13.4): kind -> (icon, status words key, hint key).
-# Connection failure (■✕, issue #134, no hint line), Heartbeat stopped, Heartbeat not found (issue #130), Frame frozen.
-KINDS = {"connect_failed": ("■✕", "alarm_connect_failed", ""),
+# Connection failure, heartbeat stopped, heartbeat not found and frame frozen.
+KINDS = {"connect_failed": ("■✕", "alarm_connect_failed", "alarm_hint_connect_failed"),
          "heartbeat": ("♥", "station_heartbeat", "alarm_hint_heartbeat"),
          "heartbeat_not_found": ("♥", "station_heartbeat_not_found", "alarm_hint_heartbeat_not_found"),
          "frozen": ("▲", "station_frozen", "alarm_hint_frozen")}
@@ -44,8 +45,25 @@ def _groups(abnormal: Abnormal) -> List[Tuple[str, List[str]]]:
     return groups
 
 
+def truncate(text: str, fits: Callable[[str], bool]) -> str:
+    """Fit a line without splitting combining characters or joined glyphs."""
+    if fits(text):
+        return text
+    clusters = []
+    for char in text:
+        if clusters and (unicodedata.combining(char) or char in ("\ufe0f", "\ufe0e", "\u200d") or clusters[-1].endswith("\u200d")):
+            clusters[-1] += char
+        else:
+            clusters.append(char)
+    while clusters:
+        clusters.pop()
+        candidate = "".join(clusters).rstrip() + "…"
+        if fits(candidate):
+            return candidate
+    return "…" if fits("…") else ""
+
 def _first_fit(candidates: List[str], fits: Callable[[str], bool]) -> str:
-    return next((text for text in candidates if fits(text)), candidates[-1])
+    return next((text for text in candidates if fits(text)), truncate(candidates[0], fits))
 
 
 def _list_line(abnormal: Abnormal, fits: Callable[[str], bool]) -> str:
@@ -100,7 +118,7 @@ def _hint_line(above: Sequence[str], below: Sequence[str], hints: List[str], fit
             line = GAP.join(part for part in (prompt, text) if part)
             if fits(line):
                 return line
-    return GAP.join(part for part in (prompts[-1], variants[-1]) if part)
+    return truncate(GAP.join(part for part in (prompts[-1], variants[-1]) if part), fits)
 
 
 def banner_lines(
@@ -117,8 +135,8 @@ def banner_lines(
     if len(abnormal) == 1:  # icon + id + kind, then the hint line (with the scroll prompt)
         device, kind = abnormal[0]
         icon, word, hint = KINDS[kind]
-        main = _first_fit([f"{icon} {device} {t(word)}", f"{icon} {device}"], fits_main)
+        main = truncate(f"{icon} {device} {t(word)}", fits_main)
         return main, _hint_line(above, below, [t(hint)] if hint else [], fits_line), ""
     hints = [f"{KINDS[kind][0]} {t(KINDS[kind][2])}" for kind, _ids in _groups(abnormal) if KINDS[kind][2]]
-    return (t("alarm_devices", n=len(abnormal)), _list_line(abnormal, fits_line),
+    return (truncate(t("alarm_devices", n=len(abnormal)), fits_main), _list_line(abnormal, fits_line),
             _hint_line(above, below, hints, fits_line))
