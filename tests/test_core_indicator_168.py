@@ -38,15 +38,16 @@ def test_starting_inside_grace_then_waiting_after_it():
     assert c.observe(False, None, 30.0, wall(30)).state == "waiting"
 
 
-@pytest.mark.parametrize("reason,key,path", [
-    ("devices_missing", "core_ind_fail_devices_missing", "DEV"),
-    ("devices_invalid", "core_ind_fail_devices_invalid", "DEV"),
-    ("port_in_use", "core_ind_fail_port_in_use", "LOG"),
+@pytest.mark.parametrize("reason,key,small", [
+    ("devices_missing", "core_ind_fail_devices_missing", "core_ind_check_config"),
+    ("devices_invalid", "core_ind_fail_devices_invalid", "core_ind_check_config"),
+    ("port_in_use", "core_ind_fail_port_in_use", "core_ind_port_small"),
 ])
-def test_failed_start_shows_reason_notice_and_path(reason, key, path):
+def test_failed_start_shows_reason_notice_and_path(reason, key, small):
     ind = make().observe(False, None, 6.0, wall(6), failed_file(reason))
     assert show(ind) == ("failed", "red", "×", key)
-    assert ind.small_key == "core_ind_check_config" and ind.small_args == {"path": path}
+    assert ind.small_key == small and ind.small_args == {}
+    assert (ind.devices_file, ind.log_path) == ("DEV", "LOG")
     assert ind.text_args["port"] == 5000 and ind.text_args["detail"] == "first error"
 
 
@@ -58,7 +59,7 @@ def test_failed_file_from_before_this_launch_is_ignored():
 def test_invalid_host_is_its_own_red_state():
     ind = make().observe(False, None, 6.0, wall(6), failed_file("invalid_host"))
     assert show(ind) == ("invalid_host", "red", "×", "core_ind_invalid_host")
-    assert (ind.small_key, ind.small_args) == ("core_ind_invalid_host_small", {"path": "LOG"})
+    assert (ind.small_key, ind.small_args) == ("core_ind_invalid_host_small", {})
 
 
 def test_down_after_connected_is_waiting_until_the_threshold_then_red():
