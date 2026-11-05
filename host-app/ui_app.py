@@ -1085,10 +1085,10 @@ class AtlasUI(_BaseTk):
             title.place(x=30, y=0, width=80, height=28)
             lamp = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)
             lamp_dot = lamp.create_oval(2, 2, 14, 14, width=3)
-            lamp.place(x=106, y=6, width=16, height=16)
+            lamp.place(x=112, y=6, width=16, height=16)
             online = tk.Label(card, font=(fam, -10, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            online.place(x=124, y=0, width=52, height=28)
+            online.place(x=130, y=0, width=46, height=28)
             status = tk.Label(card, font=(fam, -16, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
             status.place(x=12, y=29, width=162, height=26)
