@@ -65,9 +65,11 @@ def test_waiting_state_is_orange_triangle_and_tooltip_repeats_the_words(ui):
     ui._update_status_ui({"status": "ok", "uptime_seconds": 10, "stations": []})
     ui._clock = lambda: ui._core_ind.last_ok_at + 60
     ui._update_status_ui({"status": "error", "message": "refused"})
-    assert ui.lbl_core_state.cget("text").startswith("△ Core stopped; restarting automatically")
+    visible = ui.lbl_core_state.cget("text")
+    assert visible.startswith("△ Core stopped;")
+    assert "restarting" in visible
     assert ui.light_core.current_fill() == LED_COLORS["orange"]
-    assert ui._core_tooltip_text().startswith("Core stopped")
+    assert ui._core_tooltip_text() == "Core stopped; restarting automatically (about 1 min)"
 
 
 def test_closing_the_bridge_asks_nothing_and_sends_no_shutdown(ui, monkeypatch):
