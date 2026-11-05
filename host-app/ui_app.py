@@ -90,6 +90,7 @@ from ui_widgets import (
     Tooltip,
     apply_light_ttk_style,
     apply_window_icon,
+    clamp_text,
     fit_label_to_pixels,
     fix_text_widths,
     measure_all_languages,
@@ -1527,7 +1528,8 @@ class AtlasUI(_BaseTk):
     def _show_core(self, view: Any) -> None:
         self._core_view = view
         self.light_core.set_light(view.light)
-        self.lbl_core_state.config(text=f"{view.symbol} {t(view.text_key, **view.text_args)}")
+        text = f"{view.symbol} {t(view.text_key, **view.text_args)}"
+        self.lbl_core_state.config(text=clamp_text(self.lbl_core_state, text, 2))
         self.lbl_core_small.config(text=t(view.small_key, **view.small_args) if view.small_key else "")
 
     def start_core_fallback(self) -> None:

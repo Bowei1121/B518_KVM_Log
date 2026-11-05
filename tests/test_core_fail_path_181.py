@@ -101,6 +101,20 @@ def test_top_bar_tk_layout_and_bindings(monkeypatch):
             assert widget.bind("<Enter>") and widget.bind("<Leave>")
         small = app.lbl_core_small.cget("text")
         assert "\\" not in small and "Documents" not in small
+
+        detail = "cannot read device list " + (r"C:\Users\operator\Documents\long_directory" * 12) + r"\devices.json: access denied"
+        view = ci.CoreIndicator(0, now, LOG).observe(
+            False, None, 1, now,
+            dict(state="failed", reason="devices_invalid", detail=detail,
+                 devices_file=CONFIG, updated_at=now.isoformat()),
+        )
+        app._show_core(view)
+        app.update_idletasks()
+        # Unclamped long detail stretches ~170px; 2-line clamp keeps ~28px.
+        assert app.lbl_core_state.winfo_height() < 40
+        assert app.lbl_core_state.master.master.winfo_height() < 70
+        assert app.lbl_core_state.cget("text").endswith("…")
+        assert detail in app._core_tooltip_text()
     finally:
         app._is_closing = True
         try:
