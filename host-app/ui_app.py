@@ -665,7 +665,7 @@ class AtlasUI(_BaseTk):
         core_text.pack(side="left", padx=(6, 0))
         self.lbl_core_state = tk.Label(core_text, text="○", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)
         self.lbl_core_state._banner_single_line = True
-        self.lbl_core_state.configure(wraplength=320)
+        fit_label_to_pixels(self.lbl_core_state, 320)
         self.lbl_core_state.pack(side="left")
         # Same row as the words, so the top bar keeps its one-line height and the HMI layout below does not move.
         self.lbl_core_small = tk.Label(core_text, text="", font=self.f_mono, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)

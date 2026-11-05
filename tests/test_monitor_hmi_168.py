@@ -81,7 +81,7 @@ def test_closing_the_bridge_asks_nothing_and_sends_no_shutdown(ui, monkeypatch):
 
 def test_every_indicator_text_exists_in_english_and_chinese_with_exact_words():
     keys = [k for k in ui_i18n.STRINGS["en"] if k.startswith("core_ind_")]
-    assert len(keys) == 14
+    assert len(keys) == 17
     for lang in ("en", "zh"):
         assert all(k in ui_i18n.STRINGS[lang] for k in keys)
         assert "core_down" not in ui_i18n.STRINGS[lang] and "core_ok_tip" not in ui_i18n.STRINGS[lang]
@@ -92,7 +92,14 @@ def test_every_indicator_text_exists_in_english_and_chinese_with_exact_words():
     assert t("core_ind_waiting", "zh", minutes=1) == "Core 已停止，系統正在自動重開（約 1 分鐘）"
     assert t("core_ind_stopped_long", "zh", minutes=2) == "Core 停止超過 2 分鐘沒有恢復，請通知 TE 工程師"
     assert t("core_ind_invalid_host", "zh") == "Core 設定錯誤，無法啟動，請通知 TE 工程師"
-    assert t("core_ind_invalid_host_small", "zh", path="LOG").startswith("設定的連線位址不是本機")
+    assert t("core_ind_invalid_host_small", "zh") == "請通知 TE 工程師改連線位址"
+    assert t("core_ind_invalid_host_small", "en") == "Notify TE to change the connection address"
+    assert t("core_ind_port_small", "zh") == "請通知 TE 工程師；port 被占用"
+    assert t("core_ind_port_small", "en") == "Notify TE; port is in use"
+    assert t("core_ind_tip_invalid_host", "zh") == "設定的連線位址不是本機。"
+    assert t("core_ind_tip_invalid_host", "en") == "The configured connection address is not this PC."
+    assert t("core_ind_tip_paths", "zh", config="C", log="L") == "設定檔：C\n日誌：L\n請通知 TE 工程師。"
+    assert t("core_ind_tip_paths", "en", config="C", log="L") == "Config: C\nLog: L\nNotify the TE engineer."
     assert "請通知 TE 工程師檢查設定檔" in t("core_ind_check_config", "zh", path="P")
 
 
