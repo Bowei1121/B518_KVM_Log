@@ -90,6 +90,7 @@ from ui_widgets import (
     Tooltip,
     apply_light_ttk_style,
     apply_window_icon,
+    clamp_text,
     fit_label_to_pixels,
     fix_text_widths,
     measure_all_languages,
@@ -579,6 +580,7 @@ class AtlasUI(_BaseTk):
         self._core_status_path = default_status_file()
         self._core_ind = CoreIndicator(self._clock(), datetime.datetime.now(), str(default_log_file()))
         self._core_view = None  # last Indicator shown by the Core light
+        self._last_core_failure = None
 
         # Polling
         self._is_closing = False
@@ -662,13 +664,18 @@ class AtlasUI(_BaseTk):
         core_text = tk.Frame(top_frame, bg=WINDOW_BG)
         core_text.pack(side="left", padx=(6, 0))
         self.lbl_core_state = tk.Label(core_text, text="○", font=self.f_bold, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)
+        self.lbl_core_state._banner_single_line = True
+        fit_label_to_pixels(self.lbl_core_state, 320)
         self.lbl_core_state.pack(side="left")
         # Same row as the words, so the top bar keeps its one-line height and the HMI layout below does not move.
         self.lbl_core_small = tk.Label(core_text, text="", font=self.f_mono, bg=WINDOW_BG, fg=TEXT_FG, anchor="w", pady=0)
+        self.lbl_core_small._banner_single_line = True
+        self.lbl_core_small.configure(wraplength=0)
         self.lbl_core_small.pack(side="left", padx=(6, 0))
         self._core_tip = Tooltip(self.light_core, self._core_tooltip_text)
         Tooltip(self.lbl_core_caption, self._core_tooltip_text)
         Tooltip(self.lbl_core_state, self._core_tooltip_text)
+        Tooltip(self.lbl_core_small, self._core_tooltip_text)
 
         # ----------------------------------------------------------------------
         # Body: fixed 200 px station panel on the left (issue #126), live view, controls and Log on the right
@@ -1220,8 +1227,9 @@ class AtlasUI(_BaseTk):
         if self._service_ok is not False and len(abnormal) != self._banner_count:  # one Log line per event
             self._banner_count = len(abnormal)
             self._log_key("log_alarm_shown" if abnormal else "log_alarm_cleared", n=len(abnormal))
-        core_down = self._service_ok is False
-        if not abnormal and not core_down:
+        failed = self._core_view is not None and self._core_view.state in ("failed", "invalid_host")
+        core_down = self._service_ok is False and not failed
+        if failed or (not abnormal and not core_down):
             self._banner_key = None
             if banner.winfo_manager():
                 banner.pack_forget()
@@ -1486,7 +1494,11 @@ class AtlasUI(_BaseTk):
         """Hover tip for the Core light: the shown words, plus the busy devices while Core answers."""
         view = self._core_view
         text = t(view.text_key, **view.text_args)
-        if view.small_key:
+        if view.state in ("failed", "invalid_host"):
+            if view.state == "invalid_host":
+                text += "\n" + t("core_ind_tip_invalid_host")
+            text += "\n" + t("core_ind_tip_paths", config=view.devices_file, log=view.log_path)
+        elif view.small_key:
             text += "\n" + t(view.small_key, **view.small_args)
         if self._service_ok:
             info = self._service_info
@@ -1505,12 +1517,19 @@ class AtlasUI(_BaseTk):
             except (OSError, ValueError):
                 pass
         view = self._core_ind.observe(ping_ok, uptime, self._clock(), datetime.datetime.now(), status)
+        if view.state in ("failed", "invalid_host"):
+            failure = (view.failure_id, view.text_key, view.devices_file, view.log_path)
+            if failure != self._last_core_failure:
+                self._last_core_failure = failure
+                self._log_key("log_core_start_failure", level="error", reason=pair(view.text_key, **view.text_args),
+                              config=view.devices_file, log=view.log_path)
         self._show_core(view)
 
     def _show_core(self, view: Any) -> None:
         self._core_view = view
         self.light_core.set_light(view.light)
-        self.lbl_core_state.config(text=f"{view.symbol} {t(view.text_key, **view.text_args)}")
+        text = f"{view.symbol} {t(view.text_key, **view.text_args)}"
+        self.lbl_core_state.config(text=clamp_text(self.lbl_core_state, text, 2))
         self.lbl_core_small.config(text=t(view.small_key, **view.small_args) if view.small_key else "")
 
     def start_core_fallback(self) -> None:

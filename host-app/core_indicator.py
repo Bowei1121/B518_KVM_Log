@@ -65,6 +65,9 @@ class Indicator:
     text_args: Dict[str, Any] = field(default_factory=dict)
     small_key: Optional[str] = None
     small_args: Dict[str, Any] = field(default_factory=dict)
+    devices_file: str = ""
+    log_path: str = ""
+    failure_id: str = ""
 
 
 def _parse_time(value: Any) -> Optional[datetime.datetime]:
@@ -117,13 +120,15 @@ class CoreIndicator:
         failed = self._failure(status_file)
         if failed:
             reason, detail, devices_file = failed
+            paths = dict(devices_file=devices_file, log_path=self.log_path,
+                         failure_id=str(status_file.get("updated_at", "")))
             if reason == "invalid_host":
                 return Indicator("invalid_host", "red", "×", "core_ind_invalid_host",
-                                 small_key="core_ind_invalid_host_small", small_args={"path": self.log_path})
+                                 small_key="core_ind_invalid_host_small", **paths)
             key = FAIL_TEXT_KEYS.get(reason, FAIL_TEXT_KEYS["internal_error"])
-            path = devices_file if reason in ("devices_missing", "devices_invalid") else self.log_path
+            small_key = "core_ind_port_small" if reason == "port_in_use" else "core_ind_check_config"
             return Indicator("failed", "red", "×", key, {"detail": detail, "port": status_file.get("port")},
-                             "core_ind_check_config", {"path": path})
+                             small_key=small_key, **paths)
         if now - self.launch_at < self.grace_s:
             return Indicator("starting", "grey", "○", "core_ind_starting")
         self.was_down = self.ever_connected  # past the start grace: an ok after this means Core was restarted
