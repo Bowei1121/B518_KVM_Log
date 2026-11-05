@@ -69,6 +69,7 @@ from ui_logfile import DailyLogFile, log_dir_for_template_root
 import ui_i18n
 from ui_i18n import bind, pair, t
 from ui_widgets import (
+    FIXED_WIDTH_MARGIN,
     BUTTON_BG,
     ENTRY_BG,
     ERROR_FG,
@@ -120,6 +121,7 @@ BANNER_H, BANNER_ICON, BANNER_PAD, BANNER_GAP = 120, 72, 24, 22
 # Smallest live view, as a share of its DPI size, when the usable height is short (user decision, issue #117 comment
 # 6342904432): 70%, so 200% gives 672×378. Shared with tests/test_monitor_hmi_115.py; do not loosen it elsewhere.
 PREVIEW_MIN_SHARE = 0.7
+TARGET_OPEN_W = 960  # preferred opening width; wider content opens at its own width (M1)
 
 _PATTERN_IMPORT_ERROR: Optional[BaseException] = None
 try:
@@ -400,7 +402,7 @@ class MatchResultsWindow(_BaseToplevel):
         wheel_scroll.install(self)
         self.catalog = catalog
         bind(self, "match_title", option="title")
-        self.geometry("980x700")
+        self.geometry("960x700")
         self.configure(bg=WINDOW_BG)
         pin_light_appearance(self)
         apply_window_icon(self)
@@ -807,6 +809,7 @@ class AtlasUI(_BaseTk):
         self.btn_snapshot.pack(side="right", padx=4)
         Tooltip(self.btn_snapshot, lambda: t("tip_snapshot"))
 
+        self._compact_view_buttons = False
         self.btn_live_stream = tk.Button(
             view_bottom, text=t("btn_live"), font=self.f_btn, bg=BUTTON_BG, fg=TEXT_FG,
             command=self.on_toggle_live_stream,
@@ -823,7 +826,7 @@ class AtlasUI(_BaseTk):
         Tooltip(self.btn_streamer_window, lambda: t("tip_popout"))
 
         # Right pane: Diagnostics & Pattern tools
-        ctrl_frame = tk.LabelFrame(mid, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
+        self.ctrl_frame = ctrl_frame = tk.LabelFrame(mid, font=self.f_bold, padx=8, pady=6, bg=WINDOW_BG, fg=TEXT_FG)
         bind(ctrl_frame, "ctrl_title")
         ctrl_frame.grid(row=0, column=1, sticky="ns", padx=(GAP, 0))
 
@@ -959,10 +962,15 @@ class AtlasUI(_BaseTk):
         area = placed_area(self)
         frame = frame_size()
         max_w, max_h = usable_client_size(area, frame)
-        width, height = self._fit_preview_to(max_h)
+        width, height = self._fit_preview_to(max_h, TARGET_OPEN_W)
         self.minsize(min(width, max_w), min(height, max_h))
         geometry = open_geometry(area, frame, (self.winfo_screenwidth(), self.winfo_screenheight()), (width, height))
         self.geometry(geometry)
+        if width > TARGET_OPEN_W:
+            self._append_log(
+                f"Window: content is {width}px wide, more than {TARGET_OPEN_W}px; opened at the content width.",
+                f"視窗：內容寬 {width}px，超過 {TARGET_OPEN_W}px，改依內容寬度開啟。",
+            )
         self._append_log(
             f"Window: work area {area.width}x{area.height} at {area.x},{area.y}; "
             f"frame L{frame.left} R{frame.right} T{frame.top} B{frame.bottom}; opened {geometry}",
@@ -970,17 +978,70 @@ class AtlasUI(_BaseTk):
             f"外框 左{frame.left} 右{frame.right} 上{frame.top} 下{frame.bottom}，開啟 {geometry}",
         )
 
-    def _fit_preview_to(self, max_h: int) -> Tuple[int, int]:
-        """Measure the content at the full live-view size, then at smaller steps, until it fits ``max_h`` (#117)."""
+    def _live_text(self) -> str:
+        """Live button text now; the short word only when the window had to be narrowed (``_fit_width_budget``)."""
+        if self._streaming_active:
+            return t("btn_live_stop")
+        return t("btn_live_short" if self._compact_view_buttons else "btn_live")
+
+    def _fit_preview_to(self, max_h: int, max_w: Optional[int] = None) -> Tuple[int, int]:
+        """Measure the content at the full live-view size, then at smaller steps, until it fits ``max_h`` and ``max_w``.
+
+        When the width still does not fit at the smallest preview, the columns are narrowed (``_fit_width_budget``).
+        """
         width = height = 0
         for shrink in (1.0, 0.85, PREVIEW_MIN_SHARE):
             preview_w, preview_h = self._preview_size(shrink)
             self.canvas_preview.configure(width=preview_w, height=preview_h)
             width, height = measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language,
                                                   ui_i18n.set_language)
-            if height <= max_h:
+            if height <= max_h and (max_w is None or width <= max_w):
                 break
+        if max_w is not None and width > max_w:
+            width, height = self._fit_width_budget(max_w)
         return width, height
+
+    def _fit_width_budget(self, target_w: int) -> Tuple[int, int]:
+        """Narrow the picture buttons and the check-result box so the content can fit ``target_w`` (M1).
+
+        The pop-out and live buttons take their short words (the tooltips keep the full meaning) and the check result
+        keeps fewer characters per line; no button is removed. Still wider afterwards (high DPI): the measured width
+        is returned and the window opens at that width instead of being cut.
+        """
+        self._compact_view_buttons = True
+        bind(self.btn_streamer_window, "btn_popout_short")
+        # Icon-only short labels (tooltips keep the full wording); pack tighter so the row can match the preview.
+        for button in (self.btn_snapshot, self.btn_live_stream, self.btn_streamer_window):
+            button.pack_configure(padx=1)
+        shorts = {
+            self.btn_streamer_window: ("btn_popout_short",),
+            self.btn_live_stream: ("btn_live_short", "btn_live_stop"),
+            self.btn_snapshot: (None,),  # icon-only already; still measure for a tight fixed width
+        }
+        original = ui_i18n.current_language()
+        widest = {button: 0 for button in shorts}
+        try:
+            for lang in ui_i18n.LANGUAGES:
+                ui_i18n.set_language(lang)
+                for button, keys in shorts.items():
+                    for key in keys:
+                        if key is None:
+                            button.configure(width=0)
+                        else:
+                            button.configure(width=0, text=t(key))
+                        self.update_idletasks()
+                        widest[button] = max(widest[button], button.winfo_reqwidth())
+        finally:
+            ui_i18n.set_language(original)
+        for button, px in widest.items():
+            zero = int(self.tk.call("font", "measure", str(button.cget("font")), "0")) or 1
+            button.configure(width=max(1, -(-int(px * FIXED_WIDTH_MARGIN) // zero)))
+        bind(self.btn_streamer_window, "btn_popout_short")
+        self.btn_live_stream.config(text=self._live_text())
+        # Right column: fewer reserved chars and less padding (no buttons removed).
+        self.ctrl_frame.configure(padx=2)
+        reserve_text_width(self.lbl_check_result, 18, lines=3)
+        return measure_all_languages(self, ui_i18n.LANGUAGES, ui_i18n.current_language, ui_i18n.set_language)
 
     # --------------------------------------------------------------------------
     # Station Cards Dashboard Rendering
@@ -1021,13 +1082,13 @@ class AtlasUI(_BaseTk):
             icon.place(x=12, y=7, width=16, height=16)
             title = tk.Label(card, text=dev_id, font=(mono, -22, "bold"),
                              bg=WINDOW_BG, fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            title.place(x=30, y=0, width=76, height=28)
+            title.place(x=30, y=0, width=80, height=28)
             lamp = tk.Canvas(card, width=16, height=16, bg=WINDOW_BG, highlightthickness=0)
             lamp_dot = lamp.create_oval(2, 2, 14, 14, width=3)
-            lamp.place(x=106, y=6, width=16, height=16)
+            lamp.place(x=112, y=6, width=16, height=16)
             online = tk.Label(card, font=(fam, -10, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
-            online.place(x=124, y=0, width=52, height=28)
+            online.place(x=130, y=0, width=46, height=28)
             status = tk.Label(card, font=(fam, -16, "bold"), bg=WINDOW_BG,
                               fg=TEXT_FG, anchor="w", bd=0, padx=0, width=1)
             status.place(x=12, y=29, width=162, height=26)
@@ -1111,14 +1172,18 @@ class AtlasUI(_BaseTk):
         self._banner_line_font = tkfont.Font(root=self, family=family, size=-20, weight="bold")
         banner = self.alarm_banner = tk.Frame(self, bg=ALARM_RED, height=BANNER_H)
         banner.pack_propagate(False)
+        self.alarm_bar = tk.Frame(banner, bg="#FFB300", width=8)
         self.alarm_icon = tk.Canvas(banner, width=BANNER_ICON, height=BANNER_ICON, bg=ALARM_RED, highlightthickness=0)
         self.alarm_icon.pack(side="left", padx=(BANNER_PAD, BANNER_GAP))
-        text = tk.Frame(banner, bg=ALARM_RED)
-        text.pack(side="left", anchor="w")
+        text = self.alarm_text = tk.Frame(banner, bg=ALARM_RED)
+        text.pack(side="left", anchor="w", fill="x", expand=True)
         options = dict(bg=ALARM_RED, fg="#ffffff", anchor="w", bd=0, padx=0, pady=0)
         self.lbl_alarm_main = tk.Label(text, font=self._banner_main_font, **options)
         self.lbl_alarm_l2 = tk.Label(text, font=self._banner_line_font, **options)
         self.lbl_alarm_l3 = tk.Label(text, font=self._banner_line_font, **options)
+        for label in (self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
+            label._banner_single_line = True
+            label.configure(wraplength=0)
         self.lbl_alarm_main.pack(anchor="w")
         self.lbl_alarm_l2.pack(anchor="w")
         for widget in (banner, self.alarm_icon, text, self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
@@ -1155,26 +1220,36 @@ class AtlasUI(_BaseTk):
         if self._service_ok is not False and len(abnormal) != self._banner_count:  # one Log line per event
             self._banner_count = len(abnormal)
             self._log_key("log_alarm_shown" if abnormal else "log_alarm_cleared", n=len(abnormal))
-        if not abnormal:
+        core_down = self._service_ok is False
+        if not abnormal and not core_down:
             self._banner_key = None
             if banner.winfo_manager():
                 banner.pack_forget()
             return
         if not banner.winfo_manager():
             banner.pack(fill="x", after=self.top_frame)
-        kinds = [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
+        kinds = [] if core_down else [kind for kind in alarm_banner.KINDS if any(k == kind for _d, k in abnormal)]
         shapes = alarm_banner.shapes(kinds)
-        width = self._banner_text_width(len(shapes))
+        width = max(0, self._banner_text_width(1 if core_down else len(shapes)) - (8 if core_down else 0))
         above, below = self._alarm_off_screen
-        key = (tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
+        key = (core_down, tuple(abnormal), tuple(above), tuple(below), width, ui_i18n.current_language())
         if key == self._banner_key:
             return
         self._banner_key = key
         self._banner_redraws += 1
-        lines = alarm_banner.banner_lines(
-            abnormal, above, below,
-            lambda text: self._banner_main_font.measure(text) <= width,
-            lambda text: self._banner_line_font.measure(text) <= width)
+        bg = "#37474F" if core_down else ALARM_RED
+        for widget in (banner, self.alarm_icon, self.alarm_text, self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3):
+            widget.configure(bg=bg)
+        if core_down:
+            self.alarm_bar.pack(side="left", fill="y", before=self.alarm_icon)
+            lines = (alarm_banner.truncate(t("alarm_core_down"), lambda text: self._banner_main_font.measure(text) <= width),
+                     alarm_banner.truncate(t("alarm_core_down_hint"), lambda text: self._banner_line_font.measure(text) <= width), "")
+        else:
+            self.alarm_bar.pack_forget()
+            lines = alarm_banner.banner_lines(
+                abnormal, above, below,
+                lambda text: self._banner_main_font.measure(text) <= width,
+                lambda text: self._banner_line_font.measure(text) <= width)
         for label, text in zip((self.lbl_alarm_main, self.lbl_alarm_l2, self.lbl_alarm_l3), lines):
             label.configure(text=text)
         if lines[2]:
@@ -1182,7 +1257,7 @@ class AtlasUI(_BaseTk):
         else:
             self.lbl_alarm_l3.pack_forget()
         self.alarm_icon.delete("all")
-        self.alarm_icon.configure(width=BANNER_ICON * len(shapes))
+        self.alarm_icon.configure(width=BANNER_ICON * max(1, len(shapes)))
         for index, shape in enumerate(shapes):  # one icon per distinct shape present, in category order
             draw = {"■✕": draw_alarm_square_x, "♥": draw_alarm_heart}.get(shape, draw_alarm_triangle)
             draw(self.alarm_icon, BANNER_ICON, x=index * BANNER_ICON, family=self.f_label[0])
@@ -1392,7 +1467,7 @@ class AtlasUI(_BaseTk):
                 core_connected=w["state"]["core_connected"])
         self._refresh_station_list_marks()
         self._show_core(self._core_view)
-        self.btn_live_stream.config(text=t("btn_live_stop") if self._streaming_active else t("btn_live"))
+        self.btn_live_stream.config(text=self._live_text())
         if str(self.btn_run_check.cget("state")) != "disabled":
             self.btn_run_check.config(text=t("btn_check"))
 
@@ -1698,11 +1773,11 @@ class AtlasUI(_BaseTk):
         """Start or stop the background live polling stream."""
         if self._streaming_active:
             self._streaming_active = False
-            self.btn_live_stream.config(text=t("btn_live"))
+            self.btn_live_stream.config(text=self._live_text())
             self._log_key("log_stream_off")
         else:
             self._streaming_active = True
-            self.btn_live_stream.config(text=t("btn_live_stop"))
+            self.btn_live_stream.config(text=self._live_text())
             self._log_key("log_stream_on")
             # A still-running loop picks the flag back up; never stack a second one.
             if self._stream_thread is None or not self._stream_thread.is_alive():

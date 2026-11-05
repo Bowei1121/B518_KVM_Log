@@ -118,9 +118,9 @@ def test_strings_exact_in_both_languages():
     assert ui_i18n.t("row_tip_next_retry", "zh", s=4) == "下次重試 4 秒後"
 
 
-def test_banner_single_device_has_no_hint_line():
+def test_banner_single_device_has_hint_line():
     lines = banner_lines([("DFU-07", "connect_failed")], [], [], always, always)
-    assert lines == ("■✕ DFU-07 Connection failure", "", "")
+    assert lines == ("■✕ DFU-07 Connection failure", "Check JetKVM power and network cable", "")
 
 
 def test_banner_single_device_in_chinese():
@@ -137,16 +137,16 @@ def test_banner_category_order_and_hint_line():
     assert main == "3 devices abnormal"
     assert second == GAP.join(["■✕ Connection failure: DFU-07", "♥ Heartbeat stopped: DFU-04",
                                "▲ Frame frozen: DFU-05"])
-    assert "■" not in third and "♥" in third and "▲" in third  # connection failure has no hint
+    assert "■✕" in third and "♥" in third and "▲" in third
     assert third.index("♥") < third.index("▲")
     assert alarm_banner.shapes(["frozen", "heartbeat", "connect_failed"]) == ["■✕", "♥", "▲"]
     assert [d for d, _k in alarm_banner.sort_abnormal(abnormal)] == ["DFU-07", "DFU-04", "DFU-05"]
 
 
-def test_banner_two_connection_failures_have_an_empty_hint_line():
+def test_banner_two_connection_failures_have_a_hint_line():
     main, second, third = banner_lines([("A-01", "connect_failed"), ("A-02", "connect_failed")], [], [], always, always)
     assert second == "■✕ Connection failure: A-01, A-02" or second.startswith("■✕ Connection failure: A-01")
-    assert third == ""
+    assert third == "■✕ Check JetKVM power and network cable"
 
 
 @pytest.mark.parametrize("count", [3, 4])
