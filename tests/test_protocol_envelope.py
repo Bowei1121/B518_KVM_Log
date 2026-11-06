@@ -306,6 +306,7 @@ COMMAND_ROWS = [
     ("ping", False, True), ("status", False, True), ("core_status", False, True), ("shutdown", False, True),
     ("snapshot", True, False), ("check_start", True, True), ("check_finish", True, True),
     ("inspect", True, False), ("input", True, True), ("start_test", True, True), ("monitor_start", True, True),
+    ("hid", True, False),
 ]
 EXPECTED_DEFAULT_DATA = {
     "ping": {"pong": False, "core_version": ""},
@@ -319,6 +320,7 @@ EXPECTED_DEFAULT_DATA = {
     "input": {"entered": []},
     "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
+    "hid": {},
 }
 
 
