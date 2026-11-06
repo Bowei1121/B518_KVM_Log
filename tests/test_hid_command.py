@@ -129,3 +129,69 @@ def test_hid_sender_busy_clears_queue():
     time.sleep(0.4)
     sender.close()
     assert sent == ["keyboardReport"]
+
+
+@pytest.mark.parametrize("method", [[], {}, None, 5, True])
+def test_hid_non_string_method_is_invalid_argument(core, method):
+    srv, kvm = core
+    resp = _hid(srv, method, {"wheelY": 1})
+    assert resp["status"] == "error" and resp["error"] == "invalid_argument"
+    assert kvm.rpc_calls == []
+    assert _hid(srv, "wheelReport", {"wheelY": 1})["status"] == "ok"
+
+
+def _blocking_sender(device):
+    import threading
+    gate = threading.Event()
+    sent = []
+
+    def send(cmd, payload, timeout, dev):
+        gate.wait(3)
+        sent.append((dev, payload["method"], payload["params"]))
+        return {"status": "ok"}
+
+    return HidSender(send, lambda: device["v"]), gate, sent
+
+
+def test_hid_sender_pins_device_at_enqueue():
+    device = {"v": "BT-01"}
+    sender, gate, sent = _blocking_sender(device)
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})
+    time.sleep(0.1)
+    sender("keyboardReport", {"modifier": 0, "keys": []})
+    device["v"] = "BT-02"
+    gate.set()
+    time.sleep(0.3)
+    sender.close()
+    assert [d for d, _, _ in sent] == ["BT-01", "BT-01"]
+
+
+def test_hid_sender_close_still_sends_queued_release():
+    device = {"v": "BT-01"}
+    sender, gate, sent = _blocking_sender(device)
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})
+    time.sleep(0.1)
+    sender("keyboardReport", {"modifier": 0, "keys": []})
+    sender.close()
+    gate.set()
+    time.sleep(0.3)
+    assert [p["keys"] for _, _, p in sent] == [[4], []]
+
+
+def test_hid_sender_full_queue_never_drops_release():
+    device = {"v": "BT-01"}
+    sender, gate, sent = _blocking_sender(device)
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})
+    time.sleep(0.1)
+    for _ in range(HidSender.MAX_QUEUE + 50):
+        sender("wheelReport", {"wheelY": 1})
+    sender("keyboardReport", {"modifier": 0, "keys": []})
+    sender("absMouseReport", {"x": 1, "y": 1, "buttons": 1})
+    sender("absMouseReport", {"x": 1, "y": 1, "buttons": 0})
+    sender.close()
+    gate.set()
+    time.sleep(0.6)
+    kb = [p["keys"] for _, m, p in sent if m == "keyboardReport"]
+    assert kb[-1] == []
+    mouse = [p["buttons"] for _, m, p in sent if m == "absMouseReport"]
+    assert mouse[-2:] == [1, 0]

@@ -274,12 +274,10 @@ class StreamerWindow(tk.Toplevel):
 
     def _on_focus_out(self, e):
         """失去焦點: 放開所有修飾鍵與按鍵 (避免 Alt/Ctrl 等卡住)。"""
-        if self._mods or self._keys:
-            self._mods = 0
-            self._keys = []
-            self._send_kbd()
+        self._release_all()
 
     def close(self):
+        self._release_all()      # 關窗前放開滑鼠與鍵盤 (HidSender.close 會把已排隊的放開送完)
         self._closed = True
         if self._after_id:
             try:

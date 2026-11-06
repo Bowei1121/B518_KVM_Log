@@ -166,7 +166,7 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
     """``(method, params)`` for the Monitor UI manual HID report. Whitelisted methods and exact param keys only."""
     method = req.get("method")
     params = req.get("params")
-    if method not in HID_METHODS:
+    if not isinstance(method, str) or method not in HID_METHODS:
         raise FlowError("invalid_argument", "method must be 'absMouseReport', 'keyboardReport' or 'wheelReport'")
     if not isinstance(params, dict):
         raise FlowError("invalid_argument", "params must be an object")

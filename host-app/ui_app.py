@@ -1855,13 +1855,17 @@ class AtlasUI(_BaseTk):
             except Exception:
                 self._streamer_window = None
 
+        popout_device = self.var_sel_device.get().strip()  # pinned: picture, title and HID target stay one device
+
         def frame_getter() -> Any:
+            if self.var_sel_device.get().strip() != popout_device:
+                return None  # selection moved to another device: never show (or control) it from this window
             if self._latest_pil_image is not None and _CV2_OK:
                 import numpy as np
                 return cv2.cvtColor(np.array(self._latest_pil_image), cv2.COLOR_RGB2BGR)
             return None
 
-        hid_sender = HidSender(self.client.send_hid_request, lambda: self.var_sel_device.get().strip())
+        hid_sender = HidSender(self.client.send_hid_request, lambda: popout_device)
 
         def on_close() -> None:
             hid_sender.close()
@@ -1873,10 +1877,10 @@ class AtlasUI(_BaseTk):
             frame_getter=frame_getter,
             input_sender=hid_sender,  # ADR-0008: manual HID via Core `hid`
             fps=15,
-            title=t("stream_title", device=self.var_sel_device.get()),
+            title=t("stream_title", device=popout_device),
             on_close=on_close,
         )
-        bind(self._streamer_window, lambda device=self.var_sel_device.get(): t("stream_title", device=device),
+        bind(self._streamer_window, lambda device=popout_device: t("stream_title", device=device),
              option="title")
         self._log_key("log_popout_open")
 
