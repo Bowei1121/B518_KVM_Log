@@ -124,7 +124,7 @@ class HidSession:
                 self.diagnostics.record(key, None, self.threshold, note={"en": en, "zh": zh})
         return image
 
-    def frame(self, missing="沒有 JetKVM 影格"):
+    def frame(self, missing="No JetKVM frame available"):
         snapshot = self.kvm.latest_frame()
         if snapshot is None:
             raise FlowError("hid_failed", missing)
@@ -151,7 +151,7 @@ class HidSession:
             self.diagnostics.record(key, value, self.threshold, frame, box, color=color)
         missed = box is None or (check_threshold and value < self.threshold)
         if missed:
-            text = f"找不到 {key}（相似度 {value:.2f}）" if message is None else message.format(
+            text = f"{key} not found (similarity {value:.2f})" if message is None else message.format(
                 value=value, key=key, threshold=self.threshold)
             error = FlowError("hid_failed", text)
             error.score = value
@@ -188,7 +188,7 @@ class HidSession:
             await asyncio.sleep(settle)
         self._raise_if_hid(failure, entered)
 
-    async def focus_dock(self, key, template, frame, *, message, failure="Dock HID 錯誤", settle=0.0, after=None):
+    async def focus_dock(self, key, template, frame, *, message, failure="Dock HID failed", settle=0.0, after=None):
         """Find ``key`` on the full frame and click it."""
         box = self.find(key, template, frame, downscale=False, message=message)
         await self.click(box, failure=failure, settle=settle, after=after)
@@ -238,14 +238,14 @@ async def run_focus(kvm, device, template_root=None, threshold=0.8, log=print):
     try:
         box = session.find(
             dock_key, dock, frame, downscale=False,
-            message="找不到 Dock icon (相似度 {value:.2f} < {threshold})")
+            message="Dock icon not found (similarity {value:.2f} < {threshold})")
     except FlowError as exc:
         result["dock_icon"] = exc.score
         log(exc.code, str(exc))
         return finish()
     result["dock_icon"] = box.score
     try:
-        await session.click(box, failure="Dock HID 錯誤", settle=0.5)
+        await session.click(box, failure="Dock HID failed", settle=0.5)
     except FlowError as exc:
         result["hid_error"] = session.last_hid_error()
         log(exc.code, str(exc))

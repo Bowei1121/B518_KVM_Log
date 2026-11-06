@@ -172,7 +172,7 @@ def test_hid_failure_does_not_fail_the_next_start_test_on_the_same_kvm(serve):
 
     assert first["status"] == "error"
     assert first["error"] == "hid_failed"
-    assert first["message"] == "Dock HID 錯誤: hidg endpoint disconnected"
+    assert first["message"] == "Dock HID failed: hidg endpoint disconnected"
     assert second["status"] == "ok"
     assert second["error"] == ""
     assert second["data"] == {"action": "ok"}

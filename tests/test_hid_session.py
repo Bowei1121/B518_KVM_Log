@@ -51,7 +51,7 @@ def test_find_returns_the_box_and_click_hits_its_center(tmp_path):
     template = session.load("BT", "dock_icon")
 
     box = session.find("dock_icon", template, frame, downscale=False)
-    asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+    asyncio.run(session.click(box, failure="Dock HID failed"))
 
     assert tuple(box) == (20, 10, 30, 30)
     assert kvm.clicks == [(35, 25)]
@@ -83,7 +83,7 @@ def test_find_raises_flow_error_when_the_template_is_absent(tmp_path):
 
     assert excinfo.value.code == "hid_failed"
     assert excinfo.value.entered == []
-    assert str(excinfo.value).startswith("找不到 dock_icon（相似度")
+    assert str(excinfo.value).startswith("dock_icon not found (similarity")
     assert excinfo.value.score is not None
 
 
@@ -96,10 +96,10 @@ def test_click_raises_flow_error_when_hid_reports_an_error(tmp_path):
     box = session.find("dock_icon", template, frame, downscale=False)
 
     with pytest.raises(FlowError) as excinfo:
-        asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+        asyncio.run(session.click(box, failure="Dock HID failed"))
 
     assert excinfo.value.code == "hid_failed"
-    assert str(excinfo.value) == "Dock HID 錯誤: hidg endpoint disconnected"
+    assert str(excinfo.value) == "Dock HID failed: hidg endpoint disconnected"
     assert kvm.clicks == [(35, 25)]
 
 
@@ -113,10 +113,10 @@ def test_click_raises_before_clearing_a_previous_hid_error(tmp_path):
     box = session.find("dock_icon", template, frame, downscale=False)
 
     with pytest.raises(FlowError) as excinfo:
-        asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+        asyncio.run(session.click(box, failure="Dock HID failed"))
 
     assert excinfo.value.code == "hid_failed"
-    assert str(excinfo.value) == "Dock HID 錯誤: late from previous step"
+    assert str(excinfo.value) == "Dock HID failed: late from previous step"
     assert kvm.clicks == []
     assert kvm.rpc_errors == []
 
@@ -130,7 +130,7 @@ def test_new_session_drops_a_hid_error_left_by_the_previous_command(tmp_path):
     template = session.load("BT", "dock_icon")
     box = session.find("dock_icon", template, frame, downscale=False)
 
-    asyncio.run(session.click(box, failure="Dock HID 錯誤"))
+    asyncio.run(session.click(box, failure="Dock HID failed"))
 
     assert kvm.clicks == [(35, 25)]
     assert kvm.rpc_errors == []
@@ -147,10 +147,10 @@ def test_type_text_raises_when_hid_reports_an_error(tmp_path):
     kvm.type_text = type_then_fail
 
     with pytest.raises(FlowError) as excinfo:
-        asyncio.run(session.type_text("SN1", failure="SN 輸入 HID 錯誤", entered=[1]))
+        asyncio.run(session.type_text("SN1", failure="SN input HID failed", entered=[1]))
 
     assert excinfo.value.code == "hid_failed"
-    assert str(excinfo.value) == "SN 輸入 HID 錯誤: keyboard lost"
+    assert str(excinfo.value) == "SN input HID failed: keyboard lost"
     assert excinfo.value.entered == [1]
 
 
@@ -165,10 +165,10 @@ def test_press_enter_raises_when_hid_reports_an_error(tmp_path):
     kvm.press_enter = press_then_fail
 
     with pytest.raises(FlowError) as excinfo:
-        asyncio.run(session.press_enter(failure="SN 輸入 HID 錯誤", entered=[1]))
+        asyncio.run(session.press_enter(failure="SN input HID failed", entered=[1]))
 
     assert excinfo.value.code == "hid_failed"
-    assert str(excinfo.value) == "SN 輸入 HID 錯誤: keyboard lost"
+    assert str(excinfo.value) == "SN input HID failed: keyboard lost"
     assert excinfo.value.entered == [1]
 
 
@@ -183,10 +183,10 @@ def test_press_command_shift_m_raises_when_hid_reports_an_error(tmp_path):
     kvm.press_command_shift_m = shortcut_then_fail
 
     with pytest.raises(FlowError) as excinfo:
-        asyncio.run(session.press_command_shift_m(failure="快捷鍵 HID 錯誤"))
+        asyncio.run(session.press_command_shift_m(failure="Shortcut HID failed"))
 
     assert excinfo.value.code == "hid_failed"
-    assert str(excinfo.value) == "快捷鍵 HID 錯誤: shortcut lost"
+    assert str(excinfo.value) == "Shortcut HID failed: shortcut lost"
     assert excinfo.value.entered == []
 
 
@@ -205,7 +205,7 @@ def test_press_command_shift_m_runs_after_before_the_hid_error(tmp_path):
     kvm.press_command_shift_m = shortcut_then_fail
 
     with pytest.raises(FlowError):
-        asyncio.run(session.press_command_shift_m(failure="快捷鍵 HID 錯誤", after=after))
+        asyncio.run(session.press_command_shift_m(failure="Shortcut HID failed", after=after))
 
     assert calls == ["after"]
 

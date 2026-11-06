@@ -631,10 +631,10 @@ class FakeCore:
                         "message": "Log Solution Dock icon is not on screen"}
             if dev.screen == "review":
                 return {"status": "error", "error": "log_solution_review",
-                        "message": "Log Solution 為待確認（開始前），未繼續開始監控"}
+                        "message": "Log Solution requires review (before start); monitoring was not started"}
             if dev.screen == "monitoring":
                 return {"status": "error", "error": "log_solution_busy",
-                        "message": "Log Solution 為 monitoring，未送出快捷鍵"}
+                        "message": "Log Solution is monitoring; no shortcut sent"}
         time.sleep(self.monitor_delay)
         with self._mu:
             dev.monitor_ready()

@@ -158,7 +158,7 @@ def test_checkbox_hid_stops_at_the_first_error(root):
     with pytest.raises(FlowError) as excinfo:
         _run(kvm, 4, [{"slot": 1, "sn": "SN1"}, {"slot": 2, "sn": "SN2"}], root)
 
-    assert str(excinfo.value) == "checkbox HID 錯誤: err1"
+    assert str(excinfo.value) == "Checkbox HID failed: err1"
     assert excinfo.value.entered == []
     assert sum(event[0] == "click" for event in kvm.events) == 2
     assert not any(event[0] == "type" for event in kvm.events)
@@ -179,7 +179,7 @@ def test_input_click_hid_error_types_nothing(root):
     with pytest.raises(FlowError) as excinfo:
         _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
 
-    assert str(excinfo.value) == "SN 輸入 HID 錯誤: input lost"
+    assert str(excinfo.value) == "SN input HID failed: input lost"
     assert excinfo.value.entered == []
     assert not any(event[0] == "type" for event in kvm.events)
 

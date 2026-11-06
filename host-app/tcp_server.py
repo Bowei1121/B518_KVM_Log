@@ -1117,7 +1117,10 @@ class TcpJsonServer:
             "cmd": cmd,
             "status": status,
             "error": error if status != "ok" else "",
-            "message": message if status != "ok" else "",
+            # External RPC errors and OS exceptions may contain localized text.
+            # Keep diagnostics in logs; never send localized error text over TCP.
+            "message": (message if message.isascii() else
+                        "Command failed; see Core logs for details") if status != "ok" else "",
             "elapsed_sec": round(time.monotonic() - started, 3),
             "data": data,
         }
