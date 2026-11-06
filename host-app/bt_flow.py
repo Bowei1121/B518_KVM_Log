@@ -13,6 +13,40 @@ MATCH_THRESHOLD = 0.80
 DOCK_SETTLE_DELAY = 0.5
 
 
+def start_all_region(frame, window):
+    """Where Start All may be: right of and below the window match, to the frame edge.
+
+    The window template is usually only the title-bar corner (traffic lights), so its width says nothing
+    about the window's width. Start All sits at the bottom centre of the BT window.
+    """
+    height, width = frame.shape[:2]
+    return window.left, window.top, width - window.left, height - window.top
+
+
+def find_start_all(session, template, frame, window):
+    """Start All right of / below the window corner; if that misses, the whole frame (the corner may have
+    matched another window's traffic lights). Raises ``FlowError(hid_failed)`` with the better score."""
+    try:
+        return session.find(
+            "start_all", template, frame, within=start_all_region(frame, window), downscale=False,
+            message="Start All not found (similarity {value:.2f})",
+        )
+    except FlowError as exc:
+        if exc.score is None:
+            raise
+        first = exc.score
+    try:
+        return session.find(
+            "start_all_full_frame", template, frame, downscale=False,
+            message="Start All not found (similarity {value:.2f})",
+        )
+    except FlowError as exc:
+        if exc.score is not None and exc.score < first:
+            exc.args = (f"Start All not found (similarity {first:.2f})",)
+            exc.score = first
+        raise
+
+
 async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="BT"):
     """Click BT Start All once. Returns ``{"action": "start_all"}`` or raises ``FlowError``."""
     catalog = TemplateCatalog(template_root)
@@ -37,11 +71,7 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
             "window", window, frame, downscale=True, color=(0, 255, 0),
             message="BT window not found (similarity {value:.2f})",
         )
-        roi = (found.left, found.top, found.width, frame.shape[0] - found.top)
-        start = session.find(
-            "start_all", start_all, frame, within=roi, downscale=False,
-            message="Start All not found (similarity {value:.2f})",
-        )
+        start = find_start_all(session, start_all, frame, found)
         await session.click(start, failure="Start All HID failed", settle=0)
         ok = True
         return {"action": "start_all"}

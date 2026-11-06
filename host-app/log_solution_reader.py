@@ -49,6 +49,9 @@ WHITE_MIN = 176
 GUTTER_POINTS = ((6, 29), (17, 29), (28, 29))
 GUTTER_MIN = 232
 COLOR_TOLERANCE = 20
+# Deep-ring slack under scale 1.4: at most this far from the corner colour counts as compression.
+# Below WAITING↔STOPPED (45), so an exact STOPPED cover on a WAITING cell still rejects.
+DEEP_RING_LOW_SCALE_SLACK = 42
 TERMINAL_STATUSES = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
 
@@ -268,6 +271,8 @@ def _sample_status(frame, x, y, scale):
     d = 2.5 if scale >= 1.4 else max(3.0, 3.0 / scale)
     deep_ring = ((6, d), (17, d), (28, d), (6, 26 - d), (17, 26 - d), (28, 26 - d),
                  (d, 5), (d, 13), (d, 21), (34 - d, 5), (34 - d, 13), (34 - d, 21))
+    deep_corner = (np.asarray(STATUS_COLORS[corner_vote], dtype=float)
+                   if corner_vote != "OUTSIDE" else None)
     for px, py in deep_ring:
         sample = (_median_patch(frame, x + px * scale, y + py * scale, scale * 0.7)
                   if scale >= 1.4 else _pixel(frame, x + px * scale, y + py * scale))
@@ -275,6 +280,12 @@ def _sample_status(frame, x, y, scale):
         if label is None:
             continue
         if label != corner_vote:
+            # Under 1.4 px per unit (a 1920x1080 Mac at 100%) one pixel carries the H.264 block's
+            # colour shift: WAITING (217) reads as STOPPED (191). A sample still this close to the
+            # corner colour is that shift, not a differently coloured cover.
+            if (scale < 1.4 and deep_corner is not None and label != "OUTSIDE"
+                    and float(np.linalg.norm(sample.astype(float) - deep_corner)) <= DEEP_RING_LOW_SCALE_SLACK):
+                continue
             return None
 
     # Option 1 — shallow original-colour ring for insets 2–5, just inside the black border.
