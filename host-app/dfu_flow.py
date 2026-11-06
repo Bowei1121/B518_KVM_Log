@@ -109,7 +109,7 @@ def search_region(frame, window_box):
     match box can be smaller than the real window; controls lie to its right and below.
     """
     height, width = frame.shape[:2]
-    wx, wy = max(0, int(window_box[0])), max(0, int(window_box[1]))
+    wx, wy = (max(0, int(v)) for v in tuple(window_box)[:2])
     return (wx, wy, max(1, width - wx), max(1, height - wy))
 
 

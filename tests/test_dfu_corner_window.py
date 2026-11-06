@@ -23,7 +23,7 @@ def root(tmp_path):
     catalog = save_templates(root, FOUR)
     kvm = SyntheticDfuKVM(FOUR)
     x, y, w, h = CORNER
-    catalog.save_crop(kvm.frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "DFU", "window")
+    catalog.save_crop(kvm.frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "DFU", "window", overwrite=True)
     return root
 
 
@@ -50,7 +50,8 @@ def test_extra_checkbox_beyond_window_template_fails_closed(root):
     with pytest.raises(FlowError) as exc:
         asyncio.run(dfu_flow.run_dfu_input(kvm, 4, [{"slot": 1, "sn": "A"}], root, log=_quiet))
     assert exc.value.code == "hid_failed"
-    assert not [e for e in kvm.events if e[0] in ("click", "type", "enter")]
+    # Only the Dock focus click may happen; no checkbox click and no SN.
+    assert [e for e in kvm.events if e[0] in ("click", "type", "enter")] == [("click", 25, 225)]
 
 
 def test_search_region_extends_to_frame_edges():
