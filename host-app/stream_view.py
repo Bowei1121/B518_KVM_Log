@@ -16,7 +16,7 @@ import tkinter as tk
 import cv2
 from PIL import Image, ImageTk
 
-from ui_i18n import bind, streaming_hint_key
+from ui_i18n import bind, streaming_hint_key, t
 from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, apply_window_icon, pin_light_appearance
 
 # Tkinter keysym -> USB HID usage code
@@ -70,6 +70,7 @@ class StreamerWindow(tk.Toplevel):
         self._map = None              # (scale, off_x, off_y, frame_w, frame_h)
         self._buttons = 0             # 目前滑鼠按鍵 bitmask
         self._last_move = 0.0
+        self._last_abs = None
         self._mods = 0                # 目前修飾鍵 bitmask
         self._keys = []               # 目前按住的一般鍵 usage (最多 6)
 
@@ -81,8 +82,19 @@ class StreamerWindow(tk.Toplevel):
 
         self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)
-        self.status = bind(tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG), streaming_hint_key(self.input_sender))
-        self.status.pack(fill="x")
+        # 底部列: 監看 / 手動控制 radio (預設監看, 避免誤觸干擾自動流程) + 狀態提示
+        self._mode = tk.StringVar(value="monitor")
+        bar = tk.Frame(self, bg=WINDOW_BG)
+        bar.pack(fill="x")
+        if self.input_sender is not None:
+            for value, key in (("monitor", "stream_mode_monitor"), ("control", "stream_mode_control")):
+                rb = tk.Radiobutton(bar, variable=self._mode, value=value, command=self._on_mode_change,
+                                    bg=WINDOW_BG, fg=TEXT_FG, activebackground=WINDOW_BG,
+                                    selectcolor=WINDOW_BG, highlightthickness=0)
+                bind(rb, key)
+                rb.pack(side="left", padx=(8, 4))
+        self.status = bind(tk.Label(bar, anchor="w", bg=WINDOW_BG, fg=TEXT_FG), self._hint_text)
+        self.status.pack(side="left", fill="x", expand=True, padx=8)
 
         if self.input_sender is not None:
             self.label.bind("<Motion>", self._on_motion)
@@ -98,11 +110,38 @@ class StreamerWindow(tk.Toplevel):
             # 失去焦點時放開所有鍵 (Alt 切選單 / Alt-Tab 等會遺失放開 -> 卡鍵)
             self.bind("<FocusOut>", self._on_focus_out)
             # 滑鼠進入畫面就取得鍵盤焦點, 讓打字直接送到遠端
-            self.label.bind("<Enter>", lambda e: self.focus_set())
+            self.label.bind("<Enter>", lambda e: self._controlling() and self.focus_set())
 
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.focus_set()
         self._tick()
+
+    # ---- 監看 / 手動控制 ----
+    def _controlling(self):
+        return self.input_sender is not None and self._mode.get() == "control"
+
+    def _hint_text(self):
+        return t(streaming_hint_key(self.input_sender if self._controlling() else None))
+
+    def _on_mode_change(self):
+        if self._controlling():
+            self.focus_set()
+        else:
+            self._release_all()
+        bind(self.status, self._hint_text)
+
+    def _release_all(self):
+        """切回監看: 放開所有滑鼠按鍵與鍵盤按鍵, 避免遠端卡鍵。"""
+        if self.input_sender is None:
+            return
+        if self._buttons and self._last_abs:
+            self._buttons = 0
+            self.input_sender("absMouseReport", {"x": self._last_abs[0], "y": self._last_abs[1], "buttons": 0})
+        self._buttons = 0
+        if self._mods or self._keys:
+            self._mods = 0
+            self._keys = []
+            self._send_kbd()
 
     # ---- 畫面更新 ----
     def _tick(self):
@@ -141,11 +180,14 @@ class StreamerWindow(tk.Toplevel):
     def _send_mouse(self, ex, ey):
         a = self._to_abs(ex, ey)
         if a:
+            self._last_abs = a
             self.input_sender("absMouseReport",
                               {"x": a[0], "y": a[1], "buttons": self._buttons})
 
     # ---- 滑鼠 ----
     def _on_motion(self, e):
+        if not self._controlling():
+            return
         now = time.monotonic()
         if now - self._last_move < 0.016:    # 節流 ~60/s
             return
@@ -154,6 +196,8 @@ class StreamerWindow(tk.Toplevel):
         self._send_mouse(e.x, e.y)
 
     def _on_btn(self, e, bit, press):
+        if not self._controlling():
+            return
         self.focus_set()
         self._sync_mods(e.state)             # 點擊前校正修飾鍵 (避免 Shift 卡住變 shift+click)
         if press:
@@ -168,6 +212,8 @@ class StreamerWindow(tk.Toplevel):
             self.after(40, lambda: self._buttons == 0 and self._send_mouse(ex, ey))
 
     def _on_wheel(self, e):
+        if not self._controlling():
+            return
         step = int(e.delta / 120) or (1 if e.delta > 0 else -1)
         self.input_sender("wheelReport", {"wheelY": step})
 
@@ -199,6 +245,8 @@ class StreamerWindow(tk.Toplevel):
             self._send_kbd()
 
     def _on_key_press(self, e):
+        if not self._controlling():
+            return
         m = self._merge_mods(e.state)
         bit = _MOD_BIT.get(e.keysym)
         if bit is not None:
@@ -211,6 +259,8 @@ class StreamerWindow(tk.Toplevel):
         self._send_kbd()
 
     def _on_key_release(self, e):
+        if not self._controlling():
+            return
         m = self._merge_mods(e.state)
         bit = _MOD_BIT.get(e.keysym)
         if bit is not None:

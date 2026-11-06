@@ -58,7 +58,7 @@ if str(_HOST_APP_DIR) not in sys.path:
 
 import alarm_banner
 from app_info import about_text, asset_path, is_ci_build, version
-from core_channel import CoreChannel, channel_name_for
+from core_channel import CoreChannel, HidSender, channel_name_for
 from core_indicator import CoreIndicator
 from core_protocol import flatten_reply
 from match_diagnostics import MatchDiagnostics, note_for_language
@@ -282,14 +282,16 @@ class CoreServiceClient:
         self._status = CoreChannel("status", host, self.port)
         self._stream = CoreChannel("stream", host, self.port)
         self._inspect = CoreChannel("inspect", host, self.port)
+        self._hid = CoreChannel("hid", host, self.port)
         self._poll_lock = threading.Lock()
         self._poll_inflight = False
 
     def _channels(self) -> Tuple[CoreChannel, ...]:
-        return (self._status, self._stream, self._inspect)
+        return (self._status, self._stream, self._inspect, self._hid)
 
     def _channel_for(self, cmd: str) -> CoreChannel:
-        return {"status": self._status, "stream": self._stream, "inspect": self._inspect}[channel_name_for(cmd)]
+        return {"status": self._status, "stream": self._stream, "inspect": self._inspect,
+                "hid": self._hid}[channel_name_for(cmd)]
 
     def set_target(self, host: str, port: int) -> None:
         """Update target host and port. Non-blocking: in-flight requests are cancelled."""
@@ -319,6 +321,11 @@ class CoreServiceClient:
     ) -> Dict[str, Any]:
         """Send a newline-delimited JSON command on its channel and return the matched reply."""
         return self._channel_for(cmd).request(cmd, payload, timeout)
+
+    def send_hid_request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float,
+                         device: str) -> Dict[str, Any]:
+        """Manual HID on its own connection, addressed to ``device`` (the pop-out's input_sender)."""
+        return self._hid.request(cmd, payload, timeout, device)
 
     def start_status_poll(self, callback: Any, timeout: float = 2.0) -> bool:
         """Poll core_status on a worker thread unless the previous poll is still in flight.
@@ -1854,14 +1861,17 @@ class AtlasUI(_BaseTk):
                 return cv2.cvtColor(np.array(self._latest_pil_image), cv2.COLOR_RGB2BGR)
             return None
 
+        hid_sender = HidSender(self.client.send_hid_request, lambda: self.var_sel_device.get().strip())
+
         def on_close() -> None:
+            hid_sender.close()
             self._streamer_window = None
             self._log_key("log_popout_close")
 
         self._streamer_window = StreamerWindow(
             self,
             frame_getter=frame_getter,
-            input_sender=None,  # Readonly monitoring
+            input_sender=hid_sender,  # ADR-0008: manual HID via Core `hid`
             fps=15,
             title=t("stream_title", device=self.var_sel_device.get()),
             on_close=on_close,

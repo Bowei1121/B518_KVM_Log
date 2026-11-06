@@ -22,6 +22,7 @@ CHANNEL_BY_CMD: Dict[str, str] = {
     "core_status": "status",
     "snapshot": "stream",
     "inspect": "inspect",
+    "hid": "hid",
 }
 
 
@@ -136,9 +137,10 @@ class CoreChannel:
             self._sock = None
         _hard_close(sock)
 
-    def request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float) -> Dict[str, Any]:
+    def request(self, cmd: str, payload: Optional[Dict[str, Any]], timeout: float,
+                device: str = "") -> Dict[str, Any]:
         req_id = f"ui-{uuid.uuid4().hex[:8]}"
-        data = dumps_request(build_request(cmd, req_id, "", payload))
+        data = dumps_request(build_request(cmd, req_id, device, payload))
         # Sample before the lock so a request already queued behind an in-flight
         # one is cancelled, instead of reconnecting and sending after abort().
         gen = self._gen
@@ -201,3 +203,62 @@ class CoreChannel:
     def _attach_socket(self, sock: socket.socket) -> None:
         """Make sock visible to abort() before the generation check."""
         self._sock = sock
+
+
+class HidSender:
+    """Low-latency manual HID sender for the pop-out window (ADR-0008).
+
+    ``__call__(method, params)`` never blocks the Tk thread: reports go to a queue that one worker drains over
+    its own Core connection. Mouse moves (absMouseReport with the same buttons as the pending one) are coalesced
+    to the newest, so a motion burst costs one round-trip, not one per event. Button, key and wheel reports keep
+    their order. A ``device_busy`` reply (an automated command is running) drops the reports queued so far.
+    """
+
+    MAX_QUEUE = 256
+
+    def __init__(self, send, device_getter, timeout: float = 2.0) -> None:
+        self._send = send  # send(cmd, payload, timeout, device) -> reply dict
+        self._device_getter = device_getter
+        self._timeout = timeout
+        self._cv = threading.Condition()
+        self._queue: list = []
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name="hid-sender", daemon=True)
+        self._thread.start()
+
+    def __call__(self, method: str, params: Dict[str, Any]) -> None:
+        with self._cv:
+            if self._closed:
+                return
+            if (method == "absMouseReport" and self._queue and self._queue[-1][0] == method
+                    and self._queue[-1][1].get("buttons") == params.get("buttons")):
+                self._queue[-1] = (method, params)
+            elif len(self._queue) < self.MAX_QUEUE:
+                self._queue.append((method, params))
+            self._cv.notify()
+
+    def close(self) -> None:
+        with self._cv:
+            self._closed = True
+            self._queue.clear()
+            self._cv.notify_all()
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while not self._queue and not self._closed:
+                    self._cv.wait()
+                if self._closed:
+                    return
+                method, params = self._queue.pop(0)
+            device = self._device_getter()
+            if not device:
+                continue
+            try:
+                reply = self._send("hid", {"method": method, "params": params}, self._timeout, device)
+            except Exception:
+                log.debug("HID send failed", exc_info=True)
+                continue
+            if reply.get("error") == "device_busy":
+                with self._cv:
+                    self._queue.clear()
