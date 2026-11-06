@@ -170,7 +170,7 @@ def test_wait_for_reliable_reading_records_its_read(rig):
     kvm = _kvm_of(by_ip, registry, "DFU-01")
     stats = srv._slot("DFU-01").stats
 
-    observation = asyncio.run(monitor_flow._wait_for_reliable_reading(kvm, 0, stats))
+    observation, _reason = asyncio.run(monitor_flow._wait_for_reliable_reading(kvm, 0, stats))
 
     assert observation is not None and observation.reliable
     assert stats.report()["readable_ratio"]["samples"] == 1

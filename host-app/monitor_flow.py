@@ -43,14 +43,18 @@ def _busy(state):
 
 
 async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None):
-    """Newest reliable Log Solution reading within timeout_sec, or None."""
+    """``(observation, last_reason)``: the newest reliable reading within timeout_sec, or None with
+    the reason of the last unreliable one (``no_frame`` when there was no picture)."""
     deadline = time.monotonic() + timeout_sec
+    last_reason = "no_frame"
     while True:
         _frame, observation = read_latest_app_frame_recorded(kvm, stats)
         if observation is not None and observation.reliable:
-            return observation
+            return observation, ""
+        if observation is not None:
+            last_reason = observation.reason or "unreadable"
         if time.monotonic() >= deadline:
-            return None
+            return None, last_reason
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
@@ -138,10 +142,11 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             if not clicked:
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution Dock icon not found (similarity {score:.2f})")
-            observation = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats)
+            observation, last_reason = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats)
             if observation is None:
                 raise FlowError("log_solution_not_found",
-                                f"Log Solution not found within {confirm_sec:g} s after Dock click; no shortcut sent")
+                                f"Log Solution not found within {confirm_sec:g} s after Dock click; no shortcut sent"
+                                f" (last reading: {last_reason})")
             if observation.state == MarkerState.MONITORING:
                 raise _busy(observation.state)
             if observation.state == MarkerState.REVIEW:
