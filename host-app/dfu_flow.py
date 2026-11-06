@@ -102,12 +102,34 @@ def _window(session, frame, template, key):
                         message="DFU_window not found", check_threshold=False)
 
 
+def search_region(frame, window_box):
+    """From the window match's top-left to the frame's right/bottom edge.
+
+    The window template may cover only part of the window (e.g. its top-left corner), so the
+    match box can be smaller than the real window; controls lie to its right and below.
+    """
+    height, width = frame.shape[:2]
+    wx, wy = max(0, int(window_box[0])), max(0, int(window_box[1]))
+    return (wx, wy, max(1, width - wx), max(1, height - wy))
+
+
 def _control(session, frame, window_box, template, key):
-    return session.find(key, template, frame, within=window_box, downscale=False)
+    """Find a control in the extended region, then once on the whole frame; report the higher score on a miss."""
+    try:
+        return session.find(key, template, frame, within=search_region(frame, window_box), downscale=False)
+    except FlowError as first:
+        try:
+            return session.find(key, template, frame, downscale=False)
+        except FlowError as second:
+            scores = [e.score for e in (first, second) if getattr(e, "score", None) is not None]
+            error = FlowError("hid_failed", f"{key} not found (similarity {max(scores):.2f})" if scores else str(second))
+            if scores:
+                error.score = max(scores)
+            raise error from second
 
 
 def _boxes_or_fail(frame, window, templates, channels, diagnostics):
-    boxes = find_checkboxes(frame, window, templates["checkbox_checked"], templates["checkbox_unchecked"])
+    boxes = find_checkboxes(frame, search_region(frame, window), templates["checkbox_checked"], templates["checkbox_unchecked"])
     diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
                        note={"en": "expected {}".format(channels), "zh": "預期 {} 個 checkbox".format(channels)})
     if len(boxes) != channels:
