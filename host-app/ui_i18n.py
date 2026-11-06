@@ -22,6 +22,10 @@ LANGUAGES = ("en", "zh")
 DEFAULT_LANGUAGE = "en"
 LANGUAGE_NAMES = {"en": "English", "zh": "中文"}
 
+def streaming_hint_key(input_sender):
+    return "streaming_hint_readonly" if input_sender is None else "streaming_hint_control"
+
+
 STRINGS: Dict[str, Dict[str, str]] = {
     "en": {
         "station_connected": "Connected",
@@ -111,7 +115,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "btn_popout": "⧉ Pop-out window",
         "btn_popout_short": "⧉",
         "btn_live_short": "▶",
-        "tip_popout": "Open the picture in another large window, handy for a second screen.",
+        "tip_popout": "Enlarge the stream for monitoring in another window or on a second screen.",
         "preview_info": "Size: {w}x{h} | Time: {time}",
         # ---- manual check and tools
         "ctrl_title": "Manual check and tools",
@@ -199,7 +203,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "log_selected_device": "Selected machine {device} (station {station}) to watch.",
         "log_ui_callback_error": "UI callback error: {error}",
         "stream_title": "KVM Streamer - {device}",
-        "streaming_hint": "Streaming (click the picture to control the remote machine; mouse move/click/wheel + keyboard)",
+        "streaming_hint_readonly": "Streaming (read-only monitoring; use the station's JetKVM Web UI for remote control)",
+        "streaming_hint_control": "Streaming (click the picture to control the remote machine; mouse move/click/wheel + keyboard)",
         # ---- match results window
         "match_title": "Latest match results",
         "match_device": "Device:",
@@ -421,7 +426,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "btn_popout": "⧉ 放大視窗",
         "btn_popout_short": "⧉",
         "btn_live_short": "▶",
-        "tip_popout": "把畫面開在另一個大視窗，方便放到第二個螢幕上看。",
+        "tip_popout": "放大串流畫面進行監看，可移至另一個視窗或第二個螢幕。",
         "preview_info": "解析度：{w}x{h} | 時間：{time}",
         # ---- manual check and tools
         "ctrl_title": "手動診斷與操作",
@@ -509,7 +514,8 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "log_selected_device": "已選定觀測設備：{device}（站別 {station}）",
         "log_ui_callback_error": "UI 回呼錯誤：{error}",
         "stream_title": "KVM 串流 - {device}",
-        "streaming_hint": "串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤)",
+        "streaming_hint_readonly": "串流中（僅供唯讀監看；遠端操作請使用該站的 JetKVM Web UI）",
+        "streaming_hint_control": "串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤)",
         # ---- match results window
         "match_title": "最近一次匹配結果",
         "match_device": "設備：",

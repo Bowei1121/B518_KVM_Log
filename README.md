@@ -13,6 +13,10 @@ Repo 名稱保留 JetKVM_Log 以維持既有 Git 與部署識別；測試機本�
 - `tools/`：管理與驗證工具，包含 Core 管理（`manage_core.py`）與錄影重播壓測（`replay_load_test.py`）。
 - `third_party/jetkvm/`：固定版本的 JetKVM private mirror submodule。
 
+## 監看與遠端操作
+
+Bridge Monitor 的 KVM Streamer 彈出視窗僅供監看與檢視，無法控制滑鼠或鍵盤。需要手動遠端操作時，請在瀏覽器開啟該站的 JetKVM Web UI（輸入該站 KVM IP）。
+
 ## 設備清單與通訊協定
 
 設備清單是上位機唯一的設備設定來源，檔案位於 `~/Documents/template/devices.json`，不隨程式打包、不進 Git。格式與範例見 `config/devices.example.json`：每台設備以設備 ID（`<站別>-<兩位數>`，例如 `DFU-01`）為 key，記錄站別、KVM IP 與測試通道數。Core Service 缺檔或內容有誤時拒絕啟動並列出錯誤；修改後需重啟 Core。Monitor UI 的「⚙ 設備設定」頁可編輯此檔並在儲存前驗證，儲存時會備份舊檔。
