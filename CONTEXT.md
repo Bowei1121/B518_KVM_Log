@@ -1,5 +1,7 @@
 # Domain Glossary
 
+- **Protocol language**: Core↔client TCP JSON round-trip `message` / protocol error text is English-only (Chinese garbles). Monitor UI i18n and bilingual log `extra["zh"]` are separate.
+
 ## Architecture
 - **Core／Core Service（Core 服務）**: 獨立運作的 Headless 背景程序（Python Process），負責維護所有 KVM 連線、畫面辨識流水線，並提供 TCP JSON 介面給 LabVIEW。不帶任何 Tkinter GUI 元件。
 - **橋接程式／Monitor UI（AtlasKVM 監控畫面）**: 用於觀測畫面、維護 Pattern、手動操作的 Tkinter GUI。它降級為一般的 Client，只透過 TCP 與 Core Service 溝通，不再自己直接去連 WebRTC 或管理 TCP Server。

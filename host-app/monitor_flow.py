@@ -39,7 +39,7 @@ def neutral_pointer_position(frame):
 
 
 def _busy(state):
-    return FlowError("log_solution_busy", f"Log Solution 為 {state.value}，未送出快捷鍵")
+    return FlowError("log_solution_busy", f"Log Solution is {state.value}; no shortcut sent")
 
 
 async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None):
@@ -62,7 +62,7 @@ async def click_dock_icon(kvm, frame, session):
     dock_path = session.catalog.path("COMMON", "log_solution_dock_icon")
     template = session.load("COMMON", "log_solution_dock_icon", record_missing=False)
     if template is None:
-        raise FlowError("hid_failed", f"缺少 Log Solution Dock 圖示模板: {dock_path}")
+        raise FlowError("hid_failed", f"Missing Log Solution Dock icon template: {dock_path}")
 
     async def park():
         if hasattr(kvm, "move"):
@@ -70,7 +70,7 @@ async def click_dock_icon(kvm, frame, session):
 
     try:
         box = await session.focus_dock(
-            "log_solution_dock_icon", template, frame, message="找不到 dock", after=park)
+            "log_solution_dock_icon", template, frame, message="Dock icon not found", after=park)
     except FlowError as exc:
         if exc.score is None:
             raise
@@ -89,7 +89,7 @@ async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, t
     try:
         frame, _observation = read_latest_app_frame_recorded(kvm, stats)
         if frame is None:
-            raise FlowError("hid_failed", "沒有 JetKVM 影格")
+            raise FlowError("hid_failed", "No JetKVM frame available")
         session = HidSession(kvm, template_root, diagnostics, threshold=threshold)
         ok, _score = await click_dock_icon(kvm, frame, session)
         return ok
@@ -98,11 +98,11 @@ async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, t
 
 
 def _review(where):
-    return FlowError("log_solution_review", f"Log Solution 為待確認（{where}），未繼續開始監控")
+    return FlowError("log_solution_review", f"Log Solution requires review ({where}); monitoring was not started")
 
 
 def _kvm_lost_waiting():
-    return FlowError("kvm_connect_failed", "KVM 連線於等待監控中斷線")
+    return FlowError("kvm_connect_failed", "KVM connection lost while waiting for monitoring")
 
 
 async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
@@ -127,31 +127,31 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
     try:
         frame, observation = read_latest_app_frame_recorded(kvm, gate.stats)
         if frame is None:
-            raise FlowError("hid_failed", "沒有 JetKVM 影格")
+            raise FlowError("hid_failed", "No JetKVM frame available")
         if observation.reliable and observation.state == MarkerState.MONITORING:
             # Busy refusal is not "seen monitoring for this round": the request stays unanswered.
             raise _busy(observation.state)
         if observation.reliable and observation.state == MarkerState.REVIEW:
-            raise _review("開始前")
+            raise _review("before start")
         if observation.may_send_hid:
             clicked, score = await click_dock_icon(kvm, frame, session)
             if not clicked:
                 raise FlowError("log_solution_not_found",
-                                f"找不到 Log Solution Dock 圖示（相似度 {score:.2f}）")
+                                f"Log Solution Dock icon not found (similarity {score:.2f})")
             observation = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats)
             if observation is None:
                 raise FlowError("log_solution_not_found",
-                                f"點擊 Dock 後 {confirm_sec:g} 秒內找不到 Log Solution，未送出快捷鍵")
+                                f"Log Solution not found within {confirm_sec:g} s after Dock click; no shortcut sent")
             if observation.state == MarkerState.MONITORING:
                 raise _busy(observation.state)
             if observation.state == MarkerState.REVIEW:
-                raise _review("點擊 Dock 後")
+                raise _review("after Dock click")
             if observation.may_open_round:
                 async def note_shortcut():
                     if on_shortcut is not None:
                         on_shortcut()
 
-                await session.press_command_shift_m(failure="快捷鍵 HID 錯誤", after=note_shortcut)
+                await session.press_command_shift_m(failure="Shortcut HID failed", after=note_shortcut)
 
         if observation.reliable and observation.state == MarkerState.PREPARING:
             preparing()
@@ -175,13 +175,13 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 ok = True
                 return {"state": MarkerState.MONITORING.value, "capacity": int(decision.capacity)}
             if decision.state == MarkerState.REVIEW:
-                raise _review("等待監控中")
+                raise _review("while waiting for monitoring")
             if decision.state == MarkerState.PREPARING:
                 preparing()
             if time.monotonic() >= deadline:
                 raise FlowError(
                     "monitor_not_started",
-                    f"{start_timeout_sec:g} 秒內未見監控中")
+                    f"Monitoring not observed within {start_timeout_sec:g} s")
             await asyncio.sleep(POLL_INTERVAL_SEC)
     except FlowError as exc:
         log(exc.code, str(exc))

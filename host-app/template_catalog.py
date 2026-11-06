@@ -60,7 +60,7 @@ class TemplateCatalog:
     def normalize_device(device: str) -> str:
         normalized = str(device or "").strip().upper()
         if normalized not in _DEVICE_SPECS:
-            raise ValueError("未知設備: {}".format(device))
+            raise ValueError("Unknown device: {}".format(device))
         return normalized
 
     def specs(self, device: str) -> Sequence[TemplateSpec]:
@@ -81,11 +81,11 @@ class TemplateCatalog:
         normalized_device = self.normalize_device(device)
         normalized_action = str(action or "").strip().lower()
         if normalized_device == "FCT":
-            raise ValueError("{} 不支援 {} 操作".format(normalized_device, normalized_action))
+            raise ValueError("{} does not support action {}".format(normalized_device, normalized_action))
         if normalized_device == "BT" and normalized_action == "input":
-            raise ValueError("{} 不支援 {} 操作".format(normalized_device, normalized_action))
+            raise ValueError("{} does not support action {}".format(normalized_device, normalized_action))
         if normalized_action != "button":
-            raise ValueError("未知操作: {}".format(action))
+            raise ValueError("Unknown action: {}".format(action))
         return "start_all" if normalized_device == "BT" else "button"
 
     def supports_action(self, device: str, action: str) -> bool:
@@ -99,7 +99,7 @@ class TemplateCatalog:
     def focus_template(self, device: str) -> str:
         normalized_device = self.normalize_device(device)
         if normalized_device not in ("BT", "FCT"):
-            raise ValueError("{} 不支援 Dock 前景化".format(normalized_device))
+            raise ValueError("{} does not support Dock focus".format(normalized_device))
         return "dock_icon"
 
     def pre_action_template(self, device: str, action: str) -> Optional[str]:
@@ -112,7 +112,7 @@ class TemplateCatalog:
         normalized_device = self.normalize_device(device)
         key = str(template_key or "").strip()
         if key not in tuple(spec.key for spec in _DEVICE_SPECS[normalized_device]):
-            raise ValueError("設備 {} 不支援模板種類: {}".format(normalized_device, template_key))
+            raise ValueError("Device {} does not support template type: {}".format(normalized_device, template_key))
         return key
 
     def device_dir(self, device: str) -> Path:

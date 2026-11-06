@@ -24,25 +24,25 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         window = session.load("BT", "window")
         start_all = session.load("BT", "start_all")
         if dock is None or window is None or start_all is None:
-            raise FlowError("hid_failed", "缺少 BT 模板 (dock_icon / window / start_all)")
+            raise FlowError("hid_failed", "Missing BT templates (dock_icon / window / start_all)")
         frame = session.frame()
         await session.focus_dock(
             "dock_icon", dock, frame,
-            message="找不到 Dock icon（相似度 {value:.2f}）",
+            message="Dock icon not found (similarity {value:.2f})",
             settle=DOCK_SETTLE_DELAY,
         )
 
         frame = session.frame()
         found = session.find(
             "window", window, frame, downscale=True, color=(0, 255, 0),
-            message="找不到 BT 視窗（相似度 {value:.2f}）",
+            message="BT window not found (similarity {value:.2f})",
         )
         roi = (found.left, found.top, found.width, frame.shape[0] - found.top)
         start = session.find(
             "start_all", start_all, frame, within=roi, downscale=False,
-            message="找不到 Start All（相似度 {value:.2f}）",
+            message="Start All not found (similarity {value:.2f})",
         )
-        await session.click(start, failure="Start All HID 錯誤", settle=0)
+        await session.click(start, failure="Start All HID failed", settle=0)
         ok = True
         return {"action": "start_all"}
     finally:

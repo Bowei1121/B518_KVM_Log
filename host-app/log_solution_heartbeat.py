@@ -21,7 +21,7 @@ from enum import Enum
 from typing import Any, Callable, Optional, Tuple
 
 HEARTBEAT_STOPPED = "log_solution_heartbeat_stopped"
-HEARTBEAT_STOPPED_MESSAGE = "畫面心跳停止，請人員檢查測試電腦與 Log Solution"
+HEARTBEAT_STOPPED_MESSAGE = "Display heartbeat stopped; ask an operator to check the test computer and Log Solution"
 HEARTBEAT_UNREADABLE = "heartbeat_unreadable"  # reason of a reading whose heartbeat cells are not all readable
 
 STEP_MIN_SEC = 0.8  # counted observations are at least this far apart (heartbeat step is 0.5 s)

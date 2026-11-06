@@ -258,7 +258,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 
 - 計入序列的觀察：新影格（序號不同）、四格可讀、與上一張已計入者的接收時間相隔 0.8～3 秒。相隔不到 0.8 秒的觀察不計入、不清空；相隔超過 3 秒，序列重新開始。
 - 任一無效觀察（四格有讀不到、影格過舊、串流凍結、換 stream、定位失敗）清空序列。
-- 連續 3 張有效觀察四格相同 → `log_solution_heartbeat_stopped`，message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。正常時約 2 秒內判定。這不宣稱 App 已當機。
+- 連續 3 張有效觀察四格相同 → `log_solution_heartbeat_stopped`，message「Display heartbeat stopped; ask an operator to check the test computer and Log Solution」。正常時約 2 秒內判定。這不宣稱 App 已當機。
 - 心跳讀不到不是心跳停止：可靠讀數但四格有讀不到，或定位失敗，一律屬 Log Solution 看不到，走 Dock 補救，不回 `log_solution_heartbeat_stopped`。
 - 各指令仍逐次判斷，既有拒絕規則不變，不因 Core 鎖定狀態額外拒絕指令。Core 的 `stations[].is_heartbeat_stopped` 在任一路徑判定心跳停止後鎖定為 `true`，只有再次計入四格變化才解除；無效觀察、串流凍結、換 stream、tracker 重置及間隔過長只清空判斷序列，不解除鎖定。沒有人工復位指令。橋接不自動重試、不重新開測、不取用不確定結果。
 - 判讀順序：KVM 健康 → 串流凍結（`frame_frozen`）→ 心跳 → 判讀標記與色帶。`check_start`、`check_finish`、`inspect` 長輪詢中途看到心跳停止就立即回覆，不等 `timeout_sec`。
@@ -413,7 +413,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進，或畫面沒有 PTS（ADR-0005）。`input`、`start_test`、`monitor_start` 送 HID 前檢查，`monitor_start` 等待中也會檢查；這三個指令回此碼時未送出任何 HID | 設備異常，暫停，不得判產品 FAIL |
-| `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「畫面心跳停止，請人員檢查測試電腦與 Log Solution」。各指令逐次判斷不變；Core 心跳停止狀態鎖定至再次計入四格變化，無效觀察不解除 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
+| `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「Display heartbeat stopped; ask an operator to check the test computer and Log Solution」。各指令逐次判斷不變；Core 心跳停止狀態鎖定至再次計入四格變化，無效觀察不解除 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
 | `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
 | `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
@@ -520,7 +520,7 @@ Log Solution 仍在準備中時：
 開始前已是待確認：
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0013","device":"DFU-01","cmd":"monitor_start",
- "status":"error","error":"log_solution_review","message":"Log Solution 為待確認（開始前），未繼續開始監控","elapsed_sec":0.2,
+ "status":"error","error":"log_solution_review","message":"Log Solution requires review (before start); monitoring was not started","elapsed_sec":0.2,
  "data":{"state":"","capacity":0}}
 ```
 
@@ -645,3 +645,7 @@ Log Solution 仍在準備中時：
 不等待 `devices[].connected = true`；根據 `kvm_connect_failed` 與 `devices[].connect_failed` 處理連線異常。重連後若測試進行中，送 `check_finish`，不重送 `start_test`。不確定進度可送 `check_start`；它可能回 `taken`，須依首次交付處理。
 
 `core_restarted`：比較 `status.core_uptime_sec`，秒數變小表示 Core 重開；記憶體內的本輪開始與交付記錄已消失，`check_start`／`check_finish` 回 `monitor_not_ready`。重開期間的輪次整輪 NG，在 HMI 交人工確認，由 TE 重測，不自動重新開測。
+
+## Protocol text language
+
+Protocol round-trip error/status text, including JSON `message` fields, MUST be English-only. Keep error codes stable. Monitor UI translations and bilingual log `extra["zh"]` sidecars are separate and remain unchanged.

@@ -92,14 +92,14 @@ def _load(session, keys):
     for key in keys:
         image = session.load("DFU", key)
         if image is None:
-            raise FlowError("hid_failed", f"缺少必要 DFU 模板 {key}")
+            raise FlowError("hid_failed", f"Missing required DFU template {key}")
         loaded[key] = image
     return loaded
 
 
 def _window(session, frame, template, key):
     return session.find(key, template, frame, downscale=True, color=(0, 255, 0),
-                        message="找不到 DFU_window", check_threshold=False)
+                        message="DFU_window not found", check_threshold=False)
 
 
 def _control(session, frame, window_box, template, key):
@@ -111,7 +111,7 @@ def _boxes_or_fail(frame, window, templates, channels, diagnostics):
     diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
                        note={"en": "expected {}".format(channels), "zh": "預期 {} 個 checkbox".format(channels)})
     if len(boxes) != channels:
-        raise FlowError("hid_failed", f"DFU 視窗找到 {len(boxes)} 個 checkbox，設備設定為 {channels} 個通道")
+        raise FlowError("hid_failed", f"DFU window has {len(boxes)} checkboxes; device is configured for {channels} channels")
     return boxes
 
 
@@ -144,39 +144,39 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
-        frame = session.frame(missing="Dock 前景化後沒有 JetKVM 影格")
+        frame = session.frame(missing="No JetKVM frame available after Dock focus")
         window = _window(session, frame, templates["window"], "window")
         boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
 
         for _channel, box in _mismatches(boxes, wanted):
-            await session.click(box, failure="checkbox HID 錯誤")
+            await session.click(box, failure="Checkbox HID failed")
         await asyncio.sleep(FOCUS_DELAY)
 
         # Verify; allow exactly one correction pass for boxes still out of state.
         for attempt in range(2):
-            verify = session.frame(missing="checkbox 複驗沒有 JetKVM 影格")
+            verify = session.frame(missing="No JetKVM frame available during checkbox verification")
             try:
                 verified_window = _window(session, verify, templates["window"], f"window_verify{attempt + 1}")
             except FlowError as exc:
                 if exc.score is None:
                     raise
-                raise FlowError("hid_failed", "checkbox 複驗找不到 DFU_window") from exc
+                raise FlowError("hid_failed", "DFU_window not found during checkbox verification") from exc
             boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics)
             remaining = _mismatches(boxes, wanted)
             if not remaining:
                 frame, window = verify, verified_window
                 break
             if attempt == 1:
-                raise FlowError("hid_failed", "checkbox 第二次複驗仍不符")
+                raise FlowError("hid_failed", "Checkbox state still mismatched on second verification")
             for _channel, box in remaining:
-                await session.click(box, failure="checkbox 重試 HID 錯誤")
+                await session.click(box, failure="Checkbox retry HID failed")
             await asyncio.sleep(FOCUS_DELAY)
 
         input_box = _control(session, frame, window, templates["input"], "input")
-        await session.click(input_box, failure="SN 輸入 HID 錯誤", entered=entered)
+        await session.click(input_box, failure="SN input HID failed", entered=entered)
         for slot, sn in serials:
-            await session.type_text(sn, failure="SN 輸入 HID 錯誤", entered=entered)
-            await session.press_enter(failure="SN 輸入 HID 錯誤", entered=entered)
+            await session.type_text(sn, failure="SN input HID failed", entered=entered)
+            await session.press_enter(failure="SN input HID failed", entered=entered)
             entered.append(slot)
         ok = True
         return {"entered": entered}
@@ -201,10 +201,10 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
-        frame = session.frame(missing="Dock 前景化後沒有 JetKVM 影格")
+        frame = session.frame(missing="No JetKVM frame available after Dock focus")
         window = _window(session, frame, templates["window"], "window")
         button_box = _control(session, frame, window, templates["button"], "button")
-        await session.click(button_box, failure="OK HID 錯誤")
+        await session.click(button_box, failure="OK HID failed")
         ok = True
         return {"action": "ok"}
     except FlowError as exc:

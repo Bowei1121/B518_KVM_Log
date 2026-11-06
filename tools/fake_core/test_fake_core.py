@@ -560,7 +560,7 @@ def test_monitor_start_during_review_then_confirm_is_manual_verification(core, c
     core.command("review")
     r = cli.call("monitor_start", timeout_sec=5)
     assert r["error"] == "log_solution_review" and r["data"] == {"state": "", "capacity": 0}
-    assert r["message"] == "Log Solution 為待確認（開始前），未繼續開始監控"
+    assert r["message"] == "Log Solution requires review (before start); monitoring was not started"
     core.command("confirm")
     r = cli.call("check_finish", timeout_sec=0)
     assert r["status"] == "error" and r["error"] == "manual_verification_required"
