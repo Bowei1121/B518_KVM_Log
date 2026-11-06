@@ -153,6 +153,41 @@ def _input_items(req: Dict[str, Any], entry: Any) -> Any:
     return req.get("items")
 
 
+HID_METHODS = frozenset({"absMouseReport", "keyboardReport", "wheelReport"})
+
+
+def _int_in(value: Any, low: int, high: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise FlowError("invalid_argument", f"{name} must be an integer between {low} and {high}")
+    return value
+
+
+def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
+    """``(method, params)`` for the Monitor UI manual HID report. Whitelisted methods and exact param keys only."""
+    method = req.get("method")
+    params = req.get("params")
+    if not isinstance(method, str) or method not in HID_METHODS:
+        raise FlowError("invalid_argument", "method must be 'absMouseReport', 'keyboardReport' or 'wheelReport'")
+    if not isinstance(params, dict):
+        raise FlowError("invalid_argument", "params must be an object")
+    expected = {"absMouseReport": {"x", "y", "buttons"}, "keyboardReport": {"modifier", "keys"},
+                "wheelReport": {"wheelY"}}[method]
+    if set(params) != expected:
+        raise FlowError("invalid_argument", f"params for {method} must have exactly: {', '.join(sorted(expected))}")
+    if method == "absMouseReport":
+        clean = {"x": _int_in(params["x"], 0, 32767, "x"), "y": _int_in(params["y"], 0, 32767, "y"),
+                 "buttons": _int_in(params["buttons"], 0, 7, "buttons")}
+    elif method == "keyboardReport":
+        keys = params["keys"]
+        if not isinstance(keys, list) or len(keys) > 6:
+            raise FlowError("invalid_argument", "keys must be a list of at most 6 integers")
+        clean = {"modifier": _int_in(params["modifier"], 0, 255, "modifier"),
+                 "keys": [_int_in(k, 0, 255, "keys item") for k in keys]}
+    else:
+        clean = {"wheelY": _int_in(params["wheelY"], -127, 127, "wheelY")}
+    return method, clean
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """Every rule of one protocol command: what validation accepts, how dispatch runs it, what the reply carries.
@@ -383,6 +418,8 @@ class TcpJsonServer:
                         stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"action": ""},
                         unsupported_message=(
                             "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in")),
+            CommandSpec("hid", self._handle_hid, fields=frozenset({"method", "params"}), device_bound=True,
+                        takes_lock=False, parse=_hid_args),
             CommandSpec("monitor_start", self._handle_monitor_start, fields=frozenset({"timeout_sec"}),
                         device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0},
                         needs_slot=True),
@@ -754,6 +791,25 @@ class TcpJsonServer:
         except FlowError as exc:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
+
+    async def _handle_hid(self, ctx: CommandContext, args: Tuple[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Monitor UI manual HID (ADR-0008). Dropped with device_busy while any locked command holds the device.
+
+        It takes no Device Lock itself, so a stream of mouse moves can never make a LabVIEW command busy.
+        It touches no slot, round or gate state.
+        """
+        device_id = ctx.entry.device_id
+        if self.lock_manager.is_locked(device_id):
+            return {"status": "busy", "error": "device_busy",
+                    "message": "An automated command is running; manual HID is dropped"}
+        method, params = args
+        try:
+            ctx.kvm.call(method, params)
+        except Exception as exc:
+            logger.warning("Manual HID %s failed on %s: %s", method, device_id, exc,
+                           extra={"zh": "手動 HID %s 在 %s 失敗: %s"})
+            return {"status": "error", "error": "hid_failed", "message": "HID report could not be sent"}
+        return {"status": "ok", "data": {}}
 
     async def _handle_check_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """check_start: two fresh frames of activity, or a finished round delivered once."""

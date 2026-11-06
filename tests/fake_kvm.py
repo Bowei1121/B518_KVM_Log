@@ -94,6 +94,11 @@ class FakeKVM(FakeKVMSession):
         self.stream_id = stream_id
         self.frame_presentation_time = pts
         self.connected = True
+        self.rpc_calls: list = []
+
+    def call(self, method: str, params: Any) -> None:
+        """Record a raw JSON-RPC report (manual HID); ``rpc_calls`` holds ``(method, params)``."""
+        self.rpc_calls.append((method, params))
 
     def latest_frame(self) -> Optional[FrameSnapshot]:
         if self.frame is None:
