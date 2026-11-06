@@ -16,7 +16,7 @@ import tkinter as tk
 import cv2
 from PIL import Image, ImageTk
 
-from ui_i18n import bind
+from ui_i18n import bind, streaming_hint_key
 from ui_widgets import PREVIEW_BG, TEXT_FG, WINDOW_BG, apply_window_icon, pin_light_appearance
 
 # Tkinter keysym -> USB HID usage code
@@ -81,10 +81,10 @@ class StreamerWindow(tk.Toplevel):
 
         self.label = tk.Label(self, bg=PREVIEW_BG)
         self.label.pack(fill="both", expand=True)
-        self.status = bind(tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG), "streaming_hint")
+        self.status = bind(tk.Label(self, anchor="w", bg=WINDOW_BG, fg=TEXT_FG), streaming_hint_key(self.input_sender))
         self.status.pack(fill="x")
 
-        if self.input_sender:
+        if self.input_sender is not None:
             self.label.bind("<Motion>", self._on_motion)
             self.label.bind("<Button-1>", lambda e: self._on_btn(e, 1, True))
             self.label.bind("<ButtonRelease-1>", lambda e: self._on_btn(e, 1, False))
