@@ -254,7 +254,15 @@ class HidSender:
         """Stop accepting reports; the worker sends what is already queued, then exits. Never blocks."""
         with self._cv:
             self._closed = True
+            # Reports are absolute states: only the newest keyboard and mouse report matter now.
+            last_kbd = next((e for e in reversed(self._queue) if e[1] == "keyboardReport"), None)
+            last_mouse = next((e for e in reversed(self._queue) if e[1] == "absMouseReport"), None)
+            self._queue = [e for e in (last_kbd, last_mouse) if e is not None]
             self._cv.notify_all()
+
+    def is_done(self) -> bool:
+        """True once the worker has exited (everything queued at close() was sent or dropped)."""
+        return not self._thread.is_alive()
 
     def join(self, timeout: float) -> bool:
         """Wait (bounded) until the worker has sent everything queued after close(). True if it finished."""

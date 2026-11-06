@@ -194,7 +194,7 @@ def test_hid_sender_full_queue_never_drops_release():
     kb = [p["keys"] for _, m, p in sent if m == "keyboardReport"]
     assert kb[-1] == []
     mouse = [p["buttons"] for _, m, p in sent if m == "absMouseReport"]
-    assert mouse[-2:] == [1, 0]
+    assert mouse[-1] == 0  # close keeps only the final state, which is released
 
 
 def test_hid_sender_join_waits_for_queued_release():
@@ -208,3 +208,20 @@ def test_hid_sender_join_waits_for_queued_release():
     gate.set()
     assert sender.join(2.0) is True
     assert [p["keys"] for _, _, p in sent] == [[4], []]
+
+
+def test_hid_sender_close_collapses_backlog_to_final_state():
+    device = {"v": "BT-01"}
+    sender, gate, sent = _blocking_sender(device)
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})
+    time.sleep(0.1)
+    for key in ([5], [6], []):
+        sender("keyboardReport", {"modifier": 0, "keys": key})
+    for _ in range(20):
+        sender("wheelReport", {"wheelY": 1})
+    sender.close()
+    assert not sender.is_done()  # still blocked in the in-flight send: the UI must keep waiting
+    gate.set()
+    assert sender.join(2.0) and sender.is_done()
+    assert [p["keys"] for _, m, p in sent if m == "keyboardReport"] == [[4], []]
+    assert not [1 for _, m, _ in sent if m == "wheelReport"]

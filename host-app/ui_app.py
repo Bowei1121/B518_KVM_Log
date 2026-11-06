@@ -266,6 +266,19 @@ def connect_failure_tip(station: Dict[str, Any], pres: Any, seconds_left: Option
 # CoreServiceClient: Thread-Safe TCP Client to Core Service
 # ==============================================================================
 
+HID_CLOSE_WAIT_SEC = 6.0  # in-flight send (2 s) + final key and mouse reports (2 s each)
+
+
+def frame_for_device(snapshot: Optional[Tuple[str, Any]], device: str) -> Any:
+    """The image of one ``(device, image)`` snapshot when it was requested for ``device``, else None.
+
+    The snapshot is read once into a local by the caller, so the check and the image come from the same tuple.
+    """
+    if snapshot is None or snapshot[0] != device:
+        return None
+    return snapshot[1]
+
+
 class CoreServiceClient:
     """Monitor UI client to the Core Service.
 
@@ -566,6 +579,8 @@ class AtlasUI(_BaseTk):
         self._stream_thread: Optional[threading.Thread] = None
         self._latest_pil_image: Optional[Image.Image] = None
         self._latest_pil_device: Optional[str] = None  # device the cached image was requested for
+        # Published as ONE tuple so a reader never pairs an image with another device's tag.
+        self._latest_frame: Optional[Tuple[str, Any]] = None
         self._hid_sender: Optional[HidSender] = None
         self._latest_tk_photo: Optional[ImageTk.PhotoImage] = None
         self._latest_raw_frame: Any = None
@@ -1767,6 +1782,7 @@ class AtlasUI(_BaseTk):
                     pil_img = Image.open(io.BytesIO(img_bytes))
                     self._latest_pil_image = pil_img
                     self._latest_pil_device = device
+                    self._latest_frame = (device, pil_img)
                     self._render_image_on_canvas(pil_img)
                     stamp = time.strftime("%H:%M:%S")
                     self._set_info(self.lbl_preview_info, lambda: t("preview_info", w=w, h=h, time=stamp), MUTED_FG)
@@ -1834,6 +1850,7 @@ class AtlasUI(_BaseTk):
                         pil_img = Image.open(io.BytesIO(img_bytes))
                         self._latest_pil_image = pil_img
                         self._latest_pil_device = device
+                        self._latest_frame = (device, pil_img)
                         w = res.get("width", pil_img.width)
                         h = res.get("height", pil_img.height)
 
@@ -1863,11 +1880,10 @@ class AtlasUI(_BaseTk):
 
         def frame_getter() -> Any:
             # Only an image that was requested for this window's device: the cache is shared by all devices.
-            if self._latest_pil_device != popout_device:
-                return None
-            if self._latest_pil_image is not None and _CV2_OK:
+            image = frame_for_device(self._latest_frame, popout_device)
+            if image is not None and _CV2_OK:
                 import numpy as np
-                return cv2.cvtColor(np.array(self._latest_pil_image), cv2.COLOR_RGB2BGR)
+                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
             return None
 
         hid_sender = HidSender(self.client.send_hid_request, lambda: popout_device)
@@ -1991,9 +2007,22 @@ class AtlasUI(_BaseTk):
                 self._streamer_window.close()  # releases keys/buttons, queues them, destroys the window
             except Exception:
                 pass
-        if self._hid_sender is not None:
-            self._hid_sender.close()
-            self._hid_sender.join(1.0)  # bounded: let the queued releases reach Core before disconnecting
+        sender = self._hid_sender
+        if sender is not None:
+            sender.close()  # keeps only the final key/mouse state, so the wait below is short
+            # Non-blocking wait: Tk keeps running until the releases are sent (or the deadline passes).
+            self._finish_close(time.monotonic() + HID_CLOSE_WAIT_SEC)
+        else:
+            self._finish_close(0.0)
+
+    def _finish_close(self, deadline: float) -> None:
+        sender = self._hid_sender
+        if sender is not None and not sender.is_done():
+            if time.monotonic() < deadline:
+                self.after(50, lambda: self._finish_close(deadline))
+                return
+            logger.warning("Manual HID release not confirmed before closing; target keys may stay held",
+                        extra={"zh": "關閉前未確認手動 HID 放開事件已送出，目標機按鍵可能卡住"})
 
         # Disconnect TCP client cleanly
         try:
