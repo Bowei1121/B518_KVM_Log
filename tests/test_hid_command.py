@@ -195,3 +195,16 @@ def test_hid_sender_full_queue_never_drops_release():
     assert kb[-1] == []
     mouse = [p["buttons"] for _, m, p in sent if m == "absMouseReport"]
     assert mouse[-2:] == [1, 0]
+
+
+def test_hid_sender_join_waits_for_queued_release():
+    device = {"v": "BT-01"}
+    sender, gate, sent = _blocking_sender(device)
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})
+    time.sleep(0.1)
+    sender("keyboardReport", {"modifier": 0, "keys": []})
+    sender.close()
+    assert sender.join(0.1) is False  # still blocked in send
+    gate.set()
+    assert sender.join(2.0) is True
+    assert [p["keys"] for _, _, p in sent] == [[4], []]

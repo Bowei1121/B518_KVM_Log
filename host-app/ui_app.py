@@ -565,6 +565,8 @@ class AtlasUI(_BaseTk):
         self._streaming_active = False
         self._stream_thread: Optional[threading.Thread] = None
         self._latest_pil_image: Optional[Image.Image] = None
+        self._latest_pil_device: Optional[str] = None  # device the cached image was requested for
+        self._hid_sender: Optional[HidSender] = None
         self._latest_tk_photo: Optional[ImageTk.PhotoImage] = None
         self._latest_raw_frame: Any = None
         self._streamer_window: Optional[StreamerWindow] = None
@@ -1749,11 +1751,11 @@ class AtlasUI(_BaseTk):
 
         def worker() -> None:
             res = self.client.get_snapshot(device=device)
-            self._ui_queue.put(lambda: self._display_snapshot_result(res))
+            self._ui_queue.put(lambda: self._display_snapshot_result(res, device))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _display_snapshot_result(self, res: Dict[str, Any]) -> None:
+    def _display_snapshot_result(self, res: Dict[str, Any], device: Optional[str] = None) -> None:
         if res.get("status") == "ok":
             b64_data = res.get("image_base64", "")
             w = res.get("width", 0)
@@ -1764,6 +1766,7 @@ class AtlasUI(_BaseTk):
                     img_bytes = base64.b64decode(b64_data)
                     pil_img = Image.open(io.BytesIO(img_bytes))
                     self._latest_pil_image = pil_img
+                    self._latest_pil_device = device
                     self._render_image_on_canvas(pil_img)
                     stamp = time.strftime("%H:%M:%S")
                     self._set_info(self.lbl_preview_info, lambda: t("preview_info", w=w, h=h, time=stamp), MUTED_FG)
@@ -1830,6 +1833,7 @@ class AtlasUI(_BaseTk):
                         img_bytes = base64.b64decode(b64_data)
                         pil_img = Image.open(io.BytesIO(img_bytes))
                         self._latest_pil_image = pil_img
+                        self._latest_pil_device = device
                         w = res.get("width", pil_img.width)
                         h = res.get("height", pil_img.height)
 
@@ -1858,14 +1862,16 @@ class AtlasUI(_BaseTk):
         popout_device = self.var_sel_device.get().strip()  # pinned: picture, title and HID target stay one device
 
         def frame_getter() -> Any:
-            if self.var_sel_device.get().strip() != popout_device:
-                return None  # selection moved to another device: never show (or control) it from this window
+            # Only an image that was requested for this window's device: the cache is shared by all devices.
+            if self._latest_pil_device != popout_device:
+                return None
             if self._latest_pil_image is not None and _CV2_OK:
                 import numpy as np
                 return cv2.cvtColor(np.array(self._latest_pil_image), cv2.COLOR_RGB2BGR)
             return None
 
         hid_sender = HidSender(self.client.send_hid_request, lambda: popout_device)
+        self._hid_sender = hid_sender
 
         def on_close() -> None:
             hid_sender.close()
@@ -1982,9 +1988,12 @@ class AtlasUI(_BaseTk):
 
         if self._streamer_window:
             try:
-                self._streamer_window.destroy()
+                self._streamer_window.close()  # releases keys/buttons, queues them, destroys the window
             except Exception:
                 pass
+        if self._hid_sender is not None:
+            self._hid_sender.close()
+            self._hid_sender.join(1.0)  # bounded: let the queued releases reach Core before disconnecting
 
         # Disconnect TCP client cleanly
         try:

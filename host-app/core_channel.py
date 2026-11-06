@@ -256,6 +256,11 @@ class HidSender:
             self._closed = True
             self._cv.notify_all()
 
+    def join(self, timeout: float) -> bool:
+        """Wait (bounded) until the worker has sent everything queued after close(). True if it finished."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
     def _run(self) -> None:
         while True:
             with self._cv:

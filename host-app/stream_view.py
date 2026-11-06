@@ -118,7 +118,8 @@ class StreamerWindow(tk.Toplevel):
 
     # ---- 監看 / 手動控制 ----
     def _controlling(self):
-        return self.input_sender is not None and self._mode.get() == "control"
+        # 沒有有效畫面 (來源設備不符 / 尚無影格) 時不接受任何操作
+        return self.input_sender is not None and self._mode.get() == "control" and self._map is not None
 
     def _hint_text(self):
         return t(streaming_hint_key(self.input_sender if self._controlling() else None))
@@ -152,6 +153,12 @@ class StreamerWindow(tk.Toplevel):
             frame = self.frame_getter()
         except Exception:
             frame = None
+        if frame is None and self._map is not None:
+            # 畫面變為不可用: 先放開所有按鍵, 再清掉舊影像與座標對應
+            self._release_all()
+            self._map = None
+            self._photo = None
+            self.label.config(image="")
         if frame is not None:
             h, w = frame.shape[:2]
             lw = max(self.label.winfo_width(), 1)
