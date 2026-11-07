@@ -52,6 +52,8 @@ COLOR_TOLERANCE = 20
 # Deep-ring slack under scale 1.4: at most this far from the corner colour counts as compression.
 # Below WAITING↔STOPPED (45), so an exact STOPPED cover on a WAITING cell still rejects.
 DEEP_RING_LOW_SCALE_SLACK = 42
+# NOTE: part of this WAITING->STOPPED shift may have come from decoding JetKVM frames with BT.709 instead of
+# BT.601 (fixed in the colorspace PR, JETKVM_DECODE_COLORSPACE). Re-evaluate this slack on site before removing it.
 TERMINAL_STATUSES = frozenset(("PASS", "FAIL", "NOTEST", "TIMEOUT", "STOPPED"))
 
 
@@ -457,6 +459,77 @@ def inspect_app_frame(frame, received_at, now=None, max_age=1.0):
                                 scale=scale, app_origin=(x0, y0), heartbeat=heartbeat)
     return FrameObservation(True, state, capacity, tuple(statuses), scale=scale,
                             app_origin=(x0, y0), heartbeat=heartbeat)
+
+
+STATUS_CORNER_POINTS = ((6, 5), (28, 5), (6, 21), (28, 21))  # the four interior corner samples of a result cell
+
+
+def _cell_box(x0, y0, scale, slot):
+    row, column = divmod(slot - 1, RESULT_COLUMNS)
+    return [x0 + column * RESULT_CELL_WIDTH * scale, y0 + (RESULT_FIRST_Y + row * RESULT_ROW_STEP) * scale,
+            RESULT_CELL_WIDTH * scale, RESULT_CELL_HEIGHT * scale]
+
+
+def _explain_cell_samples(frame, x, y, scale):
+    """The four corner samples of one result cell: BGR value, nearest contract colour and its distance."""
+    samples = []
+    for px, py in STATUS_CORNER_POINTS:
+        fx, fy = x + px * scale, y + py * scale
+        value = _median_patch(frame, fx, fy, max(1, scale * 0.7))
+        if value is None:
+            continue
+        nearest, distance = min(((name, float(np.linalg.norm(value.astype(float) - np.asarray(color))))
+                                 for name, color in STATUS_COLORS.items()), key=lambda item: item[1])
+        samples.append({"point": [fx, fy], "bgr": [int(round(v)) for v in value],
+                        "nearest": nearest, "distance": round(distance, 1)})
+    return samples
+
+
+def explain_app_frame(frame):
+    """Diagnostics of one BGR frame as plain data (JSON-able), for annotated pictures. Never raises on a frame.
+
+    Keys: ``located`` (bool), ``reliable``, ``reason``, ``state``, ``scale``, ``origin`` ([x, y] or None),
+    ``locators`` (two [x, y, w, h] boxes), ``band`` (the result-cell band [x, y, w, h]),
+    ``cells`` ([{"slot", "box", "status"}], status None for the failing cell) and ``failure``
+    (``{"slot", "reason", "samples"}`` when the reading failed on ``result_cell_unknown_N``, else None).
+    The reading uses the same rules as ``read_snapshot`` (heartbeat included), on this frame alone.
+    """
+    out = {"located": False, "reliable": False, "reason": "", "state": None, "scale": 0.0, "origin": None,
+           "locators": [], "band": None, "cells": [], "failure": None}
+    if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3:
+        out["reason"] = "invalid_frame"
+        return out
+    now = time.monotonic()
+    observation = unreadable_heartbeat(inspect_app_frame(frame, now, now=now))
+    out["reliable"] = bool(observation.reliable)
+    out["reason"] = observation.reason
+    out["state"] = None if observation.state is None else observation.state.value
+    located = _locate_app(frame)
+    if located is None:
+        return out
+    x0, y0, scale = located
+    out.update(located=True, scale=float(scale), origin=[float(x0), float(y0)])
+    out["locators"] = [[x0 + loc[0] * scale, y0 + loc[1] * scale, LOCATOR_SIZE * scale, LOCATOR_SIZE * scale]
+                       for loc in (LEFT_LOCATOR, RIGHT_LOCATOR)]
+    if observation.reliable:
+        rows = (observation.capacity - 1) // RESULT_COLUMNS + 1
+        out["cells"] = [{"slot": slot, "box": _cell_box(x0, y0, scale, slot), "status": status}
+                        for slot, status in enumerate(observation.statuses, 1)]
+    else:
+        prefix = "result_cell_unknown_"
+        failing = int(observation.reason[len(prefix):]) if observation.reason.startswith(prefix) else 0
+        for slot in range(1, failing):
+            box = _cell_box(x0, y0, scale, slot)
+            out["cells"].append({"slot": slot, "box": box, "status": _sample_status(frame, box[0], box[1], scale)})
+        if failing:
+            box = _cell_box(x0, y0, scale, failing)
+            out["cells"].append({"slot": failing, "box": box, "status": None})
+            out["failure"] = {"slot": failing, "reason": observation.reason,
+                              "samples": _explain_cell_samples(frame, box[0], box[1], scale)}
+        rows = (failing - 1) // RESULT_COLUMNS + 1 if failing else 1
+    last = _cell_box(x0, y0, scale, max(1, (rows - 1) * RESULT_COLUMNS + 1))
+    out["band"] = [x0, y0, RESULT_COLUMNS * RESULT_CELL_WIDTH * scale, last[1] + last[3] - y0]
+    return out
 
 
 def read_snapshot(snapshot, now=None):

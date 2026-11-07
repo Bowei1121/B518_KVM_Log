@@ -18,7 +18,7 @@ import time
 from hid_session import FlowError, HidSession
 from match_diagnostics import MatchDiagnostics
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
-from log_solution_reader import MarkerState
+from log_solution_reader import MarkerState, explain_app_frame
 from reading_stats import read_latest_app_frame_recorded
 from round_frame_consumer import observe_latest_round_frame
 from template_catalog import TemplateCatalog
@@ -42,18 +42,52 @@ def _busy(state):
     return FlowError("log_solution_busy", f"Log Solution is {state.value}; no shortcut sent")
 
 
-async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None):
+def _explain_note(explanation):
+    """English / Chinese sentences with the numbers of a failing cell, or empty ones."""
+    failure = (explanation or {}).get("failure")
+    if not failure:
+        return "", ""
+    parts = ["({},{},{}) -> {} d={}".format(*sample["bgr"], sample["nearest"], sample["distance"])
+             for sample in failure["samples"]]
+    joined = "; ".join(parts)
+    return (f"; cell {failure['slot']} corner samples BGR: {joined}",
+            f"；第 {failure['slot']} 格四角取樣 BGR（最近契約色、距離）：{joined}")
+
+
+def _record_reading(diagnostics, key, frame, threshold, note, matched):
+    """Annotated Log Solution reading picture; diagnostics only, so any failure is swallowed (returns the log text)."""
+    try:
+        explanation = explain_app_frame(frame)
+    except Exception as exc:
+        explanation = None
+        explain_error = repr(exc)
+    else:
+        explain_error = ""
+    en_extra, zh_extra = _explain_note(explanation)
+    box = None
+    if matched and explanation is not None and explanation.get("band"):
+        box = tuple(int(round(v)) for v in explanation["band"])
+    diagnostics.record(
+        key, 1.0 if matched else None, threshold, frame=frame, box=box,
+        note={"en": note["en"] + en_extra, "zh": note["zh"] + zh_extra}, explanation=explanation)
+    return explain_error
+
+
+async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None):
     """``(observation, last_reason)``: the newest reliable reading within timeout_sec, or None with
     the reason of the last unreliable one (``no_frame`` when there was no picture).
 
     ``last_unreliable`` (optional dict) receives ``{"frame": ...}`` with the newest unreliable picture, so the
-    caller can keep it as diagnostics when the wait times out.
+    caller can keep it as diagnostics when the wait times out. ``last_reliable`` likewise receives the
+    picture of the reliable reading that ended the wait.
     """
     deadline = time.monotonic() + timeout_sec
     last_reason = "no_frame"
     while True:
         frame, observation = read_latest_app_frame_recorded(kvm, stats)
         if observation is not None and observation.reliable:
+            if frame is not None and last_reliable is not None:
+                last_reliable["frame"] = frame
             return observation, ""
         if frame is not None and last_unreliable is not None:
             last_unreliable["frame"] = frame
@@ -149,15 +183,27 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution Dock icon not found (similarity {score:.2f})")
             unreliable = {}
-            observation, last_reason = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats, unreliable)
+            reliable = {}
+            observation, last_reason = await _wait_for_reliable_reading(
+                kvm, confirm_sec, gate.stats, unreliable, reliable)
+            if observation is not None:
+                try:  # best-effort diagnostics: the annotated reading of the screen we are about to act on
+                    _record_reading(
+                        diagnostics, "log_solution_reading", reliable.get("frame"), threshold,
+                        {"en": f"Log Solution read after Dock click: state {observation.state.value}, "
+                               f"capacity {observation.capacity}, statuses {','.join(observation.statuses)}",
+                         "zh": f"點擊 Dock 後讀到 Log Solution：狀態 {observation.state.value}，"
+                               f"容量 {observation.capacity}，各格 {','.join(observation.statuses)}"}, True)
+                except Exception as exc:
+                    log(f"log_solution_reading diagnostics not saved: {exc!r}")
             if observation is None:
                 try:  # best-effort diagnostics: a write failure must not replace log_solution_not_found
-                    diagnostics.record(
-                        "confirm_last_unreliable", None, threshold, frame=unreliable.get("frame"),
-                        note={"en": f"No reliable Log Solution reading within {confirm_sec:g} s after Dock click"
+                    _record_reading(
+                        diagnostics, "confirm_last_unreliable", unreliable.get("frame"), threshold,
+                        {"en": f"No reliable Log Solution reading within {confirm_sec:g} s after Dock click"
                                     f" (last reading: {last_reason})",
                               "zh": f"點擊 Dock 後 {confirm_sec:g} 秒內沒有可靠的 Log Solution 判讀"
-                                    f"（最後判讀：{last_reason}）"})
+                                    f"（最後判讀：{last_reason}）"}, False)
                 except Exception as exc:
                     log(f"confirm_last_unreliable diagnostics not saved: {exc!r}")
                 raise FlowError("log_solution_not_found",

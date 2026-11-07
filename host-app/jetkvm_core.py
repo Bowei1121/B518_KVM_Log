@@ -16,6 +16,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -62,12 +63,66 @@ class KVMNoSignal(RuntimeError):
     reason = "no_signal"
 
 
+# YUV->BGR matrix for JetKVM frames. The JetKVM encodes BT.601 but does not mark the stream as such, so
+# decoding with the frame's own (BT.709 / unmarked) tag shifts PASS green (0,239,0) to about (0,199,0), past
+# the reader's colour tolerance. "auto" follows the frame's own tag (the old behaviour).
+COLORSPACE_ENV = "JETKVM_DECODE_COLORSPACE"
+DEFAULT_DECODE_COLORSPACE = "ITU601"
+DECODE_COLORSPACES = ("ITU601", "ITU709", "auto")
+
+
+def resolve_decode_colorspace(value=None):
+    """Normalize a decode colour matrix setting; None reads ``JETKVM_DECODE_COLORSPACE``.
+
+    Allowed: ITU601, ITU709, auto (case-insensitive). An invalid value falls back to the default with a
+    warning (a typo must not take Core down on the day of the line check).
+    """
+    raw = os.environ.get(COLORSPACE_ENV) if value is None else value
+    if raw is None or not str(raw).strip():
+        return DEFAULT_DECODE_COLORSPACE
+    wanted = str(raw).strip().lower()
+    for allowed in DECODE_COLORSPACES:
+        if allowed.lower() == wanted:
+            return allowed
+    logger.warning("Invalid decode colorspace %r; using %s (allowed: %s)", raw, DEFAULT_DECODE_COLORSPACE,
+                   ", ".join(DECODE_COLORSPACES),
+                   extra={"zh": "解碼色彩空間設定 %r 無效，改用 %s（可用值：%s）"})
+    return DEFAULT_DECODE_COLORSPACE
+
+
+# PyAV reports frame.colorspace / color_range as the ffmpeg integers (AVColorSpace / AVColorRange).
+_FFMPEG_COLORSPACES = {0: "RGB", 1: "ITU709", 2: "UNSPECIFIED", 4: "FCC", 5: "ITU470BG", 6: "SMPTE170M",
+                       7: "SMPTE240M", 8: "YCGCO", 9: "BT2020_NCL", 10: "BT2020_CL"}
+_FFMPEG_RANGES = {0: "UNSPECIFIED", 1: "MPEG", 2: "JPEG"}
+
+
+def colorspace_name(value, ranges=False):
+    """Readable name of a frame's colorspace (or color_range with ``ranges=True``); unknown values stay numeric."""
+    if value is None:
+        return "None"
+    name = getattr(value, "name", None)
+    if name:
+        return str(name)
+    table = _FFMPEG_RANGES if ranges else _FFMPEG_COLORSPACES
+    try:
+        return table.get(int(value), str(int(value)))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def decode_frame_bgr(frame, src_colorspace):
+    """One av.VideoFrame as a BGR array. ``auto`` follows the frame's own tag; otherwise the matrix is forced."""
+    if src_colorspace == "auto":
+        return frame.to_ndarray(format="bgr24")
+    return frame.reformat(format="bgr24", src_colorspace=src_colorspace).to_ndarray()
+
+
 MANUAL_ID_BASE = 1_000_000_000  # operator / release RPCs use ids >= this; Core's automatic ones stay below
 CONFIRM_TIMEOUT_SEC = 1.0
 
 
 class JetKVMClient:
-    def __init__(self, host, password=""):
+    def __init__(self, host, password="", src_colorspace=None):
         # host 可為 "192.168.1.50" 或 "http://192.168.1.50"
         if not host.startswith(("http://", "https://")):
             host = "http://" + host
@@ -80,6 +135,8 @@ class JetKVMClient:
         self.frame_sequence = 0
         self.frame_received_monotonic = None
         self.frame_presentation_time = None
+        self.src_colorspace = resolve_decode_colorspace(src_colorspace)  # decode_colorspace of core_status
+        self.frame_colorspace = None  # the frames' own colorspace tag, as read from the stream
         self.stream_id = uuid.uuid4().hex
         self._frame_lock = threading.Lock()
         self.connected = False
@@ -208,7 +265,13 @@ class JetKVMClient:
                 logger.warning("KVM video track ended (host=%s): %s", self.host, exc,
                                extra={"zh": "KVM 影像軌道結束 (host=%s): %s"})
                 return
-            decoded = f.to_ndarray(format="bgr24")
+            decoded = decode_frame_bgr(f, self.src_colorspace)
+            if self.frame_colorspace is None:
+                self.frame_colorspace = colorspace_name(f.colorspace)
+                logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
+                            self.host, self.frame_colorspace, colorspace_name(f.color_range, ranges=True), f.format.name,
+                            self.src_colorspace,
+                            extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
             presentation_time = None
             if f.pts is not None and f.time_base is not None:
                 presentation_time = float(f.pts * f.time_base)
@@ -253,7 +316,7 @@ class JetKVMClient:
                 return None
             return FrameSnapshot(self.frame.copy(), self.frame_sequence,
                                  self.frame_received_monotonic, self.stream_id,
-                                 self.frame_presentation_time)
+                                 self.frame_presentation_time, self.frame_colorspace, self.src_colorspace)
 
     async def _wait_ice(self, pc):
         if pc.iceGatheringState == "complete":

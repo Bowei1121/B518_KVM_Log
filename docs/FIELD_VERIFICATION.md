@@ -93,3 +93,20 @@ CI 探針 run 40923852878（2026-10-29）中，非零結束與強制結束均只
 - [ ] 一般非系統管理員帳號可以安裝排程工作。
 - [ ] 登入後 Core 自動啟動，且不出現黑色命令視窗。
 - [ ] Core 讀取目前使用者的 `文件\template\devices.json`。
+
+## KVM 影格色彩矩陣：PASS 綠偏色讀不到 Log Solution
+
+**症狀**：`monitor_start` / `check_*` 回 `log_solution_not_found`，訊息最後是 `(last reading: result_cell_unknown_N)`；Log Solution 畫面明明在、定位標記也找得到。
+
+**原因**：JetKVM 以 BT.601 編碼 H.264，但串流沒有正確標示色彩空間；Core 若依影格自己的標記（BT.709 或未標）轉 BGR，色票會偏：PASS (0,239,0) 讀成約 (0,200,0)、FAIL 的 R 被截斷、TESTING 讀成 (255,240,0)，超過 `COLOR_TOLERANCE`（20）。截斷後無法事後反算，所以 Core 在 YUV 轉 BGR 那一步就強制用 BT.601。
+
+**設定**：環境變數 `JETKVM_DECODE_COLORSPACE`（或 `JetKVMClient(..., src_colorspace=...)`），預設 `ITU601`；可用值 `ITU601`、`ITU709`、`auto`（`auto` 跟隨影格標記，等於舊行為）。值不合法時記 warning 並退回 `ITU601`。改設定後需重啟 Core 並重新連線 KVM。
+
+**怎麼確認**：
+1. Core log（`JetKVMClient` logger）每條連線第一張影格記一行：`First video frame (host=…): colorspace=… color_range=… format=…; decoding with ITU601`（中文版 `第一張影格 …`）。
+2. `core_status` 的 `stations[].frame_colorspace`（影格自帶標記）與 `stations[].decode_colorspace`（Core 採用的矩陣），見 `docs/PROTOCOL.md`。
+3. 看 `~/Documents/template/_captures/match_diagnostics/<DEVICE>/latest/`（及 `history/`）的標註圖：LS 原點與兩個定位標記以黃框標出、結果格以綠框（讀到）／紅框（讀不到）標出，左上角文字列出 scale、狀態、各格狀態。失敗於 `result_cell_unknown_N` 時第 N 格畫出四個取樣點，文字列出各點 BGR、最接近的契約色與距離，`summary.json` 的 note 也帶同樣數字。
+4. 判讀：LS 內 KVM Status Template 色票的 PASS 若讀成約 **(0,200,0)、距離 ≈ 39**，就是矩陣錯（參考 `docs/evidence/kvm-colorspace-601-field-annotated.png`）；正確應接近 (0,239,0)，距離個位數。
+5. `monitor_start` 確認期讀到可靠畫面時，也會記一筆 `log_solution_reading`（成功圖）。
+
+**待現場驗證**：`log_solution_reader.DEEP_RING_LOW_SCALE_SLACK = 42`（#188）當初補的 WAITING→STOPPED 偏移，可能有一部分也是這個矩陣錯誤造成。本次保留不動；現場確認 601 解碼後再評估是否收緊。

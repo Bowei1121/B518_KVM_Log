@@ -18,3 +18,5 @@ class FrameSnapshot:
     received_monotonic: float        # time.monotonic() when the frame arrived
     stream_id: str                   # identifies one WebRTC stream; PTS only compares within it
     pts: Optional[float]             # presentation timestamp in seconds, None when the stream sends none
+    frame_colorspace: Optional[str] = None   # the stream's own colorspace tag; None when unknown (replay, tests)
+    decode_colorspace: Optional[str] = None  # the YUV->BGR matrix Core applied (ITU601 / ITU709 / auto)

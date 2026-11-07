@@ -108,6 +108,67 @@ def note_for_language(note, lang):
     return "" if note is None else note
 
 
+def _text(image, text, origin, color, scale=0.5):
+    """Readable text on any background: a black outline under the colour."""
+    # Same thickness for every pass: the glyph advance depends on it, so a thicker outline would drift off the text.
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        cv2.putText(image, text, (origin[0] + dx, origin[1] + dy), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
+
+
+def draw_reading_explanation(image, explanation, first_line_y=56):
+    """Draw an ``explain_app_frame`` result onto ``image`` (in place): origin, locators, result band and cells,
+    the scale / state / reason, the status of each cell, and the sampled colours of a failing cell.
+
+    Only the plain data of the explanation is used. Never raises: a drawing error is logged and skipped.
+    """
+    try:
+        _draw_reading_explanation(image, explanation, first_line_y)
+    except Exception:
+        log.exception("match diagnostics: cannot draw the reading explanation")
+
+
+def _draw_reading_explanation(image, explanation, first_line_y):
+    def rect(box, color, thickness=1):
+        x, y, w, h = box
+        cv2.rectangle(image, (int(round(x)), int(round(y))), (int(round(x + w)), int(round(y + h))), color, thickness)
+
+    green, red, yellow, white = (0, 220, 0), (0, 0, 255), (0, 255, 255), (255, 255, 255)
+    lines = []
+    if not explanation.get("located"):
+        lines.append(("Log Solution not located ({})".format(explanation.get("reason") or "?"), red))
+    else:
+        origin = explanation["origin"]
+        for box in explanation["locators"]:
+            rect(box, yellow, 2)
+        if explanation.get("band"):
+            rect(explanation["band"], (255, 128, 0), 1)
+        cv2.drawMarker(image, (int(round(origin[0])), int(round(origin[1]))), yellow, cv2.MARKER_CROSS, 14, 2)
+        lines.append(("origin=({:.0f},{:.0f}) scale={:.3f} state={} reliable={} reason={}".format(
+            origin[0], origin[1], explanation["scale"], explanation.get("state"),
+            explanation.get("reliable"), explanation.get("reason") or "-"), white))
+        statuses = []
+        for cell in explanation["cells"]:
+            ok = cell["status"] is not None
+            rect(cell["box"], green if ok else red, 1 if ok else 2)
+            x, y = cell["box"][0], cell["box"][1]
+            _text(image, str(cell["slot"]), (int(x) + 2, int(y) + 12), green if ok else red, 0.4)
+            statuses.append("{}:{}".format(cell["slot"], cell["status"] or "?"))
+        if statuses:
+            lines.append(("cells " + " ".join(statuses), white))
+        failure = explanation.get("failure")
+        if failure:
+            lines.append(("cell {} corner samples (BGR):".format(failure["slot"]), red))
+            for sample in failure["samples"]:
+                px, py = sample["point"]
+                cv2.circle(image, (int(round(px)), int(round(py))), 3, red, -1)
+                b, g, r = sample["bgr"]
+                lines.append(("  ({:.0f},{:.0f}) BGR=({},{},{}) nearest={} dist={}".format(
+                    px, py, b, g, r, sample["nearest"], sample["distance"]), red))
+    for index, (text, color) in enumerate(lines):
+        _text(image, text, (12, first_line_y + 20 * index), color)
+
+
 class MatchDiagnostics:
     """One-run recorder with a small interface for matching flow code."""
 
@@ -138,7 +199,8 @@ class MatchDiagnostics:
         with summary.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
-    def record(self, key, score, threshold, frame=None, box=None, note=None, color=(0, 200, 255)):
+    def record(self, key, score, threshold, frame=None, box=None, note=None, color=(0, 200, 255),
+               explanation=None):
         matched = score is not None and box is not None and score >= threshold
         image_name = ""
         if frame is not None:
@@ -149,6 +211,8 @@ class MatchDiagnostics:
             score_text = "n/a" if score is None else "{:.3f}".format(score)
             label = "{} {} ({})".format(key, score_text, "MATCH" if matched else "MISS")
             cv2.putText(annotated, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+            if explanation is not None:
+                draw_reading_explanation(annotated, explanation)
             index = len(self.records) + 1
             image_name = "{:02d}_{}.png".format(index, key)
             self._annotated[index] = (image_name[:-4], annotated)
