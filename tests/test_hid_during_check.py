@@ -311,8 +311,8 @@ def test_dock_handover_releases_before_the_first_click(tmp_path, monkeypatch):
                                      ("click", 9, 9)]  # released before Core's click
         assert seen["late"]["error"] == "device_busy"  # the operator's late release is dropped, harmlessly
         assert _last(kvm, "keyboardReport") == {"modifier": 0, "keys": []}
-        # The operator never let go of the mouse button, so once Core is done the target gets that state back.
-        assert _last(kvm, "absMouseReport") == {"x": 5, "y": 6, "buttons": 1}
+        # Releases only: the held button is not pressed again after Core's click.
+        assert _last(kvm, "absMouseReport") == {"x": 5, "y": 6, "buttons": 0}
     finally:
         srv.stop()
         srv.wait(timeout=2.0)
@@ -470,9 +470,9 @@ def test_manual_hid_is_refused_until_the_reconcile_ack_arrives(tmp_path, monkeyp
         assert _manual(srv, "keyboardReport", {"modifier": 8, "keys": [4]})["status"] == "ok"
         _send(srv, "check_start", device="DFU-01", timeout_sec=3)
         assert seen["flag"] is True and seen["during"]["error"] == "device_busy"
-        # The refused Shift+B is the operator's newest intent, so the reconcile loop delivers it afterwards.
-        assert srv._slot("DFU-01").manual_hid["intent_kbd"] == (2, (5,))
-        assert _last(kvm, "keyboardReport") == {"modifier": 2, "keys": [5]}
+        # The refused Shift+B is never replayed: the target ends neutral, not with B down.
+        assert _last(kvm, "keyboardReport") == {"modifier": 0, "keys": []}
+        assert srv._slot("DFU-01").manual_hid["remote_kbd"] == (0, ())
         assert srv._slot("DFU-01").dock_recovering is False
     finally:
         srv.stop()
@@ -488,7 +488,8 @@ def test_cancelled_reconcile_still_returns_the_lock_and_the_lease(core):
         return {"status": "ok", "data": {}}
 
     srv.register_handler(CommandSpec("noop_lock", noop, device_bound=True))
-    srv._slot("BT-01").manual_hid["intent_kbd"] = (2, (4,))  # something to reconcile when the command ends
+    st = srv._slot("BT-01").manual_hid
+    st["remote_kbd"], st["intent_kbd"] = (2, (4,)), (0, ())  # a refused release to deliver when the command ends
     waiting = threading.Event()
 
     async def stuck(method, params):
@@ -527,3 +528,72 @@ def test_lock_taking_command_releases_manual_state(core):
     kvm.rpc_calls.clear()
     asyncio.run(srv._neutralize_manual_hid_async("BT-01", kvm))
     assert kvm.rpc_calls == []  # nothing left down: nothing sent
+
+
+def test_refused_new_press_is_never_replayed(core):
+    srv, kvm = core
+    assert srv.lock_manager.try_acquire("BT-01", holder="monitor_start")
+    try:
+        assert _send(srv, "hid", method="absMouseReport",
+                     params={"x": 3, "y": 4, "buttons": 1})["error"] == "device_busy"
+        assert _send(srv, "hid", method="keyboardReport",
+                     params={"modifier": 8, "keys": [4]})["error"] == "device_busy"
+    finally:
+        srv.lock_manager.release("BT-01")
+    asyncio.run(srv._release_dropped_manual("BT-01", kvm))
+    assert kvm.rpc_calls == []  # neutral remote, refused presses, no later input: zero HID
+
+
+def test_frozen_refusal_with_a_refused_press_sends_nothing(tmp_path, monkeypatch):
+    srv, kvm, _ = _check_rig(tmp_path, None, monkeypatch)
+    try:
+        kvm.freeze()
+        time.sleep(3.2)
+        sent_before = len(kvm.rpc_calls)
+        assert srv.lock_manager.try_acquire("DFU-01", holder="monitor_start")
+        try:
+            assert _manual(srv, "absMouseReport", {"x": 3, "y": 4, "buttons": 1})["error"] == "device_busy"
+        finally:
+            srv.lock_manager.release("DFU-01")
+        reply = _send(srv, "monitor_start", device="DFU-01", timeout_sec=1)
+        assert reply["status"] != "ok" and len(kvm.rpc_calls) == sent_before
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+
+def test_release_refused_during_an_ack_wait_is_picked_up_by_a_later_pass(core):
+    from tcp_server import CommandSpec, _Admitted
+
+    srv, kvm = core
+
+    async def noop(ctx, args):
+        return {"status": "ok", "data": {}}
+
+    srv.register_handler(CommandSpec("noop_lock", noop, device_bound=True))
+    st = srv._slot("BT-01").manual_hid
+    st["remote_kbd"], st["intent_kbd"] = (2, (4,)), (2, ())  # A released while refused, Shift still held
+    st["remote_mouse"], st["intent_mouse"] = (5, 6, 1), (5, 6, 1)  # button still held for now
+    seen = {"acks": 0}
+
+    async def confirmed(method, params):
+        kvm.rpc_calls.append((method, params))
+        seen["acks"] += 1
+        if seen["acks"] == 1:  # the operator lets go of the button while the first ACK is pending
+            seen["busy"] = await _in_thread(lambda: _send(srv, "hid", method="absMouseReport",
+                                                          params={"x": 5, "y": 6, "buttons": 0}))
+            await _in_thread(lambda: _send(srv, "hid", method="absMouseReport",
+                                           params={"x": 5, "y": 6, "buttons": 1}))  # and presses again: refused
+
+    kvm.call_confirmed = confirmed
+
+    async def scenario():
+        admitted = _Admitted(srv._commands["noop_lock"], srv.device_registry.get("BT-01"), None)
+        await srv._dispatch_command("r1", admitted)
+
+    asyncio.run_coroutine_threadsafe(scenario(), srv._loop).result(10)
+    assert seen["busy"]["error"] == "device_busy"
+    assert kvm.rpc_calls[0] == ("keyboardReport", {"modifier": 2, "keys": []})
+    assert st["remote_kbd"] == (2, ())  # Shift kept
+    assert st["remote_mouse"][2] == 0  # the release refused during the ACK wait was still delivered
+    assert not srv.lock_manager.is_locked("BT-01")

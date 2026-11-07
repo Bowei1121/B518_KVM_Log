@@ -190,6 +190,7 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
 
 # Lock holders that only wait for the screen; manual HID may run while they do (ADR-0008).
 _WAITING_CHECKS = frozenset({"check_start", "check_finish"})
+_RECONCILE_PASSES = 16  # releases only shrink the held set (a few bits), so this is never reached
 _RELEASE_FAILED = "Could not release the manual keyboard or mouse before the automated action"
 
 
@@ -856,27 +857,40 @@ class TcpJsonServer:
         """Record the operator's latest keyboard / mouse report. Delivered ones also update what the target holds."""
         state = self._slot(device_id).manual_hid
         if method == "keyboardReport":
-            value = (int(params.get("modifier", 0)), tuple(params.get("keys", ())))
-            state["intent_kbd"] = value
+            mod, keys = int(params.get("modifier", 0)), tuple(params.get("keys", ()))
             if delivered:
-                state["remote_kbd"] = value
+                state["remote_kbd"] = state["intent_kbd"] = (mod, keys)
+            else:  # refused: it can only ever mean "let go of these" (a refused press is never replayed)
+                pmod, pkeys = state["intent_kbd"]
+                state["intent_kbd"] = (pmod & mod, tuple(k for k in pkeys if k in keys))
         elif method == "absMouseReport":
-            value = (params["x"], params["y"], int(params.get("buttons", 0)))
-            state["intent_mouse"] = value
+            x, y, buttons = params["x"], params["y"], int(params.get("buttons", 0))
             if delivered:
-                state["remote_mouse"] = value
+                state["remote_mouse"] = state["intent_mouse"] = (x, y, buttons)
+            else:
+                state["intent_mouse"] = (x, y, state["intent_mouse"][2] & buttons)
 
     def _manual_plan(self, device_id: str, neutral: bool) -> list:
-        """Reports that bring the target's keyboard / mouse buttons to neutral (handover) or to the operator's intent."""
+        """Reports that only RELEASE what the target holds: to neutral (handover) or down to the operator's intent.
+
+        A press the operator made while Core was operating is never replayed (it was refused: ADR-0008, and a
+        refusal must stay zero-HID), so every plan strictly removes bits from ``remote`` and the loop that runs
+        it must end.
+        """
         st = self._slot(device_id).manual_hid
         plan = []
-        want_kbd = (0, ()) if neutral else st["intent_kbd"]
+        rmod, rkeys = st["remote_kbd"]
+        if neutral:
+            want_kbd = (0, ())
+        else:
+            imod, ikeys = st["intent_kbd"]
+            want_kbd = (rmod & imod, tuple(k for k in rkeys if k in ikeys))
         if want_kbd != st["remote_kbd"]:
             plan.append(("remote_kbd", want_kbd, "keyboardReport",
                          {"modifier": want_kbd[0], "keys": list(want_kbd[1])}))
         rx, ry, rb = st["remote_mouse"]
         ix, iy, ib = st["intent_mouse"]
-        want_btn = 0 if neutral else ib
+        want_btn = 0 if neutral else (rb & ib)
         if want_btn != rb:
             x, y = (rx, ry) if neutral else (ix, iy)
             plan.append(("remote_mouse", (x, y, want_btn), "absMouseReport", {"x": x, "y": y, "buttons": want_btn}))
@@ -911,12 +925,13 @@ class TcpJsonServer:
             raise FlowError("hid_failed", _RELEASE_FAILED)
 
     async def _release_dropped_manual(self, device_id: str, kvm: Any) -> None:
-        """End of an automated phase: give the target the keyboard / buttons state the operator asked for meanwhile.
+        """End of an automated phase: let go of what the operator released while their release was refused.
 
-        Manual HID is still refused while this runs (the caller holds the lock or ``dock_recovering``), so the
-        loop only has to catch intents recorded by drops that arrived during an await.
+        Only releases are sent, so each pass strictly shrinks what the target holds. The loop ends when a pass
+        finds nothing to do; no await sits between that last check and the caller giving up the lock / gate, so a
+        release refused during an earlier ACK wait is always picked up by a later pass. A failed send stops it.
         """
-        for _ in range(3):
+        for _ in range(_RECONCILE_PASSES):
             plan = self._manual_plan(device_id, neutral=False)
             if not plan:
                 return
