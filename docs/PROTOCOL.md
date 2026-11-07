@@ -367,6 +367,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `wheelReport` | `wheelY`：−127–127 |
 
 - 其他 `method`、缺少或多餘的 `params` 鍵、型別不符一律 `invalid_argument`，不送任何 HID。
+- 選填 `release_only`（boolean，預設 false）：Monitor UI 收到 `device_busy` 後合成的報告會帶 `true`。Core 先把它與目標機**目前**持有的鍵／按鈕取交集，只會放開、不會按下；若沒有可放開的項目，回 `ok` 且不送 HID。非 boolean 回 `invalid_argument`。
 - 不拿 Device Lock，因此連續的滑鼠移動不會讓 LabVIEW 指令回 `device_busy`。但只在自動指令可能送 HID 時才擋（`start_test`／`input`／`monitor_start` 一取得鎖就擋，連等待 KVM 連線或預檢也擋，採保守策略）：該設備的 Device Lock 被 `monitor_start`／`start_test`／`input` 持有，或 `check_start`／`check_finish` 正在點 Dock 恢復（`dock_recovering`）時，回 `device_busy` 並丟棄這筆 HID（不送出）。`check_start`／`check_finish` 只是在等畫面時放行手動 HID。
 - 不碰輪次、閘門或畫面狀態，不影響 `check_*` 的交付。
 - `kvm.call` 失敗回 `hid_failed`。成功 `data` 為空物件。

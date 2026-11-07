@@ -640,7 +640,7 @@ def test_sender_release_only_never_turns_a_queued_press_into_a_report():
     queue = [("BT-01", "keyboardReport", {"modifier": 2, "keys": []}),       # let go of A
              ("BT-01", "keyboardReport", {"modifier": 10, "keys": [4, 5]}),  # press A, B, Cmd again
              ("BT-01", "absMouseReport", {"x": 7, "y": 8, "buttons": 3})]    # press another button
-    assert sender._release_only(queue) == [("BT-01", "keyboardReport", {"modifier": 2, "keys": []})]
+    assert sender._release_only(queue) == [("BT-01", "keyboardReport", {"modifier": 2, "keys": []}, True)]
     assert sender._release_only([("BT-01", "wheelReport", {"wheelY": 1})]) == []
 
 
@@ -677,3 +677,51 @@ def test_reconcile_runs_until_every_held_item_is_released_one_per_ack(core):
     assert order == []
     assert st["remote_kbd"] == (0, ()) and st["remote_mouse"][2] == 0  # nothing left held
     assert len(sent) >= 17
+
+
+def test_late_busy_release_only_report_never_presses_a_neutralized_button(core):
+    srv, kvm = core
+    reply_gate, replied = threading.Event(), threading.Event()
+
+    def send(cmd, payload, timeout, device):
+        with socket.create_connection(srv.server_address, timeout=5.0) as sock:
+            sock.sendall(dumps_request(wire({"cmd": cmd, "device": device, **payload})))
+            reply = recv_reply(sock)
+        if payload["method"] == "wheelReport":
+            replied.set()
+            reply_gate.wait(3)  # the busy reply reaches the UI only after Core neutralized and unlocked
+        return reply
+
+    sender = HidSender(send, lambda: "BT-01")
+    sender("absMouseReport", {"x": 5, "y": 6, "buttons": 3})  # both buttons down, delivered
+    deadline = time.monotonic() + 2
+    while srv._slot("BT-01").manual_hid["remote_mouse"][2] != 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert srv.lock_manager.try_acquire("BT-01", holder="monitor_start")
+    sender("wheelReport", {"wheelY": 1})
+    assert replied.wait(2)  # Core answered busy; the reply is still on its way to the UI
+    sender("absMouseReport", {"x": 5, "y": 6, "buttons": 1})  # operator lets go of the right button only
+    asyncio.run(srv._neutralize_manual_hid_async("BT-01", kvm))  # Core takes over: both buttons released
+    srv.lock_manager.release("BT-01")
+    reply_gate.set()
+    sender.close()
+    assert sender.join(3)
+    reports = [c[1]["buttons"] for c in kvm.rpc_calls if c[0] == "absMouseReport"]
+    assert reports == [3, 0]  # never 3 -> 0 -> 1: the synthesized release was clipped to what was held
+    assert srv._slot("BT-01").manual_hid["remote_mouse"][2] == 0
+
+
+def test_release_only_flag_is_validated_and_clipped(core):
+    srv, kvm = core
+    assert _send(srv, "hid", method="wheelReport", params={"wheelY": 1}, release_only="yes")["error"] \
+        == "invalid_argument"
+    assert _send(srv, "hid", method="keyboardReport", params={"modifier": 2, "keys": [4]})["status"] == "ok"
+    kvm.rpc_calls.clear()
+    # A release-only report asking for more than is held only lets go: Shift kept, A released, B never pressed.
+    assert _send(srv, "hid", method="keyboardReport", params={"modifier": 10, "keys": [5]},
+                 release_only=True)["status"] == "ok"
+    assert kvm.rpc_calls == [("keyboardReport", {"modifier": 2, "keys": []})]
+    kvm.rpc_calls.clear()
+    assert _send(srv, "hid", method="keyboardReport", params={"modifier": 2, "keys": [4]},
+                 release_only=True)["status"] == "ok"
+    assert kvm.rpc_calls == []  # nothing left to let go of: zero HID

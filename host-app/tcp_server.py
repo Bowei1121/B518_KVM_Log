@@ -162,8 +162,12 @@ def _int_in(value: Any, low: int, high: int, name: str) -> int:
     return value
 
 
-def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
-    """``(method, params)`` for the Monitor UI manual HID report. Whitelisted methods and exact param keys only."""
+def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any], bool]:
+    """``(method, params, release_only)`` for the Monitor UI manual HID report.
+
+    Whitelisted methods and exact param keys only. ``release_only`` (optional bool) marks a report the UI
+    synthesized after a busy reply: Core clips it to what the target holds *now*, so it can only let go.
+    """
     method = req.get("method")
     params = req.get("params")
     if not isinstance(method, str) or method not in HID_METHODS:
@@ -185,7 +189,10 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
                  "keys": [_int_in(k, 0, 255, "keys item") for k in keys]}
     else:
         clean = {"wheelY": _int_in(params["wheelY"], -127, 127, "wheelY")}
-    return method, clean
+    release_only = req.get("release_only", False)
+    if not isinstance(release_only, bool):
+        raise FlowError("invalid_argument", "release_only must be a boolean")
+    return method, clean, release_only
 
 
 # Lock holders that only wait for the screen; manual HID may run while they do (ADR-0008).
@@ -457,7 +464,7 @@ class TcpJsonServer:
                         stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"action": ""},
                         unsupported_message=(
                             "'start_test' is not supported for FCT; FCT starts when the fixture is pushed in")),
-            CommandSpec("hid", self._handle_hid, fields=frozenset({"method", "params"}), device_bound=True,
+            CommandSpec("hid", self._handle_hid, fields=frozenset({"method", "params", "release_only"}), device_bound=True,
                         takes_lock=False, parse=_hid_args),
             CommandSpec("monitor_start", self._handle_monitor_start, fields=frozenset({"timeout_sec"}),
                         device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0},
@@ -839,16 +846,20 @@ class TcpJsonServer:
         so a stream of mouse moves can never make a LabVIEW command busy. It touches no slot, round or gate state.
         """
         device_id = ctx.entry.device_id
+        method, params, release_only = args
+        if release_only:
+            params = self._clip_to_held(device_id, method, params)
+            if params is None:  # the target already holds no more than this: nothing to let go of
+                return {"status": "ok", "data": {}}
         holder = self.lock_manager.holder(device_id)
         locked = self.lock_manager.is_locked(device_id)
         if locked:
             slot = self._slots.get(str(device_id))
             waiting_check = holder in _WAITING_CHECKS and not (slot is not None and slot.dock_recovering)
             if not waiting_check:
-                self._note_manual(device_id, args[0], args[1], delivered=False)
+                self._note_manual(device_id, method, params, delivered=False)
                 return {"status": "busy", "error": "device_busy",
                         "message": "An automated command is running; manual HID is dropped"}
-        method, params = args
         try:
             _manual_call(ctx.kvm, method, params)
             self._note_manual(device_id, method, params)
@@ -857,6 +868,20 @@ class TcpJsonServer:
                            extra={"zh": "手動 HID %s 在 %s 失敗: %s"})
             return {"status": "error", "error": "hid_failed", "message": "HID report could not be sent"}
         return {"status": "ok", "data": {}}
+
+    def _clip_to_held(self, device_id: str, method: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """A release-only report applied to what the target holds now; None when it would release nothing."""
+        st = self._slot(device_id).manual_hid
+        if method == "keyboardReport":
+            rmod, rkeys = st["remote_kbd"]
+            mod = rmod & params["modifier"]
+            keys = [k for k in rkeys if k in params["keys"]]
+            return None if (mod, tuple(keys)) == (rmod, rkeys) else {"modifier": mod, "keys": keys}
+        if method == "absMouseReport":
+            rb = st["remote_mouse"][2]
+            buttons = rb & params["buttons"]
+            return None if buttons == rb else {"x": params["x"], "y": params["y"], "buttons": buttons}
+        return None  # a wheel report never releases anything
 
     def _note_manual(self, device_id: str, method: str, params: Dict[str, Any], delivered: bool = True) -> None:
         """Record the operator's latest keyboard / mouse report. Delivered ones also update what the target holds."""

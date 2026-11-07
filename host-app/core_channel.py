@@ -295,7 +295,7 @@ class HidSender:
                 continue
             mod, keys = held["kbd"]
             buttons, xy, seen_kbd, seen_mouse = held["buttons"], held["xy"], False, False
-            for dev, method, params in queue:
+            for dev, method, params, *_ in queue:
                 if dev != device:
                     continue
                 if method == "keyboardReport":
@@ -307,9 +307,9 @@ class HidSender:
                     buttons &= int(params.get("buttons", 0))
                     xy = (params["x"], params["y"])
             if seen_kbd and (mod, keys) != held["kbd"]:
-                out.append((device, "keyboardReport", {"modifier": mod, "keys": list(keys)}))
+                out.append((device, "keyboardReport", {"modifier": mod, "keys": list(keys)}, True))
             if seen_mouse and buttons != held["buttons"]:
-                out.append((device, "absMouseReport", {"x": xy[0], "y": xy[1], "buttons": buttons}))
+                out.append((device, "absMouseReport", {"x": xy[0], "y": xy[1], "buttons": buttons}, True))
         return out
 
     def _run(self) -> None:
@@ -319,9 +319,12 @@ class HidSender:
                     self._cv.wait()
                 if not self._queue:
                     return
-                device, method, params = self._queue.pop(0)
+                device, method, params, *flags = self._queue.pop(0)
+            payload = {"method": method, "params": params}
+            if flags:  # synthesized after busy: Core clips it to what the target holds then (only lets go)
+                payload["release_only"] = True
             try:
-                reply = self._send("hid", {"method": method, "params": params}, self._timeout, device)
+                reply = self._send("hid", payload, self._timeout, device)
             except Exception:
                 log.debug("HID send failed", exc_info=True)
                 continue
