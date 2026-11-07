@@ -13,7 +13,7 @@ Accepted（spec #1 實作完成，2026-10-15；見 `docs/specs/0001-device-ident
 2. **設備清單**：上位機 `~/Documents/template/devices.json` 是唯一來源，記錄設備 ID → 站別、KVM IP、測試通道數。取代程式內寫死清單與 `device_profiles.json`。內容錯誤（ID／IP 重複、格式錯、站別與 ID 前綴不符）或檔案不存在時 Core 拒絕啟動。修改後重啟 Core 才生效。
 3. **協定只帶設備 ID**：LabVIEW 不傳 `kvm_ip`、`station`，帶了即拒絕；IP 與站別由 Core 查表。動作指令缺少或使用未知設備 ID 即拒絕。詳見 `docs/PROTOCOL.md`。
 4. **單一 key**：Device Lock、Frame Freeze Guard、RoundFrameGate、匹配診斷目錄與後續輪次保存一律以設備 ID 為 key；KVM Pool 以查表後的 IP 連線，一對一保證鎖設備即鎖 KVM。
-5. **測試通道數**：每台設備設定通道數 N（B518 全部為 4）。DFU 輸入在視窗內找出全部 checkbox，數量須等於 N，依由上而下、由左至右排序為通道 1～N；通道編號與 Log Solution Slot 一致。`check` 取得結果時畫面格數必須等於 N。
+5. **測試通道數**：每台設備設定通道數 N（B518 全部為 4）。DFU 輸入在設定的搜尋矩形（`DFU_region.json`，預設全螢幕，見 workflow_DFU）內找出全部 checkbox，數量須等於 N，依由上而下、由左至右排序為通道 1～N；通道編號與 Log Solution Slot 一致。`check` 取得結果時畫面格數必須等於 N。
 6. **Monitor UI**：移除手動 IP，改從 Core 設備清單選擇；新增設定頁直接編輯本機 `devices.json`（同機部署），儲存前驗證與備份，任一設備執行動作時禁止重啟 Core。手動檢查不上鎖、不消耗本輪結果。
 7. **網路**：EKI-2720G 為非網管交換機，每台 JetKVM 與上位機手設靜態 IP。
 
