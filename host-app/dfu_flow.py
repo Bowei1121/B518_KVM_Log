@@ -201,9 +201,8 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         fixed = load_region(catalog)
         templates = _load(session, ["dock_icon", "checkbox_checked", "checkbox_unchecked", "input"])
         frame = session.frame()
-        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY,
-                                 after=lambda: session.park_pointer(frame))
-        frame = await session.wait_fresh_frame()
+        _box, frame = await session.focus_dock_fresh(
+            "dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
         def find_controls(image, suffix):
             found = _window(session, image, templates.get("window"), "window" + suffix, fixed)
@@ -264,9 +263,8 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
         fixed = load_region(catalog)
         templates = _load(session, ["dock_icon", "button"])
         frame = session.frame()
-        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY,
-                                 after=lambda: session.park_pointer(frame))
-        frame = await session.wait_fresh_frame()
+        _box, frame = await session.focus_dock_fresh(
+            "dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
         def find_button(image, suffix):
             found = _window(session, image, templates.get("window"), "window" + suffix, fixed)

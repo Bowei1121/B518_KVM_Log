@@ -67,7 +67,7 @@ checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板�
 3. 在 `DFU_region.json` 設定的搜尋矩形內以 `DFU_button.png` 定位 OK。未命中時不再點 Dock，移開滑鼠、等新影格後重試比對一次（`_retry`）；兩次都失敗回 `hid_failed`。命中後點一次，點完把滑鼠移回停放點。HID 錯誤回 `hid_failed`。
 4. 成功回 `data.action = "ok"`。
 
-停放位置與等待上限設定：`~/Documents/template/COMMON/hid_settings.json`（選用）：`{"pointer_park": [x, y], "fresh_frame_timeout_sec": 2.0}`。`pointer_park` 為點擊後滑鼠停放的螢幕像素位置（預設螢幕上緣中間 `(寬/2, 1)`，超出畫面會夾回邊界）；現場若開啟「自動隱藏選單列」，上緣會讓選單列跑出來，請改成不會觸發選單列／Dock／熱角的空白處，例如 `[960, 600]`。`fresh_frame_timeout_sec` 為等新影格上限（預設 2 秒）。格式錯誤回 `hid_failed`。
+停放位置與等待上限設定：`~/Documents/template/COMMON/hid_settings.json`（選用）：`{"pointer_park": [x, y], "fresh_frame_timeout_sec": 2.0}`。`pointer_park` 為點擊後滑鼠停放的螢幕像素位置（預設螢幕上緣中間 `(寬/2, 1)`，超出畫面會夾回邊界）；現場若開啟「自動隱藏選單列」，上緣會讓選單列跑出來，請改成不會觸發選單列／Dock／熱角的空白處，例如 `[960, 600]`。`fresh_frame_timeout_sec` 為等新影格上限（預設 2 秒）。格式錯誤（含明確寫 `null`）在第一次 HID 之前就回 `hid_failed`。移開滑鼠失敗不影響已成功的點擊，只在診斷記 `park_failed`。
 
 ## `check_start`／`check_finish`
 

@@ -99,8 +99,8 @@ async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliab
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
-async def click_dock_icon(kvm, frame, session):
-    """Click the shared Dock icon once. Returns ``(clicked, score)``; no click when the icon is not on screen.
+async def click_dock_icon(kvm, frame, session, confirm_sec=None):
+    """Click the shared Dock icon once, park the pointer, wait for fresh frames (within ``confirm_sec`` of the click). Returns ``(clicked, score)``; no click when the icon is not on screen.
 
     A missing template or a HID error raises ``FlowError(hid_failed)``.
     """
@@ -110,14 +110,12 @@ async def click_dock_icon(kvm, frame, session):
         raise FlowError("hid_failed", f"Missing Log Solution Dock icon template: {dock_path}")
 
     try:
-        box = await session.focus_dock(
-            "log_solution_dock_icon", template, frame, message="Dock icon not found",
-            after=lambda: session.park_pointer(frame))
+        box, _fresh = await session.focus_dock_fresh(
+            "log_solution_dock_icon", template, frame, message="Dock icon not found", within_sec=confirm_sec)
     except FlowError as exc:
         if exc.score is None:
             raise
         return False, exc.score
-    await session.wait_fresh_frame()  # readings after this come from frames taken after the click and the park
     return True, box.score
 
 
@@ -177,14 +175,16 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         if observation.reliable and observation.state == MarkerState.REVIEW:
             raise _review("before start")
         if observation.may_send_hid:
-            clicked, score = await click_dock_icon(kvm, frame, session)
+            clicked, score = await click_dock_icon(kvm, frame, session, confirm_sec)
             if not clicked:
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution Dock icon not found (similarity {score:.2f})")
             unreliable = {}
             reliable = {}
+            # One confirm window from the click: the fresh-frame wait above is part of it, not added to it.
+            left = max(0.0, confirm_sec - (time.monotonic() - session.dock_clicked_at))
             observation, last_reason = await _wait_for_reliable_reading(
-                kvm, confirm_sec, gate.stats, unreliable, reliable)
+                kvm, left, gate.stats, unreliable, reliable)
             if observation is not None:
                 try:  # best-effort diagnostics: the annotated reading of the screen we are about to act on
                     _record_reading(

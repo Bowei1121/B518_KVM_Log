@@ -237,7 +237,7 @@ def test_bt_parks_after_the_dock_click_and_before_matching(tmp_path):
     assert kinds[dock_click + 1] == "move"
     assert kvm.moves[0] == (130, 1)
     assert len(kvm.clicks) == 2
-    assert kinds[-1] == "move"  # parked again after Start All
+    assert [k for k in kinds if k != "frame"][-1] == "move"  # parked again after Start All
 
 
 def test_bt_retries_on_fresh_frames_without_a_second_dock_click(tmp_path):
@@ -377,3 +377,131 @@ def test_monitor_dock_click_parks_and_waits_for_fresh_frames(tmp_path, monkeypat
     assert clicked and len(kvm.clicks) == 1
     assert kvm.moves == [(130, 1)]
     assert kvm.latest_frame().sequence >= 3  # returned only after post-park frames arrived
+
+
+# --- review round 1 ------------------------------------------------------------
+
+def test_frames_that_arrived_during_the_settle_count_as_fresh(tmp_path):
+    old, fresh = np.zeros((40, 80, 3), np.uint8), np.full((40, 80, 3), 90, np.uint8)
+    kvm = FakeKVM(old, sequence=10, received_monotonic=time.monotonic() - 1)
+
+    async def move(x, y):
+        pass
+
+    kvm.move = move
+    session = _session(kvm, tmp_path)
+
+    async def go():
+        await session.park_pointer(old)
+        kvm.frame, kvm.frame_sequence, kvm.frame_received_monotonic = fresh, 12, time.monotonic()  # 11, 12 came in
+        return await session.wait_fresh_frame()
+
+    assert np.array_equal(asyncio.run(go()), fresh)
+    assert "fresh_frame_timeout" not in [r["key"] for r in session.diagnostics.records]
+
+
+class RpcErrorKvm(PhaseKvm):
+    """HID RPC errors: ``click_error`` on every click, ``move_error`` on every move."""
+
+    click_error = False
+    move_error = False
+
+    async def click(self, x, y):
+        await super().click(x, y)
+        if self.click_error:
+            self.rpc_errors.append("click rejected")
+
+    async def move(self, x, y):
+        await super().move(x, y)
+        if self.move_error:
+            self.rpc_errors.append("park only rejected")
+
+
+def test_bt_park_error_after_a_successful_click_is_not_a_failure(tmp_path):
+    screen = _screen()
+    _bt_templates(tmp_path, screen)
+    kvm = RpcErrorKvm([screen])
+    kvm.move_error = True
+
+    assert _run_bt(kvm, tmp_path) == {"action": "start_all"}
+
+    assert len(kvm.clicks) == 2  # Dock and Start All each once
+    summary = MatchDiagnostics.load(TemplateCatalog(tmp_path).root, "BT")
+    assert "park_failed" in [r["key"] for r in summary["records"]]
+
+
+def test_bt_click_error_is_still_hid_failed(tmp_path):
+    screen = _screen()
+    _bt_templates(tmp_path, screen)
+    kvm = RpcErrorKvm([screen])
+    kvm.click_error = True
+
+    with pytest.raises(FlowError) as excinfo:
+        _run_bt(kvm, tmp_path)
+
+    assert excinfo.value.code == "hid_failed"
+    assert len(kvm.clicks) == 1
+
+
+def test_dfu_ok_park_error_after_a_successful_click_is_not_a_failure(tmp_path):
+    root = tmp_path / "template"
+    save_templates(root, FOUR)
+
+    class Kvm(DfuPhaseKvm):
+        async def move(self, x, y):
+            await super().move(x, y)
+            self.rpc_errors.append("park only rejected")
+
+    kvm = Kvm(FOUR)
+    assert asyncio.run(dfu_flow.run_dfu_ok(kvm, root, log=lambda *_: None)) == {"action": "ok"}
+    assert len([e for e in kvm.events if e[0] == "click"]) == 2
+
+
+@pytest.mark.parametrize("text", ['{"fresh_frame_timeout_sec": null}', '{"pointer_park": null}',
+                                  '{"pointer_park": "bad"}', '{"fresh_frame_timeout_sec": "2"}'])
+def test_invalid_settings_fail_before_the_first_click(tmp_path, text):
+    screen = _screen()
+    _bt_templates(tmp_path, screen)
+    (tmp_path / "COMMON").mkdir(exist_ok=True)
+    (tmp_path / "COMMON" / "hid_settings.json").write_text(text)
+    kvm = PhaseKvm([screen])
+    with pytest.raises(FlowError) as excinfo:
+        _run_bt(kvm, tmp_path)
+    assert excinfo.value.code == "hid_failed"
+    assert kvm.clicks == []
+
+    dfu_root = tmp_path / "dfu"
+    save_templates(dfu_root, FOUR)
+    (dfu_root / "COMMON").mkdir()
+    (dfu_root / "COMMON" / "hid_settings.json").write_text(text)
+    dfu = DfuPhaseKvm(FOUR)
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(dfu_flow.run_dfu_ok(dfu, dfu_root, log=lambda *_: None))
+    assert excinfo.value.code == "hid_failed"
+    assert [e for e in dfu.events if e[0] == "click"] == []
+
+
+def test_monitor_fresh_frame_wait_is_inside_the_confirm_window(tmp_path, monkeypatch):
+    import threading
+    from protocol_helpers import LogSolutionKVM
+
+    monkeypatch.setattr(hid_session, "FRESH_FRAME_TIMEOUT_SEC", 0.4)
+    seed = LogSolutionKVM()
+    x, y, w, h = seed.dock_icon_box()
+    TemplateCatalog(tmp_path).save_crop(seed.latest_frame().image[y:y + h, x:x + w].copy(), (0, 0, w, h),
+                                        "COMMON", "log_solution_dock_icon")
+    kvm = LogSolutionKVM(state="standby")
+    kvm.blank()
+    kvm.repeat_sequence = True  # no new frame ever arrives: the fresh wait runs to its 0.4 s limit
+
+    class Gate:
+        stats = None
+
+    threading.Timer(0.6, lambda: kvm.show("standby")).start()  # reliable, but after the 0.5 s confirm window
+    with pytest.raises(FlowError) as excinfo:
+        asyncio.run(monitor_flow.run_monitor_start(
+            kvm, Gate(), "DFU-01", template_root=tmp_path, confirm_sec=0.5, start_timeout_sec=0.1,
+            log=lambda *_: None))
+
+    assert excinfo.value.code == "log_solution_not_found"
+    assert [e for e in kvm.events if e[0] == "key"] == []

@@ -60,13 +60,11 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
         if dock is None or window is None or start_all is None:
             raise FlowError("hid_failed", "Missing BT templates (dock_icon / window / start_all)")
         frame = session.frame()
-        await session.focus_dock(
+        _box, frame = await session.focus_dock_fresh(
             "dock_icon", dock, frame,
             message="Dock icon not found (similarity {value:.2f})",
-            settle=DOCK_SETTLE_DELAY,
-            after=lambda: session.park_pointer(frame),  # a Dock tooltip must not cover Start All
+            settle=DOCK_SETTLE_DELAY,  # park right after the click: a Dock tooltip must not cover Start All
         )
-        frame = await session.wait_fresh_frame()
 
         def locate_start_all(image, suffix):
             found = session.find(
