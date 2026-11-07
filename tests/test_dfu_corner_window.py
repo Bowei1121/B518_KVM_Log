@@ -62,19 +62,21 @@ def test_ok_works_from_fixed_region_without_window_template(tmp_path):
     assert _hid(kvm)[-1] == ("click", bx + bw // 2, by + bh // 2)
 
 
-def test_without_region_file_the_window_template_is_required(tmp_path):
+def test_missing_region_file_is_created_full_screen_and_flow_runs(tmp_path):
     root = _make_root(tmp_path, region=None)
-    kvm = SyntheticDfuKVM(FOUR)
-    with pytest.raises(FlowError) as exc:
-        _input(kvm, root, [{"slot": 1, "sn": "A"}])
-    assert exc.value.code == "hid_failed"
-    assert _hid(kvm) == []
-
-
-def test_without_region_file_the_window_template_still_works(tmp_path):
-    root = _make_root(tmp_path, region=None, with_window_template=True)
+    path = root / "DFU" / dfu_flow.REGION_FILE
+    assert not path.exists()
     kvm = SyntheticDfuKVM(FOUR)
     assert _input(kvm, root, [{"slot": 2, "sn": "B"}]) == {"entered": [2]}
+    assert json.loads(path.read_text(encoding="utf-8")) == dfu_flow.DEFAULT_REGION
+
+
+def test_existing_region_file_is_not_overwritten(tmp_path):
+    root = _make_root(tmp_path)
+    path = root / "DFU" / dfu_flow.REGION_FILE
+    before = path.read_text(encoding="utf-8")
+    _input(SyntheticDfuKVM(FOUR), root, [{"slot": 1, "sn": "A"}])
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_checkbox_outside_window_cannot_fill_a_missing_channel(tmp_path):

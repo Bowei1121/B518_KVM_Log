@@ -32,7 +32,7 @@
 
 正式模板根目錄為 `~/Documents/template/`：
 
-- 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時維持以 `DFU_window.png` 比對框為範圍。
+- 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時，第一次 DFU 動作會自動建立全螢幕預設（0,0,1920,1080）；現場請改成實際視窗矩形以縮小範圍。
 - `DFU/DFU_dock_icon.png`、`DFU/DFU_window.png`、`DFU/DFU_input.png`、`DFU/DFU_button.png`（OK 按鈕）
 - `DFU/DFU_checkbox_checked.png`、`DFU/DFU_checkbox_unchecked.png`
 - `COMMON/COMMON_log_solution_dock_icon.png`：Log Solution 的 Dock 圖示，三站共用，`monitor_start` 與 `check_start`／`check_finish` 的可見性恢復使用。

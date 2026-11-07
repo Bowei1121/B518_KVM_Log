@@ -102,18 +102,31 @@ REGION_FILE = "DFU_region.json"
 MAX_COORD = 20000
 
 
+DEFAULT_REGION = {"x": 0, "y": 0, "width": 1920, "height": 1080}
+
+
+def create_default_region(path):
+    """First DFU action without a region file: write the full-screen default (edit it to narrow the area)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(DEFAULT_REGION, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # read-only template folder: still use the default for this run
+    return tuple(DEFAULT_REGION[k] for k in ("x", "y", "width", "height"))
+
+
 def load_region(catalog):
     """Optional fixed DFU window rectangle ``(x, y, w, h)`` in screen pixels, or ``None``.
 
     ``DFU/DFU_region.json`` = ``{"x": X, "y": Y, "width": W, "height": H}`` at the field screen
     (1920x1080, 100%). The window template's background changes with the ATE mode, so when this file
     exists the window template is not used at all: every DFU control is searched only inside the
-    rectangle and nothing outside it is ever matched or clicked. Without the file the window
-    template match box is the region (the original strict behavior).
+    rectangle and nothing outside it is ever matched or clicked. A missing file is created with the
+    full-screen default on the first DFU action.
     """
     path = catalog.device_dir("DFU") / REGION_FILE
     if not path.is_file():
-        return None
+        return create_default_region(path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         x, y, width, height = (data[k] for k in ("x", "y", "width", "height"))
@@ -182,8 +195,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
     ok = False
     try:
         fixed = load_region(catalog)
-        templates = _load(session, ["dock_icon", "checkbox_checked", "checkbox_unchecked", "input"]
-                          + ([] if fixed else ["window"]))
+        templates = _load(session, ["dock_icon", "checkbox_checked", "checkbox_unchecked", "input"])
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
@@ -241,7 +253,7 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
     ok = False
     try:
         fixed = load_region(catalog)
-        templates = _load(session, ["dock_icon", "button"] + ([] if fixed else ["window"]))
+        templates = _load(session, ["dock_icon", "button"])
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
