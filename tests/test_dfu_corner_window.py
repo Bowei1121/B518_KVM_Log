@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
@@ -147,3 +148,23 @@ def test_region_outside_the_frame_is_hid_failed(tmp_path):
         _input(kvm, root, [{"slot": 1, "sn": "A"}])
     assert exc.value.code == "hid_failed"
     assert _hid(kvm) == [DOCK_CLICK]
+
+
+@pytest.mark.parametrize("region", [(10, 10, 20, 1), (10, 10, 2, 2), (10, 10, 240, 5), (10, 10, 5, 190), (235, 250, 100, 100)])
+def test_region_too_small_for_a_checkbox_is_hid_failed_without_clicks(tmp_path, region):
+    root = _make_root(tmp_path, region=region)
+    kvm = SyntheticDfuKVM(FOUR)
+    with pytest.raises(FlowError) as exc:
+        _input(kvm, root, [{"slot": 1, "sn": "A"}])
+    assert exc.value.code == "hid_failed"
+    assert "cv2" not in type(exc.value).__module__
+    assert _hid(kvm) == [DOCK_CLICK]
+
+
+def test_find_checkboxes_rejects_a_two_dimension_too_small_area():
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, (100, 100, 3), dtype=np.uint8)
+    a = rng.integers(0, 256, (14, 14), dtype=np.uint8)
+    b = rng.integers(0, 256, (14, 14), dtype=np.uint8)
+    with pytest.raises(FlowError):
+        dfu_flow.find_checkboxes(frame, (10, 10, 2, 2), b, a)

@@ -65,6 +65,10 @@ def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_TH
     """Every checkbox inside the window as ``[{state, score, box}]`` in channel order (1..N)."""
     wx, wy, ww, wh = window_box
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[wy:wy + wh, wx:wx + ww]
+    for template in (checked, unchecked):
+        # matchTemplate raises (or matches backwards) when the area is smaller than the template.
+        if gray.shape[0] < template.shape[0] or gray.shape[1] < template.shape[1]:
+            raise FlowError("hid_failed", f"DFU region {gray.shape[1]}x{gray.shape[0]} is smaller than a checkbox template")
     found = []
     for state, template in (("checked", checked), ("unchecked", unchecked)):
         for score, x, y, w, h in _find_matches(gray, template, threshold):
