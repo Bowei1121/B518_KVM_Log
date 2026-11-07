@@ -21,6 +21,9 @@ log = logging.getLogger(__name__)
 HISTORY_HOURS = 24
 HISTORY_MAX_MB = 2048
 HISTORY_JPEG_QUALITY = 85
+# A staging folder untouched this long belongs to an interrupted archive. Younger ones may be another
+# process (e.g. jetkvm_auto focus) still writing into the same template root, so they are never swept.
+STAGING_STALE_SEC = 3600
 
 
 # Archive and cleanup run on one daemon worker thread: the Core TCP event loop never waits for JPEG encoding or
@@ -217,17 +220,24 @@ class MatchDiagnostics:
         archived = dict(payload, records=records)
         with (staging / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(archived, handle, ensure_ascii=False, indent=2)
-        day.mkdir(parents=True, exist_ok=True)
         # Same millisecond/operation/result: continue after the highest existing suffix, so the newest copy
         # never reuses a name that cleanup freed (and then sorts as oldest).
-        highest = 0
-        for existing in day.iterdir():
-            if existing.name == name:
-                highest = max(highest, 1)
-            elif existing.name.startswith(name + "_") and existing.name[len(name) + 1:].isdigit():
-                highest = max(highest, int(existing.name[len(name) + 1:]))
-        target = day / (name if highest == 0 else "{}_{}".format(name, highest + 1))
-        os.rename(str(staging), str(target))
+        for attempt in range(5):
+            # Another process's cleanup may remove an empty day folder between mkdir and rename: retry.
+            day.mkdir(parents=True, exist_ok=True)
+            highest = 0
+            for existing in day.iterdir():
+                if existing.name == name:
+                    highest = max(highest, 1)
+                elif existing.name.startswith(name + "_") and existing.name[len(name) + 1:].isdigit():
+                    highest = max(highest, int(existing.name[len(name) + 1:]))
+            target = day / (name if highest == 0 else "{}_{}".format(name, highest + 1))
+            try:
+                os.rename(str(staging), str(target))
+                break
+            except (FileNotFoundError, FileExistsError):
+                if attempt == 4 or not staging.exists():
+                    raise
         try:
             staging.parent.rmdir()
         except OSError:
@@ -242,6 +252,24 @@ class MatchDiagnostics:
         except ValueError:
             return run.stat().st_mtime
 
+    def _sweep_stale_staging(self):
+        """Delete staging folders of interrupted archives; fresh ones may belong to a live writer (any process)."""
+        limit = time.time() - STAGING_STALE_SEC
+        for staging in self._root.glob("*/history_tmp/*"):
+            try:
+                if staging.stat().st_mtime >= limit:
+                    continue
+                shutil.rmtree(str(staging))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                log.exception("cannot delete stale staging folder %s", staging)
+        for parent in self._root.glob("*/history_tmp"):
+            try:
+                parent.rmdir()  # only when empty
+            except OSError:
+                pass
+
     @staticmethod
     def _collision_index(name):
         """1 for the first archive of a millisecond, N for its ``_N`` collision copies."""
@@ -255,8 +283,7 @@ class MatchDiagnostics:
     def _cleanup_history(self):
         """Drop archives older than ``history_hours``, then oldest-first until under ``history_max_mb``."""
         cutoff = self._clock() - self.history_hours * 3600
-        for staging in self._root.glob("*/history_tmp"):  # leftovers of an interrupted archive (one worker only)
-            shutil.rmtree(str(staging), ignore_errors=True)
+        self._sweep_stale_staging()
         entries = []  # (mtime, size, path)
         for history in self._root.glob("*/history"):
             for day in history.iterdir():

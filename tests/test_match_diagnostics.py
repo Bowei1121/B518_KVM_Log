@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import time
@@ -331,9 +332,16 @@ class QueueBoundTests(unittest.TestCase):
     def test_interrupted_archive_leaves_no_half_archive_and_stale_staging_is_swept(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "template"
-            stale = root / "_captures" / "match_diagnostics" / "BT" / "history_tmp" / "dead"
+            tmp_base = root / "_captures" / "match_diagnostics" / "BT" / "history_tmp"
+            stale = tmp_base / "dead"
             stale.mkdir(parents=True)
             (stale / "01_x.jpg").write_bytes(b"x")
+            old = time.time() - match_diagnostics.STAGING_STALE_SEC - 60
+            os.utime(str(stale), (old, old))
+            # Another process (different device) is mid-write right now: its staging must survive our cleanup.
+            live = root / "_captures" / "match_diagnostics" / "DFU-01" / "history_tmp" / "live"
+            live.mkdir(parents=True)
+            (live / "01_y.jpg").write_bytes(b"y")
             rec = MatchDiagnostics(root, "BT")
             rec.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
             real_dump = match_diagnostics.json.dump
@@ -348,6 +356,54 @@ class QueueBoundTests(unittest.TestCase):
                 wait_for_history()
             self.assertEqual(_history(root), [])
             self.assertFalse(stale.exists())
+            self.assertTrue((live / "01_y.jpg").exists())
+
+    def test_other_process_mid_write_survives_our_cleanup(self):
+        import subprocess
+        child = r"""
+import sys, time, json
+from pathlib import Path
+import numpy as np
+sys.path.insert(0, sys.argv[1])
+import match_diagnostics as md
+flag_ready, flag_go = Path(sys.argv[3]), Path(sys.argv[4])
+real = md.json.dump
+def dump(obj, handle, **kw):
+    if "history_tmp" in str(handle.name):
+        flag_ready.write_text("x")
+        for _ in range(300):
+            if flag_go.exists():
+                break
+            time.sleep(0.05)
+    return real(obj, handle, **kw)
+md.json.dump = dump
+rec = md.MatchDiagnostics(sys.argv[2], "DFU-01")
+rec.record("child", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+rec.finalize(True, "input")
+md.wait_for_history()
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            ready, go = Path(temp) / "ready", Path(temp) / "go"
+            proc = subprocess.Popen([sys.executable, "-c", child, str(Path(__file__).resolve().parents[1] / "host-app"),
+                                     str(root), str(ready), str(go)])
+            try:
+                deadline = time.monotonic() + 30
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(ready.exists())
+                # This process archives for FCT-01 and sweeps while DFU-01's child is mid-write.
+                other = MatchDiagnostics(root, "FCT-01")
+                other.record("parent", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+                other.finalize(True, "focus")
+                wait_for_history()
+            finally:
+                go.write_text("x")
+                proc.wait(timeout=30)
+            self.assertEqual(proc.returncode, 0)
+            runs = list((root / "_captures" / "match_diagnostics" / "DFU-01" / "history").glob("*/*"))
+            self.assertEqual(len(runs), 1)
+            self.assertTrue((runs[0] / "summary.json").exists())
 
     def test_idle_worker_does_not_keep_raw_frames_alive(self):
         import gc
