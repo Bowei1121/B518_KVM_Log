@@ -62,6 +62,10 @@ class KVMNoSignal(RuntimeError):
     reason = "no_signal"
 
 
+MANUAL_ID_BASE = 1_000_000_000  # operator / release RPCs use ids >= this; Core's automatic ones stay below
+CONFIRM_TIMEOUT_SEC = 1.0
+
+
 class JetKVMClient:
     def __init__(self, host, password=""):
         # host 可為 "192.168.1.50" 或 "http://192.168.1.50"
@@ -86,6 +90,8 @@ class JetKVMClient:
         self._ws = None
         self._recv_task = None
         self.rpc_errors = []          # 裝置回傳的 error (例如 HID 寫入失敗)
+        self._manual_id = MANUAL_ID_BASE  # 手動 HID 專用 id 空間: 回覆以 id 範圍歸屬, 不靠會過期的表
+        self._confirm = {}            # id -> (loop, future): 等待回覆的釋放 RPC
 
     # ---- 連線 ----
     def _login_cookie(self):
@@ -109,17 +115,7 @@ class JetKVMClient:
         def _open():
             rpc_open.set()
 
-        @self.rpc.on("message")
-        def _rpc_msg(msg):
-            # 記錄裝置回傳的 error (例如 HID 寫入失敗: USB 連線中斷)
-            try:
-                j = json.loads(msg)
-            except Exception:
-                return
-            if isinstance(j, dict) and j.get("error"):
-                err = j["error"]
-                detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
-                self.rpc_errors.append(str(detail))
+        self.rpc.on("message")(self._on_rpc_message)
 
         self._watch_session(pc, first_frame)
 
@@ -287,10 +283,55 @@ class JetKVMClient:
             pass
 
     # ---- 輸入 ----
+    def _on_rpc_message(self, msg):
+        # 記錄裝置回傳的 error (例如 HID 寫入失敗: USB 連線中斷)
+        try:
+            j = json.loads(msg)
+        except Exception:
+            return
+        rid = j.get("id") if isinstance(j, dict) else None
+        if isinstance(rid, int) and rid >= MANUAL_ID_BASE:
+            # Operator / release reply, however late: never a flow's hid_failed.
+            waiter = self._confirm.pop(rid, None)
+            if waiter is not None:
+                err = j.get("error")
+                detail = (err.get("data") or err.get("message")) if isinstance(err, dict) else err
+                waiter[0].call_soon_threadsafe(waiter[1].set_result, str(detail) if err else None)
+            return
+        if isinstance(j, dict) and j.get("error"):
+            err = j["error"]
+            detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
+            self.rpc_errors.append(str(detail))
+
     def call(self, method, params):
         self._id += 1
-        self.rpc.send(json.dumps({"jsonrpc": "2.0", "method": method,
-                                  "params": params, "id": self._id}))
+        self._send(method, params, self._id)
+
+    def _send(self, method, params, rid):
+        self.rpc.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": rid}))
+
+    def call_manual(self, method, params):
+        """Like ``call`` for operator HID: its reply (even a late error) is kept out of ``rpc_errors``."""
+        self._manual_id += 1
+        self._send(method, params, self._manual_id)
+
+    async def call_confirmed(self, method, params, timeout=None):
+        """Send in the manual id space and wait (bounded) for the device's reply; RuntimeError on error / timeout."""
+        timeout = CONFIRM_TIMEOUT_SEC if timeout is None else timeout
+        self._manual_id += 1
+        rid = self._manual_id
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._confirm[rid] = (loop, fut)
+        try:
+            self._send(method, params, rid)
+            detail = await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"{method} was not confirmed within {timeout}s") from None
+        finally:
+            self._confirm.pop(rid, None)
+        if detail is not None:
+            raise RuntimeError(f"{method} failed: {detail}")
 
     def _to_abs(self, px, py):
         w, h = self.size

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -213,7 +214,9 @@ class HidSender:
     connection. Mouse moves (same buttons as the pending one) coalesce to the newest. Button, key and wheel
     reports keep their order. When the queue is full only droppable reports (wheel, plain moves) are discarded;
     key and button state changes are always kept, so a release is never lost. ``close()`` lets the worker
-    finish what is queued (the releases) before it exits. A ``device_busy`` reply drops the queue.
+    finish what is queued (the releases) before it exits. A ``device_busy`` reply drops the queue except for
+    releases of keys / buttons Core has confirmed down: those are folded into one release-only report per kind
+    (never a press), so a key let go of while Core operates still reaches Core, which releases it (ADR-0008).
     """
 
     MAX_QUEUE = 256
@@ -226,6 +229,8 @@ class HidSender:
         self._queue: list = []  # (device, method, params)
         self._closed = False
         self._last_buttons = 0
+        self._held: Dict[str, Dict[str, Any]] = {}  # device -> keys / buttons Core accepted (ok reply)
+        self.last_busy: Optional[float] = None  # time.monotonic() of the latest device_busy reply (UI reads it)
         self._thread = threading.Thread(target=self._run, name="hid-sender", daemon=True)
         self._thread.start()
 
@@ -239,7 +244,9 @@ class HidSender:
             last = self._queue[-1] if self._queue else None
             if (method == "absMouseReport" and last is not None and last[0] == device and last[1] == method
                     and last[2].get("buttons") == params.get("buttons")):
-                self._queue[-1] = (device, method, params)
+                # Coalesce to the newest position, keeping a release-only mark: a move with the same mask must not
+                # turn a synthesized release into a plain report that bypasses Core's clipping (ADR-0008).
+                self._queue[-1] = (device, method, params, *last[3:])
             else:
                 buttons = params.get("buttons") if method == "absMouseReport" else None
                 # A move is droppable only when it changes no button state; a press or release never is.
@@ -269,6 +276,44 @@ class HidSender:
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
+    def _note_delivered(self, device: str, method: str, params: Dict[str, Any]) -> None:
+        held = self._held.setdefault(device, {"kbd": (0, ()), "buttons": 0, "xy": (0, 0)})
+        if method == "keyboardReport":
+            held["kbd"] = (int(params.get("modifier", 0)), tuple(params.get("keys", ())))
+        elif method == "absMouseReport":
+            held["buttons"] = int(params.get("buttons", 0))
+            held["xy"] = (params["x"], params["y"])
+
+    def _release_only(self, queue: list) -> list:
+        """After a busy reply: keep only what lets go of confirmed-down keys / buttons, one report per kind.
+
+        Every queued report is read as "keep at most these": the result is the intersection of what Core holds
+        with all of them, so a press (even one after a release) is never sent and a release is never lost.
+        """
+        out = []
+        for device in dict.fromkeys(e[0] for e in queue):
+            held = self._held.get(device)
+            if held is None:
+                continue
+            mod, keys = held["kbd"]
+            buttons, xy, seen_kbd, seen_mouse = held["buttons"], held["xy"], False, False
+            for dev, method, params, *_ in queue:
+                if dev != device:
+                    continue
+                if method == "keyboardReport":
+                    seen_kbd = True
+                    mod &= int(params.get("modifier", 0))
+                    keys = tuple(k for k in keys if k in params.get("keys", ()))
+                elif method == "absMouseReport":
+                    seen_mouse = True
+                    buttons &= int(params.get("buttons", 0))
+                    xy = (params["x"], params["y"])
+            if seen_kbd and (mod, keys) != held["kbd"]:
+                out.append((device, "keyboardReport", {"modifier": mod, "keys": list(keys)}, True))
+            if seen_mouse and buttons != held["buttons"]:
+                out.append((device, "absMouseReport", {"x": xy[0], "y": xy[1], "buttons": buttons}, True))
+        return out
+
     def _run(self) -> None:
         while True:
             with self._cv:
@@ -276,12 +321,18 @@ class HidSender:
                     self._cv.wait()
                 if not self._queue:
                     return
-                device, method, params = self._queue.pop(0)
+                device, method, params, *flags = self._queue.pop(0)
+            payload = {"method": method, "params": params}
+            if flags:  # synthesized after busy: Core clips it to what the target holds then (only lets go)
+                payload["release_only"] = True
             try:
-                reply = self._send("hid", {"method": method, "params": params}, self._timeout, device)
+                reply = self._send("hid", payload, self._timeout, device)
             except Exception:
                 log.debug("HID send failed", exc_info=True)
                 continue
+            if reply.get("status") == "ok":
+                self._note_delivered(device, method, params)
             if reply.get("error") == "device_busy":
+                self.last_busy = time.monotonic()
                 with self._cv:
-                    self._queue.clear()
+                    self._queue = self._release_only(self._queue)
