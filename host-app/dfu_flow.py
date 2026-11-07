@@ -98,52 +98,48 @@ def _load(session, keys):
     return loaded
 
 
-EXTENT_FILE = "DFU_window_size.json"
-MAX_EXTENT = 10000
+REGION_FILE = "DFU_region.json"
+MAX_COORD = 20000
 
 
-def load_window_extent(catalog):
-    """Optional trusted window size ``(width, height)`` in template pixels, or ``None``.
+def load_region(catalog):
+    """Optional fixed DFU window rectangle ``(x, y, w, h)`` in screen pixels, or ``None``.
 
-    ``DFU/DFU_window_size.json`` = ``{"width": W, "height": H}``: the full DFU window size at the
-    scale the window template was captured. It lets a corner-only ``DFU_window.png`` act as an anchor.
-    Without the file the region is just the match box (the original strict behavior).
+    ``DFU/DFU_region.json`` = ``{"x": X, "y": Y, "width": W, "height": H}`` at the field screen
+    (1920x1080, 100%). The window template's background changes with the ATE mode, so when this file
+    exists the window template is not used at all: every DFU control is searched only inside the
+    rectangle and nothing outside it is ever matched or clicked. Without the file the window
+    template match box is the region (the original strict behavior).
     """
-    path = catalog.device_dir("DFU") / EXTENT_FILE
+    path = catalog.device_dir("DFU") / REGION_FILE
     if not path.is_file():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        width, height = data["width"], data["height"]
-        ok = all(isinstance(v, int) and not isinstance(v, bool) and 0 < v <= MAX_EXTENT for v in (width, height))
+        x, y, width, height = (data[k] for k in ("x", "y", "width", "height"))
+        ok = (all(isinstance(v, int) and not isinstance(v, bool) for v in (x, y, width, height))
+              and 0 <= x <= MAX_COORD and 0 <= y <= MAX_COORD and 0 < width <= MAX_COORD and 0 < height <= MAX_COORD)
     except (OSError, ValueError, KeyError, TypeError):
         ok = False
     if not ok:
-        raise FlowError("hid_failed", f"Invalid {EXTENT_FILE}: need positive integer width and height")
-    return width, height
+        raise FlowError("hid_failed", f"Invalid {REGION_FILE}: need integer x, y and positive width, height")
+    return x, y, width, height
 
 
-def window_region(frame, window_box, window_template, extent):
-    """The only area DFU controls may come from: the window match box, grown to the configured window size.
-
-    The size is scaled by the match scale (match width / template width) and clipped to the frame.
-    Anything outside belongs to some other window and is never matched or clicked.
-    """
-    left, top, width, height = (int(v) for v in tuple(window_box)[:4])
-    if extent is not None:
-        scale = width / window_template.shape[1]
-        width = max(width, int(round(extent[0] * scale)))
-        height = max(height, int(round(extent[1] * scale)))
+def _clip(frame, region):
+    x, y, w, h = region
     frame_h, frame_w = frame.shape[:2]
-    left, top = max(0, left), max(0, top)
-    return (left, top, max(1, min(width, frame_w - left)), max(1, min(height, frame_h - top)))
+    if x >= frame_w or y >= frame_h:
+        raise FlowError("hid_failed", f"{REGION_FILE} lies outside the JetKVM frame")
+    return (x, y, min(w, frame_w - x), min(h, frame_h - y))
 
 
-def _window(session, frame, template, key, extent):
-    """Locate the window and return its trusted region (see ``window_region``)."""
-    box = session.find(key, template, frame, downscale=True, color=(0, 255, 0),
-                       message="DFU_window not found", check_threshold=False)
-    return window_region(frame, box, template, extent)
+def _window(session, frame, template, key, fixed=None):
+    """The DFU region: the fixed rectangle when configured, else the window template match box."""
+    if fixed is not None:
+        return _clip(frame, fixed)
+    return session.find(key, template, frame, downscale=True, color=(0, 255, 0),
+                        message="DFU_window not found", check_threshold=False)
 
 
 def _control(session, frame, region, template, key):
@@ -182,16 +178,17 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
     session = HidSession(kvm, template_root, diagnostics, threshold=threshold, log=log)
     entered = []
-    extent = None
+    fixed = None
     ok = False
     try:
-        templates = _load(session, ["dock_icon", "window", "checkbox_checked", "checkbox_unchecked", "input"])
-        extent = load_window_extent(catalog)
+        fixed = load_region(catalog)
+        templates = _load(session, ["dock_icon", "checkbox_checked", "checkbox_unchecked", "input"]
+                          + ([] if fixed else ["window"]))
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
         frame = session.frame(missing="No JetKVM frame available after Dock focus")
-        window = _window(session, frame, templates["window"], "window", extent)
+        window = _window(session, frame, templates.get("window"), "window", fixed)
         boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
 
         for _channel, box in _mismatches(boxes, wanted):
@@ -202,7 +199,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         for attempt in range(2):
             verify = session.frame(missing="No JetKVM frame available during checkbox verification")
             try:
-                verified_window = _window(session, verify, templates["window"], f"window_verify{attempt + 1}", extent)
+                verified_window = _window(session, verify, templates.get("window"), f"window_verify{attempt + 1}", fixed)
             except FlowError as exc:
                 if exc.score is None:
                     raise
@@ -243,13 +240,13 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
     session = HidSession(kvm, template_root, diagnostics, threshold=threshold, log=log)
     ok = False
     try:
-        templates = _load(session, ["dock_icon", "window", "button"])
-        extent = load_window_extent(catalog)
+        fixed = load_region(catalog)
+        templates = _load(session, ["dock_icon", "button"] + ([] if fixed else ["window"]))
         frame = session.frame()
         await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
         frame = session.frame(missing="No JetKVM frame available after Dock focus")
-        window = _window(session, frame, templates["window"], "window", extent)
+        window = _window(session, frame, templates.get("window"), "window", fixed)
         button_box = _control(session, frame, window, templates["button"], "button")
         await session.click(button_box, failure="OK HID failed")
         ok = True
