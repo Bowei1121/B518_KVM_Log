@@ -45,9 +45,9 @@ class ReadingStats:
             self._reason = "" if reliable else str(observation.reason)
             self._scale = float(observation.scale or 0.0)
             self._at = now
-            if frame_colorspace is not None or decode_colorspace is not None:
-                self._frame_colorspace = frame_colorspace
-                self._decode_colorspace = decode_colorspace
+            # A source without the metadata (replay, tests) reports null rather than a stale value.
+            self._frame_colorspace = frame_colorspace
+            self._decode_colorspace = decode_colorspace
 
     def report(self, now: Optional[float] = None) -> Dict[str, Any]:
         """The per-device reading fields of core_status (five reading fields plus the two colorspace names). Nothing read yet: every value is null, samples 0."""
@@ -98,5 +98,7 @@ def read_snapshot_recorded(snapshot: Any, stats: Optional[ReadingStats]) -> Any:
     """``read_snapshot(snapshot)`` that records the reading. Used as the heartbeat probe's decode."""
     observation = read_snapshot(snapshot)
     if stats is not None and observation is not None:
-        stats.record(observation, snapshot.image)
+        stats.record(observation, snapshot.image,
+                     frame_colorspace=getattr(snapshot, "frame_colorspace", None),
+                     decode_colorspace=getattr(snapshot, "decode_colorspace", None))
     return observation

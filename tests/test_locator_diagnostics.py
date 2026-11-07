@@ -101,3 +101,34 @@ def test_monitor_start_failure_saves_locating_note_and_zoom(tmp_path):
     failed = [r for r in records if r["key"] == "confirm_last_unreliable"][0]
     assert "left 1, right 1" in failed["note"]["en"] and "corner samples BGR" in failed["note"]["en"]
     assert any(r["key"] == "log_solution_locators_zoom" and r["image"] for r in records)
+
+
+def test_zoom_at_2x_keeps_both_locators_and_the_pair_line_inside():
+    frame = render_log_solution("complete", ["PASS", "FAIL"], scale=2, origin=ORIGIN)
+    explanation = explain_app_frame(frame)
+    selected = explanation["locate"]["selected"]
+    assert selected is not None
+    zoom = draw_locator_zoom(frame, explanation)
+    assert zoom is not None
+    # the right locator (x = 23 + 320*2 = 663) is in the crop: its magenta box colour shows up in the picture
+    magenta = (zoom[:, :, 0] == 255) & (zoom[:, :, 1] == 0) & (zoom[:, :, 2] == 255)
+    green = (zoom[:, :, 0] == 0) & (zoom[:, :, 1] == 220) & (zoom[:, :, 2] == 0)
+    assert magenta.any() and green.any()
+    right_box = explanation["locate"]["right"][selected["right"]]["box"]
+    cols = np.where(magenta.any(axis=0))[0]
+    assert cols.max() > zoom.shape[1] * (right_box[0] - 23) / (right_box[0] + 100)  # right edge reached, not clipped
+    assert cols.max() < zoom.shape[1] - 1
+
+
+def test_pair_summary_uses_the_real_total_and_keeps_the_selected_pair():
+    from log_solution_reader import MAX_PAIR_CHECKS, _pair_locators
+    # 60 left x 1 right candidates: only the last left forms a valid pair (same y, same scale)
+    right = [(400.0, 10.0, 1.0, 411.0, 21.0)]
+    left = [(80.0 + i, 90.0, 1.0, 83.0, 93.0) for i in range(59)] + [(80.0, 10.0, 1.0, 83.0, 21.0)]
+    checks = {}
+    pairs = _pair_locators(left, right, checks)
+    assert len(pairs) == 1
+    assert checks["total"] == 60 and len(checks["pairs"]) == MAX_PAIR_CHECKS + 1  # cap + the valid one
+    assert any(not item["failed"] and item["left"] == 59 for item in checks["pairs"])
+    assert checks["truncated"] == 60 - len(checks["pairs"])
+    assert all("dx" not in item["failed"] for item in checks["pairs"])

@@ -13,6 +13,7 @@ Fixed order, so no shortcut is sent unless Log Solution is on screen:
 """
 
 import asyncio
+import logging
 import time
 
 from hid_session import FlowError, HidSession
@@ -22,6 +23,8 @@ from log_solution_reader import MarkerState, explain_app_frame
 from reading_stats import read_latest_app_frame_recorded
 from round_frame_consumer import observe_latest_round_frame
 from template_catalog import TemplateCatalog
+
+logger = logging.getLogger(__name__)
 
 MATCH_THRESHOLD = 0.80
 MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
@@ -63,11 +66,9 @@ def _record_reading(diagnostics, key, frame, threshold, note, matched):
     """Annotated Log Solution reading picture plus the 4x locator zoom; diagnostics only, so callers swallow errors."""
     try:
         explanation = explain_app_frame(frame)
-    except Exception as exc:
+    except Exception:
         explanation = None
-        explain_error = repr(exc)
-    else:
-        explain_error = ""
+        logger.exception("Log Solution reading explanation failed; saving the picture unannotated")
     en_extra, zh_extra = _explain_note(explanation)
     box = None
     if matched and explanation is not None and explanation.get("band"):
@@ -80,7 +81,6 @@ def _record_reading(diagnostics, key, frame, threshold, note, matched):
         if zoom is not None:
             diagnostics.record("log_solution_locators_zoom", None, threshold, frame=zoom, matched=matched,
                                plain=True, note=note)
-    return explain_error
 
 
 async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None):

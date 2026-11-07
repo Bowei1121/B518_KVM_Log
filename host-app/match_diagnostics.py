@@ -121,6 +121,7 @@ REASON_ABBREVIATIONS = {"no_hole": "NH", "hole_size": "HS", "hole_offset": "HO",
 LEFT_COLOR, RIGHT_COLOR, REJECT_COLOR, PAIR_COLOR = (255, 200, 0), (255, 0, 255), (150, 150, 150), (0, 220, 0)
 ZOOM_FACTOR = 4
 ZOOM_MAX_SOURCE_WIDTH = 480
+ZOOM_MAX_WIDTH = 2400  # output pixels
 
 
 def _draw_locating(image, explanation, tf, size=1):
@@ -172,11 +173,15 @@ def draw_locator_zoom(frame, explanation):
         locate = explanation.get("locate") or {}
         boxes = [c["box"] for c in locate.get("left", []) + locate.get("right", [])] + \
             [r["box"] for r in locate.get("rejected", [])]
-        if explanation.get("located"):
-            x0, y0 = explanation["origin"]
-            scale = explanation["scale"]
-            left, top = x0 - 20, y0 - 15
-            right, bottom = x0 + 376 * scale + 20, y0 + 40 * scale + 15
+        selected = locate.get("selected")
+        if selected is not None:
+            # Union of the chosen locators (and the window top), whatever the scale: both must be in the picture.
+            pair = [locate["left"][selected["left"]]["box"], locate["right"][selected["right"]]["box"]]
+            scale = selected["scale"]
+            left = min(b[0] for b in pair) - 20
+            right = max(b[0] + b[2] for b in pair) + 20
+            top = min(b[1] for b in pair) - 15
+            bottom = max(b[1] + b[3] for b in pair) + 40 * scale + 15
         elif boxes:
             # No pair: centre on the box with the most neighbours within one window width.
             centres = [(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0) for b in boxes]
@@ -189,13 +194,15 @@ def draw_locator_zoom(frame, explanation):
         height, width = frame.shape[:2]
         left, top = max(0, int(left)), max(0, int(top))
         right, bottom = min(width, int(right)), min(height, int(bottom))
-        right = min(right, left + ZOOM_MAX_SOURCE_WIDTH + 80)
+        if selected is None:  # the cap only serves the no-pair search view
+            right = min(right, left + ZOOM_MAX_SOURCE_WIDTH + 80)
         if right - left < 8 or bottom - top < 8:
             return None
-        crop = cv2.resize(frame[top:bottom, left:right], None, fx=ZOOM_FACTOR, fy=ZOOM_FACTOR,
-                          interpolation=cv2.INTER_NEAREST)
-        _draw_locating(crop, explanation, lambda x, y: ((x - left) * ZOOM_FACTOR, (y - top) * ZOOM_FACTOR),
-                       ZOOM_FACTOR)
+        # 4x, less only when the picture would exceed ZOOM_MAX_WIDTH (a 2x screen's whole locator row).
+        factor = min(float(ZOOM_FACTOR), max(1.0, ZOOM_MAX_WIDTH / float(right - left)))
+        crop = cv2.resize(frame[top:bottom, left:right], None, fx=factor, fy=factor, interpolation=cv2.INTER_NEAREST)
+        _draw_locating(crop, explanation, lambda x, y: ((x - left) * factor, (y - top) * factor),
+                       max(1, int(round(factor))))
         summary = locate.get("summary")
         if summary:
             _text(crop, summary, (8, 20), (255, 255, 255), 0.55)

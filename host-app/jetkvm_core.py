@@ -136,7 +136,8 @@ class JetKVMClient:
         self.frame_received_monotonic = None
         self.frame_presentation_time = None
         self.src_colorspace = resolve_decode_colorspace(src_colorspace)  # decode_colorspace of core_status
-        self.frame_colorspace = None  # the frames' own colorspace tag, as read from the stream
+        self.frame_colorspace = None  # the newest frame's own colorspace tag, updated with the image
+        self._first_frame_logged = False
         self.stream_id = uuid.uuid4().hex
         self._frame_lock = threading.Lock()
         self.connected = False
@@ -266,10 +267,11 @@ class JetKVMClient:
                                extra={"zh": "KVM 影像軌道結束 (host=%s): %s"})
                 return
             decoded = decode_frame_bgr(f, self.src_colorspace)
-            if self.frame_colorspace is None:
-                self.frame_colorspace = colorspace_name(f.colorspace)
+            tag = colorspace_name(f.colorspace)
+            if not self._first_frame_logged:
+                self._first_frame_logged = True
                 logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
-                            self.host, self.frame_colorspace, colorspace_name(f.color_range, ranges=True), f.format.name,
+                            self.host, tag, colorspace_name(f.color_range, ranges=True), f.format.name,
                             self.src_colorspace,
                             extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
             presentation_time = None
@@ -277,6 +279,7 @@ class JetKVMClient:
                 presentation_time = float(f.pts * f.time_base)
             with self._frame_lock:
                 self.frame = decoded
+                self.frame_colorspace = tag  # same lock as the image: a snapshot never mixes frame and tag
                 self.frame_sequence += 1
                 self.frame_received_monotonic = time.monotonic()
                 self.frame_presentation_time = presentation_time

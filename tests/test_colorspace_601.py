@@ -198,3 +198,50 @@ def test_monitor_start_unknown_cell_failure_saves_sampled_values(tmp_path):
     summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
     stored = [r for r in summary["records"] if r["key"] == "confirm_last_unreliable"][0]
     assert "BGR" in stored["note"]["en"]
+
+
+def test_snapshot_tag_follows_each_frame_and_first_log_is_once(caplog):
+    class Track:
+        def __init__(self):
+            self.frames = [yuv_frame(swatch_frame(), Colorspace.ITU709), yuv_frame(swatch_frame(), Colorspace.ITU601)]
+
+        async def recv(self):
+            if not self.frames:
+                raise EOFError("done")
+            return self.frames.pop(0)
+
+    client = JetKVMClient("192.168.1.10", src_colorspace="auto")
+    with caplog.at_level(logging.INFO, logger="JetKVMClient"):
+        asyncio.run(client._pump_video(Track()))
+    snapshot = client.latest_frame()
+    assert (snapshot.frame_colorspace, snapshot.decode_colorspace) == ("ITU470BG", "auto")  # PyAV Colorspace.ITU601 is ffmpeg 5 (ITU470BG)
+    assert distance(snapshot.image[32, 8], SWATCH["PASS"]) <= 5  # the last frame decoded with its own (601) tag
+    assert len([r for r in caplog.records if "First video frame" in r.getMessage()]) == 1
+
+
+def test_core_status_colorspace_follows_probe_and_round_entries():
+    from fake_kvm import make_snapshot
+    from reading_stats import ReadingStats, read_snapshot_recorded
+    from round_frame_consumer import RoundFrameGate
+
+    frame = render_log_solution("complete", ["PASS"] * 4, scale=1, origin=(23, 31))
+    stats = ReadingStats()
+    snapshot = make_snapshot(frame)
+    snapshot = type(snapshot)(snapshot.image, snapshot.sequence, snapshot.received_monotonic, snapshot.stream_id,
+                              snapshot.pts, "ITU709", "ITU601")
+    read_snapshot_recorded(snapshot, stats)  # heartbeat probe entry
+    assert (stats.report()["frame_colorspace"], stats.report()["decode_colorspace"]) == ("ITU709", "ITU601")
+    read_snapshot_recorded(make_snapshot(frame), stats)  # a source without metadata reports null, not stale
+    assert stats.report()["frame_colorspace"] is None and stats.report()["decode_colorspace"] is None
+
+    class KVM:
+        def latest_frame(self):
+            return snapshot
+
+        def is_healthy(self):
+            return True
+
+    from round_frame_consumer import observe_latest_round_frame
+    stats = ReadingStats()
+    observe_latest_round_frame(KVM(), RoundFrameGate("DFU-01", stats=stats))  # round entry
+    assert (stats.report()["frame_colorspace"], stats.report()["decode_colorspace"]) == ("ITU709", "ITU601")

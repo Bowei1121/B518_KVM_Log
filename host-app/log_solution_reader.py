@@ -211,24 +211,29 @@ def _locator_candidates(frame):
 def _pair_locators(left, right, checks=None):
     """Valid left/right pairs ``(score, x, y, hole_scale, left_index, right_index)``.
 
-    ``checks`` (optional list) receives every examined pair with its numbers and the failed conditions
-    (``dx``, ``dy``, ``scale_mismatch``); at most MAX_PAIR_CHECKS are kept.
+    ``checks`` (optional dict) receives diagnostics without changing the answer: ``pairs`` (up to
+    MAX_PAIR_CHECKS examined pairs with their numbers and failed conditions, ``dy`` / ``scale_mismatch``),
+    ``total`` (every pair examined) and ``truncated`` (pairs not listed). Valid pairs are always listed, so the
+    chosen pair is never cut. The dx condition is not reported: the scale comes from the measured dx itself,
+    so the expected dx always equals it and that test can never fail.
     """
     pairs = []
+    listed, total = [], 0
     for li, (lx, ly, ls, lcx, lcy) in enumerate(left):
         for ri, (rx, ry, rs, rcx, rcy) in enumerate(right):
+            total += 1
             scale = (rx - lx) / float(LOCATOR_DISTANCE)
             expected_dx = LOCATOR_DISTANCE * scale
             tolerance = max(3.0, expected_dx * 0.035)
             dx_ok = abs((rx - lx) - expected_dx) <= tolerance
             dy_ok = abs(ry - ly) <= max(3.0, scale * 0.12)
             scale_ok = (abs(ls - rs) <= scale * 0.08 and abs(((ls + rs) / 2.0) - scale) <= scale * 0.08)
-            if checks is not None and len(checks) < MAX_PAIR_CHECKS:
-                checks.append({"left": li, "right": ri, "dx": float(rx - lx), "expected_dx": float(expected_dx),
-                               "dy": float(ry - ly), "scale_diff": float(abs(ls - rs)),
-                               "failed": [name for name, ok in (("dx", dx_ok), ("dy", dy_ok),
-                                                                ("scale_mismatch", scale_ok)) if not ok]})
-            if dx_ok and dy_ok and scale_ok:
+            valid = dx_ok and dy_ok and scale_ok
+            if checks is not None and (valid or len(listed) < MAX_PAIR_CHECKS):
+                listed.append({"left": li, "right": ri, "dx": float(rx - lx), "dy": float(ry - ly),
+                               "scale_diff": float(abs(ls - rs)),
+                               "failed": [name for name, ok in (("dy", dy_ok), ("scale_mismatch", scale_ok)) if not ok]})
+            if valid:
                 # Hole centres, not outer corners, anchor the origin: a dark desktop neighbour
                 # widens the outer box, while blur moves the hole centre by about a pixel at most.
                 hole_scale = (rcx - lcx) / HOLE_DISTANCE
@@ -237,6 +242,8 @@ def _pair_locators(left, right, checks=None):
                 y = ((lcy - (LEFT_LOCATOR[1] + LEFT_HOLE_CENTRE) * hole_scale)
                      + (rcy - (RIGHT_LOCATOR[1] + RIGHT_HOLE_CENTRE) * hole_scale)) / 2.0
                 pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly), x, y, hole_scale, li, ri))
+    if checks is not None:
+        checks.update(pairs=listed, total=total, truncated=total - len(listed))
     return pairs
 
 
@@ -542,7 +549,7 @@ def _explain_cell_samples(frame, x, y, scale):
 
 def _explain_locating(frame):
     """Locator candidates, pair checks, the chosen pair and near-miss boxes of one frame, as plain data."""
-    report, checks = {}, []
+    report, checks = {}, {}
     left, right = _scan_locators(frame, report)
     pairs = _pair_locators(left, right, checks)
     chosen = min(pairs, key=lambda item: item[0]) if pairs else None
@@ -557,16 +564,19 @@ def _explain_locating(frame):
     rejected = [{"box": [float(v) for v in item["box"]], "scale": float(item["scale"]), "reason": item["reason"]}
                 for item in report["near_rejected"]]
     summary = "locators: left {}, right {}, pairs {} ({} valid), selected {}, near-miss boxes {}".format(
-        len(left), len(right), len(checks), len(pairs),
+        len(left), len(right), checks["total"], len(pairs),
         "none" if selected is None else "origin=({:.1f},{:.1f}) scale={:.3f}".format(*selected["origin"], selected["scale"]),
         len(rejected))
+    if checks["truncated"]:
+        summary += " [{} pair checks not listed]".format(checks["truncated"])
     reasons = {}
     for item in rejected:
         reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
     if reasons:
         summary += " (" + ", ".join("{}:{}".format(k, v) for k, v in sorted(reasons.items())) + ")"
     return {"left": candidates(left, report["left_boxes"]), "right": candidates(right, report["right_boxes"]),
-            "pairs": checks, "valid_pairs": len(pairs), "selected": selected, "rejected": rejected,
+            "pairs": checks["pairs"], "pairs_total": checks["total"], "pairs_truncated": checks["truncated"],
+            "valid_pairs": len(pairs), "selected": selected, "rejected": rejected,
             "summary": summary}
 
 

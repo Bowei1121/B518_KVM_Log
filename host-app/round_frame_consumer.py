@@ -52,13 +52,13 @@ class RoundFrameGate:
         """Channels the last reading confirmed as started (check's ``active``)."""
         return self.round.activity.last_active
 
-    def observe(self, frame, sequence, received_at, now=None, stream_id=None, pts=None):
+    def observe(self, frame, sequence, received_at, now=None, stream_id=None, pts=None, colorspaces=None):
         """Stream verdict, then the round decision, for one frame passed in directly (tools and tests)."""
         now = self.clock() if now is None else now
         return self.decide(self.stream.observe(stream_id, sequence, pts, now), frame, sequence, received_at,
-                           stream_id=stream_id)
+                           stream_id=stream_id, colorspaces=colorspaces)
 
-    def decide(self, verdict, frame, sequence, received_at, stream_id=None):
+    def decide(self, verdict, frame, sequence, received_at, stream_id=None, colorspaces=None):
         """Round decision for a frame whose stream verdict is already known.
 
         Returns waiting/paused/taken/already_taken/unknown/frozen/heartbeat_stopped.
@@ -70,7 +70,7 @@ class RoundFrameGate:
         if self.require_proof and verdict.kind != FROZEN and verdict.fresh and not verdict.advanced:
             self.round.lose_continuity()
             return TakeDecision("unknown", self.device_id, reason=FRESHNESS_PENDING)
-        return self._decide(verdict, frame, sequence, received_at, stream_id)
+        return self._decide(verdict, frame, sequence, received_at, stream_id, colorspaces)
 
     def _sync_generation(self, verdict: Verdict):
         if verdict.generation != self._seen_generation:
@@ -84,7 +84,7 @@ class RoundFrameGate:
         # still gets already_taken (#56).
         self.round.disarm()
 
-    def _decide(self, verdict: Verdict, frame, sequence, received_at, stream_id=None):
+    def _decide(self, verdict: Verdict, frame, sequence, received_at, stream_id=None, colorspaces=None):
         if verdict.kind == FROZEN:
             self.round.lose_continuity()
             if self.heartbeat is not None:
@@ -103,7 +103,8 @@ class RoundFrameGate:
             observation = unreadable_heartbeat(observation)
         # Recorded once per inspected frame, after the heartbeat rule, so "readable" is the final verdict.
         if self.stats is not None:
-            self.stats.record(observation, frame)
+            self.stats.record(observation, frame, frame_colorspace=colorspaces[0] if colorspaces else None,
+                              decode_colorspace=colorspaces[1] if colorspaces else None)
         if stopped:
             self.round.lose_continuity()
             return TakeDecision("heartbeat_stopped", self.device_id, reason=HEARTBEAT_STOPPED,
@@ -124,4 +125,6 @@ def observe_latest_round_frame(kvm, gate, now=None):
     if snapshot is None:
         return gate.decide(verdict, None, None, None)
     return gate.decide(verdict, snapshot.image, snapshot.sequence, snapshot.received_monotonic,
-                       stream_id=snapshot.stream_id)
+                       stream_id=snapshot.stream_id,
+                       colorspaces=(getattr(snapshot, "frame_colorspace", None),
+                                    getattr(snapshot, "decode_colorspace", None)))
