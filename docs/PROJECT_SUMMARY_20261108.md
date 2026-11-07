@@ -47,3 +47,5 @@ PR 內容：Log Solution 設定頁在 macOS 改用 `osascript choose folder ... 
 - 審查第一輪（codex）4 項修正：(1) 移開滑鼠為 best effort，失敗只記 `park_failed`，不把已成功的點擊報成失敗；(2) 設定先驗證；(3) 以停放時最新影格序號為基準，settle 期間到達的影格也算新影格；(4) `monitor_start` 的等新影格併入點擊起算的 confirm 期限（PROTOCOL §5.6 的 3 秒）。
 - 教訓：Windows 的 `time.monotonic()` 解析度約 15 ms，測試中比較「收件時間 > 停放時間」要用明確差值，不能靠連續呼叫。
 - 待現場驗證：提示是否真的不再蓋住 Start All；`pointer_park` 在現場的最佳位置。
+
+- 複審 2 項修正：移開滑鼠改走 `JetKVMClient.park()`（manual RPC id 空間，延遲錯誤不污染點擊的 `rpc_errors`，也不再清共享佇列）；`monitor_start` 的 confirm 改用從 Dock 點擊起算的絕對 deadline，讀取前與接受前都檢查。

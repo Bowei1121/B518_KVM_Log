@@ -74,18 +74,28 @@ def _record_reading(diagnostics, key, frame, threshold, note, matched):
                                plain=True, note=note)
 
 
-async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None):
+async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None,
+                                     deadline=None):
     """``(observation, last_reason)``: the newest reliable reading within timeout_sec, or None with
     the reason of the last unreliable one (``no_frame`` when there was no picture).
 
     ``last_unreliable`` (optional dict) receives ``{"frame": ...}`` with the newest unreliable picture, so the
     caller can keep it as diagnostics when the wait times out. ``last_reliable`` likewise receives the
     picture of the reliable reading that ended the wait.
+
+    ``deadline`` (absolute ``time.monotonic()``) makes the wait strict: nothing is read once it has passed, and
+    a reading finished after it is not accepted, so a reliable picture that shows up late never counts.
     """
-    deadline = time.monotonic() + timeout_sec
+    strict = deadline is not None
+    if deadline is None:
+        deadline = time.monotonic() + timeout_sec
     last_reason = "no_frame"
     while True:
+        if strict and time.monotonic() >= deadline:
+            return None, last_reason
         frame, observation = read_latest_app_frame_recorded(kvm, stats)
+        if strict and time.monotonic() > deadline:
+            return None, last_reason
         if observation is not None and observation.reliable:
             if frame is not None and last_reliable is not None:
                 last_reliable["frame"] = frame
@@ -182,9 +192,9 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             unreliable = {}
             reliable = {}
             # One confirm window from the click: the fresh-frame wait above is part of it, not added to it.
-            left = max(0.0, confirm_sec - (time.monotonic() - session.dock_clicked_at))
             observation, last_reason = await _wait_for_reliable_reading(
-                kvm, left, gate.stats, unreliable, reliable)
+                kvm, confirm_sec, gate.stats, unreliable, reliable,
+                deadline=session.dock_clicked_at + confirm_sec)
             if observation is not None:
                 try:  # best-effort diagnostics: the annotated reading of the screen we are about to act on
                     _record_reading(

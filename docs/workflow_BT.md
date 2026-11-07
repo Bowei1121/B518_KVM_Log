@@ -55,7 +55,7 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 5. 命中後點擊一次 Start All，點完把滑鼠移回停放點，避免 hover／提示影響之後 `check_*` 讀 Log Solution。HID 錯誤回 `hid_failed`。
 6. 成功回 `data.action = "start_all"`。
 
-停放位置與等待上限設定：`~/Documents/template/COMMON/hid_settings.json`（選用）：`{"pointer_park": [x, y], "fresh_frame_timeout_sec": 2.0}`。`pointer_park` 為點擊後滑鼠停放的螢幕像素位置（預設螢幕上緣中間 `(寬/2, 1)`，超出畫面會夾回邊界）；現場若開啟「自動隱藏選單列」，上緣會讓選單列跑出來，請改成不會觸發選單列／Dock／熱角的空白處，例如 `[960, 600]`。`fresh_frame_timeout_sec` 為等新影格上限（預設 2 秒）。格式錯誤（含明確寫 `null`）在第一次 HID 之前就回 `hid_failed`。移開滑鼠失敗不影響已成功的點擊，只在診斷記 `park_failed`。
+停放位置與等待上限設定：`~/Documents/template/COMMON/hid_settings.json`（選用）：`{"pointer_park": [x, y], "fresh_frame_timeout_sec": 2.0}`。`pointer_park` 為點擊後滑鼠停放的螢幕像素位置（兩個整數，0–20000）（預設螢幕上緣中間 `(寬/2, 1)`，超出畫面會夾回邊界）；現場若開啟「自動隱藏選單列」，上緣會讓選單列跑出來，請改成不會觸發選單列／Dock／熱角的空白處，例如 `[960, 600]`。`fresh_frame_timeout_sec` 為等新影格上限（預設 2 秒）。格式錯誤（含明確寫 `null`）在第一次 HID 之前就回 `hid_failed`。移開滑鼠走獨立的 RPC id（回覆錯誤不會被當成點擊錯誤），失敗不影響已成功的點擊，只在診斷記 `park_failed`。
 
 ## `check_start`／`check_finish`
 

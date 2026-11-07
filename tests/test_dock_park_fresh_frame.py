@@ -402,10 +402,12 @@ def test_frames_that_arrived_during_the_settle_count_as_fresh(tmp_path):
 
 
 class RpcErrorKvm(PhaseKvm):
-    """HID RPC errors: ``click_error`` on every click, ``move_error`` on every move."""
+    """``click_error`` on every click; ``late_click_error``: a click's reply error arrives during the next move;
+    ``park_raises``: the park itself raises (served through ``park``, as JetKVMClient does)."""
 
     click_error = False
-    move_error = False
+    late_click_error = False
+    park_raises = False
 
     async def click(self, x, y):
         await super().click(x, y)
@@ -414,21 +416,52 @@ class RpcErrorKvm(PhaseKvm):
 
     async def move(self, x, y):
         await super().move(x, y)
-        if self.move_error:
-            self.rpc_errors.append("park only rejected")
+        if self.late_click_error:
+            self.rpc_errors.append("button-down rejected (late)")
+
+    async def park(self, x, y):
+        await super().move(x, y)
+        if self.late_click_error:
+            self.rpc_errors.append("button-down rejected (late)")
+        if self.park_raises:
+            raise RuntimeError("park only rejected")
 
 
-def test_bt_park_error_after_a_successful_click_is_not_a_failure(tmp_path):
+def test_bt_park_failure_after_a_successful_click_is_not_a_failure(tmp_path):
     screen = _screen()
     _bt_templates(tmp_path, screen)
     kvm = RpcErrorKvm([screen])
-    kvm.move_error = True
+    kvm.park_raises = True
 
     assert _run_bt(kvm, tmp_path) == {"action": "start_all"}
 
     assert len(kvm.clicks) == 2  # Dock and Start All each once
     summary = MatchDiagnostics.load(TemplateCatalog(tmp_path).root, "BT")
     assert "park_failed" in [r["key"] for r in summary["records"]]
+
+
+def test_bt_click_error_arriving_during_the_park_is_still_hid_failed(tmp_path):
+    screen = _screen()
+    _bt_templates(tmp_path, screen)
+    kvm = RpcErrorKvm([screen])
+    kvm.late_click_error = True
+
+    with pytest.raises(FlowError) as excinfo:
+        _run_bt(kvm, tmp_path)
+
+    assert excinfo.value.code == "hid_failed"
+
+
+def test_late_park_reply_error_never_reaches_rpc_errors():
+    from jetkvm_core import MANUAL_ID_BASE, JetKVMClient
+
+    client = JetKVMClient.__new__(JetKVMClient)
+    client.rpc_errors = []
+    client._confirm = {}
+    client._on_rpc_message('{"jsonrpc":"2.0","id":%d,"error":{"message":"late park"}}' % (MANUAL_ID_BASE + 1))
+    assert client.rpc_errors == []
+    client._on_rpc_message('{"jsonrpc":"2.0","id":5,"error":{"message":"click"}}')
+    assert client.rpc_errors == ["click"]
 
 
 def test_bt_click_error_is_still_hid_failed(tmp_path):
@@ -444,14 +477,14 @@ def test_bt_click_error_is_still_hid_failed(tmp_path):
     assert len(kvm.clicks) == 1
 
 
-def test_dfu_ok_park_error_after_a_successful_click_is_not_a_failure(tmp_path):
+def test_dfu_ok_park_failure_after_a_successful_click_is_not_a_failure(tmp_path):
     root = tmp_path / "template"
     save_templates(root, FOUR)
 
     class Kvm(DfuPhaseKvm):
-        async def move(self, x, y):
+        async def park(self, x, y):
             await super().move(x, y)
-            self.rpc_errors.append("park only rejected")
+            raise RuntimeError("park only rejected")
 
     kvm = Kvm(FOUR)
     assert asyncio.run(dfu_flow.run_dfu_ok(kvm, root, log=lambda *_: None)) == {"action": "ok"}
@@ -506,3 +539,33 @@ def test_monitor_fresh_frame_wait_is_inside_the_confirm_window(tmp_path, monkeyp
 
     assert excinfo.value.code == "log_solution_not_found"
     assert [e for e in kvm.events if e[0] == "key"] == []
+
+
+def test_reliable_reading_after_the_deadline_is_not_accepted(monkeypatch):
+    from protocol_helpers import LogSolutionKVM
+
+    kvm = LogSolutionKVM(state="standby")
+    now = time.monotonic()
+    # deadline already passed when entering: no reading at all
+    observation, reason = asyncio.run(monitor_flow._wait_for_reliable_reading(kvm, 0, deadline=now - 1))
+    assert observation is None
+    # control: the same picture is accepted while the deadline is ahead
+    observation, _ = asyncio.run(monitor_flow._wait_for_reliable_reading(kvm, 1, deadline=time.monotonic() + 5))
+    assert observation is not None and observation.reliable
+
+
+def test_reading_finished_after_the_deadline_is_not_accepted(monkeypatch):
+    from protocol_helpers import LogSolutionKVM
+
+    kvm = LogSolutionKVM(state="standby")
+    deadline = time.monotonic() + 100
+    real = monitor_flow.read_latest_app_frame_recorded
+
+    def slow_read(*args, **kwargs):  # the read itself crosses the deadline
+        result = real(*args, **kwargs)
+        monkeypatch.setattr(monitor_flow.time, "monotonic", lambda: deadline + 1)
+        return result
+
+    monkeypatch.setattr(monitor_flow, "read_latest_app_frame_recorded", slow_read)
+    observation, _ = asyncio.run(monitor_flow._wait_for_reliable_reading(kvm, 1, deadline=deadline))
+    assert observation is None

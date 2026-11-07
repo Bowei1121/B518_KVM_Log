@@ -182,9 +182,9 @@ class HidSession:
         """Move the pointer to the park position; remember the time and the newest frame sequence.
 
         Default ``neutral_pointer_position``; ``pointer_park`` in the settings file overrides it (clamped to
-        the frame). The move is best effort: a failed move (RPC error or exception) is noted in the
-        diagnostics and never turns an already successful click into a failure. A KVM without ``move``
-        only records the time.
+        the frame). The move goes out through ``kvm.park`` (its own RPC id space: a reply error can never be
+        taken for the click's) or ``kvm.move``. It is best effort: an exception is noted in the diagnostics
+        and never turns an already successful click into a failure. A KVM with neither only records the time.
         """
         if frame is None:
             frame = self.frame()
@@ -192,21 +192,16 @@ class HidSession:
         x, y = neutral_pointer_position(frame) if park is None else park
         height, width = frame.shape[:2]
         x, y = min(max(int(x), 0), width - 1), min(max(int(y), 0), height - 1)
-        if hasattr(self.kvm, "move"):
-            errors = getattr(self.kvm, "rpc_errors", None)
-            before = len(errors) if errors is not None else 0
-            problem = None
+        mover = getattr(self.kvm, "park", None) or getattr(self.kvm, "move", None)
+        if mover is not None:
             try:
-                await self.kvm.move(x, y)
+                await mover(x, y)
             except Exception as exc:  # noqa: BLE001 - the click already happened
                 problem = str(exc) or type(exc).__name__
-            if errors is not None and len(errors) > before:
-                problem = problem or str(errors[-1])
-                del errors[before:]  # belongs to the park, not to the click that came before
-            if problem and self.diagnostics:
-                self.diagnostics.record("park_failed", None, self.threshold, note={
-                    "en": f"Moving the pointer to ({x}, {y}) failed: {problem}; continuing",
-                    "zh": f"移開滑鼠到 ({x}, {y}) 失敗：{problem}；繼續執行"})
+                if self.diagnostics:
+                    self.diagnostics.record("park_failed", None, self.threshold, note={
+                        "en": f"Moving the pointer to ({x}, {y}) failed: {problem}; continuing",
+                        "zh": f"移開滑鼠到 ({x}, {y}) 失敗：{problem}；繼續執行"})
         self.park_mark = time.monotonic()
         base = self.kvm.latest_frame()
         sequence = getattr(base, "sequence", None)

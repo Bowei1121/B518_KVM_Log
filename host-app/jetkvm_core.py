@@ -415,6 +415,14 @@ class JetKVMClient:
         x, y = self._to_abs(px, py)
         self.call("absMouseReport", {"x": x, "y": y, "buttons": 0}); await asyncio.sleep(0.1)
 
+    async def park(self, px, py):
+        """``move`` for resting the pointer after a click: its reply, even a late error, never reaches ``rpc_errors``.
+
+        A click's own reply errors must stay attributable to that click, so the park uses the manual id space.
+        """
+        x, y = self._to_abs(px, py)
+        self.call_manual("absMouseReport", {"x": x, "y": y, "buttons": 0}); await asyncio.sleep(0.1)
+
     async def type_text(self, text):
         for ch in text:
             if ch not in _USAGE:
