@@ -107,7 +107,7 @@ CI 探針 run 40923852878（2026-10-29）中，非零結束與強制結束均只
 2. `core_status` 的 `stations[].frame_colorspace`（影格自帶標記）與 `stations[].decode_colorspace`（Core 採用的矩陣），見 `docs/PROTOCOL.md`。
 3. 看 `~/Documents/template/_captures/match_diagnostics/<DEVICE>/latest/`（及 `history/`）的標註圖：LS 原點與兩個定位標記以黃框標出、結果格以綠框（讀到）／紅框（讀不到）標出，左上角文字列出 scale、狀態、各格狀態。失敗於 `result_cell_unknown_N` 時第 N 格畫出四個取樣點，文字列出各點 BGR、最接近的契約色與距離，`summary.json` 的 note 也帶同樣數字。
 4. 判讀：LS 內 KVM Status Template 色票的 PASS 若讀成約 **(0,200,0)、距離 ≈ 39**，就是矩陣錯（參考 `docs/evidence/kvm-colorspace-601-field-annotated.png`）；正確應接近 (0,239,0)，距離個位數。
-5. **定位配對過程**（`monitor_start` 成功與失敗都存）：標註圖畫出所有左候選（青）、右候選（洋紅）、被剔除的近似外框（灰，縮寫為原因：`NH`=no_hole、`HS`=hole_size、`HO`=hole_offset、`SR`=scale_range、`NS`=not_square，最多 20 個）、選中配對（綠粗線）、原點十字與 scale，以及 gutter 三點（橘）、狀態標記四格（紅）、心跳四格（青）取樣點。另存 `log_solution_locators_zoom`：以 LS 頂部為中心、放大 4 倍的裁切（沒配對時改裁候選最密集處，沒候選則不存；範例 `docs/evidence/kvm-colorspace-601-field-locators-zoom.png`）。`summary.json` 的 note 帶一行摘要（候選數、配對數、選中的原點與 scale、近似外框原因計數）。`check_start`／`check_finish` 尚未加（存圖頻率另案處理）。
+5. **定位配對過程**（`monitor_start` 成功與失敗都存）：標註圖畫出所有左候選（青）、右候選（洋紅）、被剔除的近似外框（灰，縮寫為原因：`NH`=no_hole、`HS`=hole_size、`HO`=hole_offset、`SR`=scale_range、`NS`=not_square，最多 20 個）、選中配對（綠粗線）、原點十字與 scale，以及 gutter 三點（橘）、狀態標記四格（紅）、心跳四格（青）取樣點。另存 `log_solution_locators_zoom`：以 LS 頂部為中心的裁切，最高放大 4 倍（較寬的畫面會降低倍率，輸出寬度上限 2400 px，確保左右定位點都在圖內）（沒配對時改裁候選最密集處，沒候選則不存；範例 `docs/evidence/kvm-colorspace-601-field-locators-zoom.png`）。`summary.json` 的 note 帶一行摘要（候選數、配對數、選中的原點與 scale、近似外框原因計數）。`check_start`／`check_finish` 尚未加（存圖頻率另案處理）。
 6. `monitor_start` 確認期讀到可靠畫面時，也會記一筆 `log_solution_reading`（成功圖）。
 
 **待現場驗證**：`log_solution_reader.DEEP_RING_LOW_SCALE_SLACK = 42`（#188）當初補的 WAITING→STOPPED 偏移，可能有一部分也是這個矩陣錯誤造成。本次保留不動；現場確認 601 解碼後再評估是否收緊。
