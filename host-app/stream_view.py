@@ -55,6 +55,22 @@ _MOD_BIT = {
 }
 
 
+class BusyNotice:
+    """Whether the "manual HID ignored" message shows. Changes only when visibility flips, so the status label is
+    rewritten once per busy burst and once when it expires, never on every dropped mouse move."""
+
+    def __init__(self, hold=3.0):
+        self.hold = hold
+        self.visible = False
+
+    def update(self, last_busy, now):
+        """Return True when the visible state changed and the label must be redrawn."""
+        visible = last_busy is not None and now - last_busy < self.hold
+        changed = visible != self.visible
+        self.visible = visible
+        return changed
+
+
 class StreamerWindow(tk.Toplevel):
     def __init__(self, parent, frame_getter, input_sender=None, fps=30,
                  title="Streamer", on_close=None):
@@ -73,6 +89,7 @@ class StreamerWindow(tk.Toplevel):
         self._last_abs = None
         self._mods = 0                # 目前修飾鍵 bitmask
         self._keys = []               # 目前按住的一般鍵 usage (最多 6)
+        self._busy = BusyNotice()
 
         self.geometry("1280x760")
         self.resizable(True, True)
@@ -122,6 +139,8 @@ class StreamerWindow(tk.Toplevel):
         return self.input_sender is not None and self._mode.get() == "control" and self._map is not None
 
     def _hint_text(self):
+        if self._busy.visible:
+            return t("streaming_hint_busy")
         return t(streaming_hint_key(self.input_sender if self._controlling() else None))
 
     def _on_mode_change(self):
@@ -148,6 +167,8 @@ class StreamerWindow(tk.Toplevel):
     def _tick(self):
         if self._closed:
             return
+        if self._busy.update(getattr(self.input_sender, "last_busy", None), time.monotonic()):
+            bind(self.status, self._hint_text)
         frame = None
         try:
             frame = self.frame_getter()

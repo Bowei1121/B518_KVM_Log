@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("DeviceLockManager")
 
@@ -19,6 +19,7 @@ class DeviceLockManager:
     def __init__(self) -> None:
         self._manager_lock = threading.Lock()
         self._locks: Dict[str, threading.Lock] = {}
+        self._holders: Dict[str, str] = {}  # device -> name of the command holding the lock
 
     def _normalize_key(self, device: Any) -> str:
         """Normalize a device identifier into a non-empty string."""
@@ -29,7 +30,7 @@ class DeviceLockManager:
             raise ValueError("Device identifier cannot be empty")
         return key
 
-    def try_acquire(self, device: Any) -> bool:
+    def try_acquire(self, device: Any, holder: Optional[str] = None) -> bool:
         """Attempt to acquire the lock for a specific device without blocking.
 
         Returns True if acquired, False if already locked (busy).
@@ -42,6 +43,8 @@ class DeviceLockManager:
 
         acquired = lock.acquire(blocking=False)
         if acquired:
+            with self._manager_lock:
+                self._holders[key] = holder or ""
             logger.debug("Acquired lock for device '%s'", key, extra={"zh": "已取得設備 '%s' 的鎖"})
         else:
             logger.debug("Failed to acquire lock for device '%s' (busy)", key,
@@ -59,6 +62,8 @@ class DeviceLockManager:
             lock = self._locks.get(key)
 
         if lock is not None:
+            with self._manager_lock:
+                self._holders.pop(key, None)
             try:
                 lock.release()
                 logger.debug("Released lock for device '%s'", key, extra={"zh": "已釋放設備 '%s' 的鎖"})
@@ -75,6 +80,18 @@ class DeviceLockManager:
         with self._manager_lock:
             lock = self._locks.get(key)
             return lock.locked() if lock is not None else False
+
+    def holder(self, device: Any) -> Optional[str]:
+        """Name of the command holding the device lock; None if unlocked or the holder passed no name."""
+        try:
+            key = self._normalize_key(device)
+        except ValueError:
+            return None
+        with self._manager_lock:
+            lock = self._locks.get(key)
+            if lock is None or not lock.locked():
+                return None
+            return self._holders.get(key) or None
 
     def get_active_devices(self) -> List[str]:
         """Return list of device IDs that are currently locked."""

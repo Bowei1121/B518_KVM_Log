@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -226,6 +227,7 @@ class HidSender:
         self._queue: list = []  # (device, method, params)
         self._closed = False
         self._last_buttons = 0
+        self.last_busy: Optional[float] = None  # time.monotonic() of the latest device_busy reply (UI reads it)
         self._thread = threading.Thread(target=self._run, name="hid-sender", daemon=True)
         self._thread.start()
 
@@ -283,5 +285,6 @@ class HidSender:
                 log.debug("HID send failed", exc_info=True)
                 continue
             if reply.get("error") == "device_busy":
+                self.last_busy = time.monotonic()
                 with self._cv:
                     self._queue.clear()

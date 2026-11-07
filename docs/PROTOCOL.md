@@ -72,7 +72,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
 | `inspect` | Monitor UI 唯讀檢視（僅供 Monitor UI，LabVIEW 不得使用） | 否 | ✔ | ✔ | ✔ |
 | `input` | 勾選通道並輸入本輪 SN（不點 OK、不開始監控） | 是 | ✔ | ✘ | ✘ |
-| `hid` | Monitor UI pop-out 手動操作（僅供 Monitor UI，LabVIEW 不得使用） | 否（但設備上鎖時丟棄） | ✔ | ✔ | ✔ |
+| `hid` | Monitor UI pop-out 手動操作（僅供 Monitor UI，LabVIEW 不得使用） | 否（Core 自己送 HID 時丟棄） | ✔ | ✔ | ✔ |
 
 - 「上鎖」指令在同一台設備已有上鎖指令執行中時，立刻回 `device_busy`（ADR-0002 fail-fast）。不同設備互不影響。`inspect` 不上鎖。
 - 站別不支援的指令回 `unsupported_command`（例如 FCT 的 `start_test`、DFU 以外的 `input`）。
@@ -367,7 +367,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `wheelReport` | `wheelY`：−127–127 |
 
 - 其他 `method`、缺少或多餘的 `params` 鍵、型別不符一律 `invalid_argument`，不送任何 HID。
-- 不拿 Device Lock，因此連續的滑鼠移動不會讓 LabVIEW 指令回 `device_busy`。但該設備的 Device Lock 被 `monitor_start`／`start_test`／`input`／`check_*` 持有時，回 `device_busy` 並丟棄這筆 HID（不送出）。
+- 不拿 Device Lock，因此連續的滑鼠移動不會讓 LabVIEW 指令回 `device_busy`。但只在 Core 自己送 HID 時才擋：該設備的 Device Lock 被 `monitor_start`／`start_test`／`input` 持有，或 `check_start`／`check_finish` 正在點 Dock 恢復（`dock_recovering`）時，回 `device_busy` 並丟棄這筆 HID（不送出）。`check_start`／`check_finish` 只是在等畫面時放行手動 HID。
 - 不碰輪次、閘門或畫面狀態，不影響 `check_*` 的交付。
 - `kvm.call` 失敗回 `hid_failed`。成功 `data` 為空物件。
 - LabVIEW 不得使用。

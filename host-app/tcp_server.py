@@ -188,6 +188,10 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
     return method, clean
 
 
+# Lock holders that only wait for the screen; manual HID may run while they do (ADR-0008).
+_WAITING_CHECKS = frozenset({"check_start", "check_finish"})
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """Every rule of one protocol command: what validation accepts, how dispatch runs it, what the reply carries.
@@ -793,15 +797,21 @@ class TcpJsonServer:
         return {"status": "ok", "data": result}
 
     async def _handle_hid(self, ctx: CommandContext, args: Tuple[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """Monitor UI manual HID (ADR-0008). Dropped with device_busy while any locked command holds the device.
+        """Monitor UI manual HID (ADR-0008). Dropped with device_busy only while Core itself sends HID.
 
-        It takes no Device Lock itself, so a stream of mouse moves can never make a LabVIEW command busy.
-        It touches no slot, round or gate state.
+        While check_start / check_finish merely wait for the screen, manual HID passes. Every other lock holder
+        (start_test, input, monitor_start) and a check clicking the Dock drop it. It takes no Device Lock itself,
+        so a stream of mouse moves can never make a LabVIEW command busy. It touches no slot, round or gate state.
         """
         device_id = ctx.entry.device_id
-        if self.lock_manager.is_locked(device_id):
-            return {"status": "busy", "error": "device_busy",
-                    "message": "An automated command is running; manual HID is dropped"}
+        holder = self.lock_manager.holder(device_id)
+        locked = self.lock_manager.is_locked(device_id)
+        if locked:
+            slot = self._slots.get(str(device_id))
+            waiting_check = holder in _WAITING_CHECKS and not (slot is not None and slot.dock_recovering)
+            if not waiting_check:
+                return {"status": "busy", "error": "device_busy",
+                        "message": "An automated command is running; manual HID is dropped"}
         method, params = args
         try:
             ctx.kvm.call(method, params)
@@ -883,11 +893,14 @@ class TcpJsonServer:
             if isinstance(outcome, Reply):
                 return outcome.payload
             if isinstance(outcome, ClickDock):
+                slot.dock_recovering = True  # Core itself sends HID now: manual HID is dropped (ADR-0008)
                 try:
                     clicked = await bring_log_solution_forward(kvm, template_root=self._template_root(),
                                                                diagnostics_key=entry.device_id, stats=slot.stats)
                 except FlowError as exc:
                     return check.fail(exc.code, str(exc))
+                finally:
+                    slot.dock_recovering = False
                 if not clicked:
                     return check.fail("log_solution_not_found", "Log Solution Dock icon is not on screen")
                 await asyncio.sleep(self.dock_recheck_sec)
@@ -972,7 +985,7 @@ class TcpJsonServer:
         device_id: Optional[str] = entry.device_id if entry is not None else None
 
         if device_id is not None and spec.takes_lock:
-            if not self.lock_manager.try_acquire(device_id):
+            if not self.lock_manager.try_acquire(device_id, holder=spec.name):
                 logger.warning(
                     "Device %s busy; rejecting command '%s' (req_id=%s)",
                     device_id,
