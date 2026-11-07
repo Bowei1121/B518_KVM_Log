@@ -597,3 +597,83 @@ def test_release_refused_during_an_ack_wait_is_picked_up_by_a_later_pass(core):
     assert st["remote_kbd"] == (2, ())  # Shift kept
     assert st["remote_mouse"][2] == 0  # the release refused during the ACK wait was still delivered
     assert not srv.lock_manager.is_locked("BT-01")
+
+
+def test_real_sender_keeps_a_queued_release_through_a_busy_reply_and_close(core):
+    srv, kvm = core
+    gate = threading.Event()
+
+    def send(cmd, payload, timeout, device):
+        if payload["method"] == "wheelReport":
+            gate.wait(2)  # the wheel's busy reply is still in flight while the operator lets go and closes
+        with socket.create_connection(srv.server_address, timeout=5.0) as sock:
+            sock.sendall(dumps_request(wire({"cmd": cmd, "device": device, **payload})))
+            return recv_reply(sock)
+
+    sender = HidSender(send, lambda: "BT-01")
+    sender("keyboardReport", {"modifier": 0, "keys": [4]})  # A delivered
+    deadline = time.monotonic() + 2
+    while srv._slot("BT-01").manual_hid["remote_kbd"] != (0, (4,)) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert srv.lock_manager.try_acquire("BT-01", holder="monitor_start")  # Core starts its preflight
+    try:
+        sender("wheelReport", {"wheelY": 1})
+        time.sleep(0.05)
+        sender("keyboardReport", {"modifier": 0, "keys": []})  # let go of A ...
+        sender("keyboardReport", {"modifier": 0, "keys": [5]})  # ... press B (must never be replayed)
+        sender.close()  # ... and close the pop-out
+        gate.set()
+        assert sender.join(3)
+    finally:
+        srv.lock_manager.release("BT-01")
+    st = srv._slot("BT-01").manual_hid
+    assert st["intent_kbd"] == (0, ())  # the release reached Core although the busy reply cleared the queue
+    asyncio.run(srv._release_dropped_manual("BT-01", kvm))  # what the command's finally does
+    assert _last(kvm, "keyboardReport") == {"modifier": 0, "keys": []}
+    assert ("keyboardReport", {"modifier": 0, "keys": [5]}) not in kvm.rpc_calls
+
+
+def test_sender_release_only_never_turns_a_queued_press_into_a_report():
+    sender = HidSender(lambda *a: {"status": "ok"}, lambda: "BT-01")
+    sender.close()
+    sender._held["BT-01"] = {"kbd": (2, (4,)), "buttons": 1, "xy": (1, 1)}
+    queue = [("BT-01", "keyboardReport", {"modifier": 2, "keys": []}),       # let go of A
+             ("BT-01", "keyboardReport", {"modifier": 10, "keys": [4, 5]}),  # press A, B, Cmd again
+             ("BT-01", "absMouseReport", {"x": 7, "y": 8, "buttons": 3})]    # press another button
+    assert sender._release_only(queue) == [("BT-01", "keyboardReport", {"modifier": 2, "keys": []})]
+    assert sender._release_only([("BT-01", "wheelReport", {"wheelY": 1})]) == []
+
+
+def test_reconcile_runs_until_every_held_item_is_released_one_per_ack(core):
+    srv, kvm = core
+    st = srv._slot("BT-01").manual_hid
+    keys = (4, 5, 6, 7, 8, 9)
+    st["remote_kbd"] = st["intent_kbd"] = (0xFF, keys)  # 8 modifiers + 6 keys
+    st["remote_mouse"] = st["intent_mouse"] = (1, 1, 0b111)  # 3 buttons: 17 held items in all
+    order = [("mod", 1 << i) for i in range(8)] + [("key", k) for k in keys] + [("btn", 1 << i) for i in range(3)]
+    sent = []
+
+    def release_next():
+        kind, value = order.pop(0)
+        mod, ks = st["intent_kbd"]
+        if kind == "mod":
+            srv._note_manual("BT-01", "keyboardReport", {"modifier": mod & ~value, "keys": list(ks)},
+                             delivered=False)
+        elif kind == "key":
+            srv._note_manual("BT-01", "keyboardReport", {"modifier": mod, "keys": [k for k in ks if k != value]},
+                             delivered=False)
+        else:
+            x, y, b = st["intent_mouse"]
+            srv._note_manual("BT-01", "absMouseReport", {"x": x, "y": y, "buttons": b & ~value}, delivered=False)
+
+    async def confirmed(method, params):
+        sent.append((method, params))
+        if order:
+            release_next()  # each ACK wait brings the next release
+
+    kvm.call_confirmed = confirmed
+    release_next()
+    asyncio.run(srv._release_dropped_manual("BT-01", kvm))
+    assert order == []
+    assert st["remote_kbd"] == (0, ()) and st["remote_mouse"][2] == 0  # nothing left held
+    assert len(sent) >= 17

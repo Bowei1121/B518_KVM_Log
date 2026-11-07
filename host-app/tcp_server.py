@@ -190,7 +190,6 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
 
 # Lock holders that only wait for the screen; manual HID may run while they do (ADR-0008).
 _WAITING_CHECKS = frozenset({"check_start", "check_finish"})
-_RECONCILE_PASSES = 16  # releases only shrink the held set (a few bits), so this is never reached
 _RELEASE_FAILED = "Could not release the manual keyboard or mouse before the automated action"
 
 
@@ -215,6 +214,12 @@ class _HandoverKvm:
                 return await attr(*args, **kwargs)
             return wrapped
         return attr
+
+
+def _held_count(state: Dict[str, Any]) -> int:
+    """How many modifier bits, keys and mouse buttons the target holds (strictly shrinks on each release pass)."""
+    mod, keys = state["remote_kbd"]
+    return bin(mod).count("1") + len(keys) + bin(state["remote_mouse"][2]).count("1")
 
 
 def _manual_call(kvm: Any, method: str, params: Dict[str, Any]) -> None:
@@ -927,15 +932,21 @@ class TcpJsonServer:
     async def _release_dropped_manual(self, device_id: str, kvm: Any) -> None:
         """End of an automated phase: let go of what the operator released while their release was refused.
 
-        Only releases are sent, so each pass strictly shrinks what the target holds. The loop ends when a pass
-        finds nothing to do; no await sits between that last check and the caller giving up the lock / gate, so a
-        release refused during an earlier ACK wait is always picked up by a later pass. A failed send stops it.
+        Only releases are sent and a confirmed pass makes ``remote`` a strict subset of what it was, so the loop
+        runs until a pass finds nothing to do, however many releases arrive during the ACK waits (no fixed cap).
+        No await sits between that last check and the caller giving up the lock / gate. A failed send stops it;
+        the unreleased part stays recorded and is retried at the next handover or phase end.
         """
-        for _ in range(_RECONCILE_PASSES):
+        while True:
             plan = self._manual_plan(device_id, neutral=False)
             if not plan:
                 return
+            before = _held_count(self._slot(device_id).manual_hid)
             if not await self._send_plan(device_id, kvm, plan):
+                return
+            if _held_count(self._slot(device_id).manual_hid) >= before:  # invariant guard: cannot happen
+                logger.error("Manual HID reconcile on %s made no progress", device_id,
+                             extra={"zh": "%s 的手動 HID 對齊沒有進展"})
                 return
 
     async def _handle_check_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
