@@ -405,6 +405,63 @@ md.wait_for_history()
             self.assertEqual(len(runs), 1)
             self.assertTrue((runs[0] / "summary.json").exists())
 
+    def _two_summaries_kept(self, root):
+        import json
+        runs = _history(root)
+        keys = sorted(json.loads((r / "summary.json").read_text(encoding="utf-8"))["records"][0]["key"] for r in runs)
+        return keys
+
+    def test_day_folder_removed_by_other_process_before_listing_is_retried(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = 1_700_000_000.0
+            _run(root, "first", True, now + 5)  # a different millisecond, same day
+            real_iterdir = Path.iterdir
+            state = {"done": False}
+
+            def iterdir(path):
+                if not state["done"] and path.parent.name == "history" and path.parent.parent.name == "BT":
+                    state["done"] = True
+                    # Another process's cleanup empties and removes the day folder right after our mkdir.
+                    for run in real_iterdir(path):
+                        shutil.rmtree(str(run))
+                    path.rmdir()
+                return real_iterdir(path)
+
+            import shutil
+            rec = MatchDiagnostics(root, "BT", now=now)
+            rec.record("second", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            with mock.patch.object(Path, "iterdir", iterdir):
+                rec.finalize(True, "check")
+                wait_for_history()
+            self.assertTrue(state["done"])
+            self.assertEqual(self._two_summaries_kept(root), ["second"])
+
+    def test_two_publishers_choosing_the_same_name_both_keep_their_archive(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = 1_700_000_000.0
+            real_rename = os.rename
+            state = {"done": False}
+
+            def rename(src, dst):
+                if not state["done"] and "history_tmp" in src:
+                    state["done"] = True
+                    # Another process publishes a complete archive under the very same name first.
+                    Path(dst).mkdir(parents=True)
+                    (Path(dst) / "summary.json").write_text(
+                        json.dumps({"records": [{"key": "other_process"}]}), encoding="utf-8")
+                return real_rename(src, dst)
+
+            rec = MatchDiagnostics(root, "BT", now=now)
+            rec.record("ours", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            with mock.patch("match_diagnostics.os.rename", side_effect=rename):
+                rec.finalize(False, "monitor_start")
+                wait_for_history()
+            self.assertTrue(state["done"])
+            self.assertEqual(self._two_summaries_kept(root), ["other_process", "ours"])
+
     def test_idle_worker_does_not_keep_raw_frames_alive(self):
         import gc
         import weakref

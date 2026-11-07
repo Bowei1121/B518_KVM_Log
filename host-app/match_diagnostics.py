@@ -1,5 +1,6 @@
 """Persist and load the most recent JetKVM template matching diagnostics."""
 
+import errno
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ HISTORY_JPEG_QUALITY = 85
 # A staging folder untouched this long belongs to an interrupted archive. Younger ones may be another
 # process (e.g. jetkvm_auto focus) still writing into the same template root, so they are never swept.
 STAGING_STALE_SEC = 3600
+PUBLISH_ATTEMPTS = 10
 
 
 # Archive and cleanup run on one daemon worker thread: the Core TCP event loop never waits for JPEG encoding or
@@ -222,21 +224,25 @@ class MatchDiagnostics:
             json.dump(archived, handle, ensure_ascii=False, indent=2)
         # Same millisecond/operation/result: continue after the highest existing suffix, so the newest copy
         # never reuses a name that cleanup freed (and then sorts as oldest).
-        for attempt in range(5):
-            # Another process's cleanup may remove an empty day folder between mkdir and rename: retry.
-            day.mkdir(parents=True, exist_ok=True)
-            highest = 0
-            for existing in day.iterdir():
-                if existing.name == name:
-                    highest = max(highest, 1)
-                elif existing.name.startswith(name + "_") and existing.name[len(name) + 1:].isdigit():
-                    highest = max(highest, int(existing.name[len(name) + 1:]))
-            target = day / (name if highest == 0 else "{}_{}".format(name, highest + 1))
+        for attempt in range(PUBLISH_ATTEMPTS):
+            # Without a cross-process lock, another Core/tool process may remove an empty day folder (cleanup)
+            # or publish the same name first. The whole mkdir/list/rename step is retried: a vanished day
+            # folder is recreated and an occupied target picks the next suffix.
             try:
+                day.mkdir(parents=True, exist_ok=True)
+                highest = 0
+                for existing in day.iterdir():
+                    if existing.name == name:
+                        highest = max(highest, 1)
+                    elif existing.name.startswith(name + "_") and existing.name[len(name) + 1:].isdigit():
+                        highest = max(highest, int(existing.name[len(name) + 1:]))
+                target = day / (name if highest == 0 else "{}_{}".format(name, highest + 1))
                 os.rename(str(staging), str(target))
                 break
-            except (FileNotFoundError, FileExistsError):
-                if attempt == 4 or not staging.exists():
+            except OSError as exc:
+                retryable = isinstance(exc, (FileNotFoundError, FileExistsError)) or \
+                    exc.errno in (errno.EEXIST, errno.ENOTEMPTY)
+                if not retryable or attempt == PUBLISH_ATTEMPTS - 1 or not staging.exists():
                     raise
         try:
             staging.parent.rmdir()
