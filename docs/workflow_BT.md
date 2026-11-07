@@ -77,6 +77,8 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 - 現場驗收：Dock 前景化、Start All、Monitoring、全 PASS、全 FAIL 與混合結果、Review（待確認）。
 - 驗證不同螢幕縮放、Log Solution 未聚焦、重連與長時間操作。
 - `monitor_start`、`start_test` 與 `check_finish` 的診斷資料覆寫於 `~/Documents/template/_captures/match_diagnostics/<DEVICE_ID>/latest/`（例如 `BT-01`），保存分步相似度、命中狀態與辨識疊圖；主畫面「匹配結果」可直接檢視。
+- **歷史歸檔（診斷圖保留 24 小時）**：每次動作 `finalize()` 時，另存一份到 `~/Documents/template/_captures/match_diagnostics/<DEVICE_ID>/history/<YYYYMMDD>/<HHMMSS_mmm>_<operation>_<OK|FAIL>/`（本地時間）。內含 `summary.json` 與標註圖；**history 只存 JPEG**（品質 85，`summary.json` 的 `image` 欄位指向 `.jpg`），`latest/` 仍為 PNG。每次歸檔後自動清掃所有裝置的 `history/`：超過 24 小時（`HISTORY_HOURS`）的資料夾刪除；總大小超過 2048 MB（`HISTORY_MAX_MB`）時從最舊的刪起；空的日期資料夾一併刪除。兩個值為 `host-app/match_diagnostics.py` 的模組常數，也可由 `MatchDiagnostics(..., history_hours=, history_max_mb=)` 覆寫。歸檔與清理的任何 IO 錯誤只記 log，不影響流程與 TCP 回覆。
+- `monitor_start` 點 Dock 後若在確認時間內讀不到可靠的 Log Solution，會在診斷中多一筆 `confirm_last_unreliable`（最後一張判讀不可靠的影格與最後判讀原因）。
 
 ## 現場待辦
 

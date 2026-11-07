@@ -1,10 +1,22 @@
 """Persist and load the most recent JetKVM template matching diagnostics."""
 
 import json
+import logging
 import shutil
+import time
+from datetime import datetime
 from pathlib import Path
 
 import cv2
+
+
+log = logging.getLogger(__name__)
+
+# History archive (JPEG only). Core has no shared settings mechanism for these, so they are module
+# constants, overridable per instance through the constructor.
+HISTORY_HOURS = 24
+HISTORY_MAX_MB = 2048
+HISTORY_JPEG_QUALITY = 85
 
 
 def _bilingual_note(note):
@@ -31,9 +43,15 @@ def note_for_language(note, lang):
 class MatchDiagnostics:
     """One-run recorder with a small interface for matching flow code."""
 
-    def __init__(self, template_root, device):
+    def __init__(self, template_root, device, history_hours=HISTORY_HOURS, history_max_mb=HISTORY_MAX_MB,
+                 now=None):
         self.device = str(device).upper()
-        self.directory = Path(template_root) / "_captures" / "match_diagnostics" / self.device / "latest"
+        self.history_hours = history_hours
+        self.history_max_mb = history_max_mb
+        self._now = now  # injectable clock (epoch seconds) for tests
+        self._root = Path(template_root) / "_captures" / "match_diagnostics"
+        self._annotated = {}  # image name -> annotated frame, kept for the history JPEG
+        self.directory = self._root / self.device / "latest"
         if self.directory.exists():
             shutil.rmtree(str(self.directory))
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -65,6 +83,7 @@ class MatchDiagnostics:
             cv2.putText(annotated, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
             image_name = "{:02d}_{}.png".format(len(self.records) + 1, key)
             cv2.imwrite(str(self.directory / image_name), annotated)
+            self._annotated[image_name] = annotated
         self.records.append({
             "key": key,
             "score": score,
@@ -84,4 +103,83 @@ class MatchDiagnostics:
         }
         with (self.directory / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+        try:
+            self._archive(payload, ok, operation)
+        except Exception:  # archiving is diagnostics only: never fail the flow
+            log.exception("match diagnostics history archive failed")
+        try:
+            self._cleanup_history()
+        except Exception:
+            log.exception("match diagnostics history cleanup failed")
         return payload
+
+    def _clock(self):
+        return time.time() if self._now is None else self._now
+
+    def _archive(self, payload, ok, operation):
+        stamp = datetime.fromtimestamp(self._clock())
+        name = "{}_{:03d}_{}_{}".format(stamp.strftime("%H%M%S"), stamp.microsecond // 1000, operation,
+                                        "OK" if ok else "FAIL")
+        target = self._root / self.device / "history" / stamp.strftime("%Y%m%d") / name
+        target.mkdir(parents=True, exist_ok=True)
+        records = []
+        for record in payload["records"]:
+            record = dict(record)
+            image = self._annotated.get(record["image"])
+            if image is not None:
+                jpg_name = Path(record["image"]).with_suffix(".jpg").name
+                if cv2.imwrite(str(target / jpg_name), image, [cv2.IMWRITE_JPEG_QUALITY, HISTORY_JPEG_QUALITY]):
+                    record["image"] = jpg_name
+                else:
+                    record["image"] = ""
+            records.append(record)
+        archived = dict(payload, records=records)
+        with (target / "summary.json").open("w", encoding="utf-8") as handle:
+            json.dump(archived, handle, ensure_ascii=False, indent=2)
+        self._annotated = {}
+
+    @staticmethod
+    def _archive_time(day, run):
+        """Epoch seconds from the folder names (local time); mtime when they do not parse."""
+        try:
+            stamp = datetime.strptime(day.name + run.name[:6], "%Y%m%d%H%M%S")
+            return stamp.timestamp() + int(run.name[7:10]) / 1000.0
+        except ValueError:
+            return run.stat().st_mtime
+
+    @staticmethod
+    def _tree_size(path):
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+    def _cleanup_history(self):
+        """Drop archives older than ``history_hours``, then oldest-first until under ``history_max_mb``."""
+        cutoff = self._clock() - self.history_hours * 3600
+        entries = []  # (mtime, size, path)
+        for history in self._root.glob("*/history"):
+            for day in history.iterdir():
+                if not day.is_dir():
+                    continue
+                for run in day.iterdir():
+                    if run.is_dir():
+                        try:
+                            entries.append((self._archive_time(day, run), self._tree_size(run), run))
+                        except OSError:
+                            log.exception("cannot stat %s", run)
+        entries.sort(key=lambda item: item[0])
+        total = sum(item[1] for item in entries)
+        limit = self.history_max_mb * 1024 * 1024
+        for mtime, size, run in entries:
+            if mtime >= cutoff and total <= limit:
+                break
+            try:
+                shutil.rmtree(str(run))
+                total -= size
+            except OSError:
+                log.exception("cannot delete %s", run)
+        for history in self._root.glob("*/history"):
+            for day in history.iterdir():
+                if day.is_dir():
+                    try:
+                        day.rmdir()  # only succeeds when empty
+                    except OSError:
+                        pass

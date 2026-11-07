@@ -42,15 +42,21 @@ def _busy(state):
     return FlowError("log_solution_busy", f"Log Solution is {state.value}; no shortcut sent")
 
 
-async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None):
+async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None):
     """``(observation, last_reason)``: the newest reliable reading within timeout_sec, or None with
-    the reason of the last unreliable one (``no_frame`` when there was no picture)."""
+    the reason of the last unreliable one (``no_frame`` when there was no picture).
+
+    ``last_unreliable`` (optional dict) receives ``{"frame": ...}`` with the newest unreliable picture, so the
+    caller can keep it as diagnostics when the wait times out.
+    """
     deadline = time.monotonic() + timeout_sec
     last_reason = "no_frame"
     while True:
-        _frame, observation = read_latest_app_frame_recorded(kvm, stats)
+        frame, observation = read_latest_app_frame_recorded(kvm, stats)
         if observation is not None and observation.reliable:
             return observation, ""
+        if frame is not None and last_unreliable is not None:
+            last_unreliable["frame"] = frame
         if observation is not None:
             last_reason = observation.reason or "unreadable"
         if time.monotonic() >= deadline:
@@ -142,8 +148,15 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             if not clicked:
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution Dock icon not found (similarity {score:.2f})")
-            observation, last_reason = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats)
+            unreliable = {}
+            observation, last_reason = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats, unreliable)
             if observation is None:
+                diagnostics.record(
+                    "confirm_last_unreliable", None, threshold, frame=unreliable.get("frame"),
+                    note={"en": f"No reliable Log Solution reading within {confirm_sec:g} s after Dock click"
+                                f" (last reading: {last_reason})",
+                          "zh": f"點擊 Dock 後 {confirm_sec:g} 秒內沒有可靠的 Log Solution 判讀"
+                                f"（最後判讀：{last_reason}）"})
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution not found within {confirm_sec:g} s after Dock click; no shortcut sent"
                                 f" (last reading: {last_reason})")

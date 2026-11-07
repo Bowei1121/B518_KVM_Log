@@ -1,8 +1,11 @@
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
@@ -43,6 +46,123 @@ class MatchDiagnosticsTests(unittest.TestCase):
                 {"en": "", "zh": ""},
                 {"en": "plain text", "zh": "plain text"},
             ])
+
+
+def _run(root, op, ok, now, **kwargs):
+    recorder = MatchDiagnostics(root, "BT", now=now, **kwargs)
+    recorder.record("step", 0.9, 0.8, np.full((60, 80, 3), 128, dtype=np.uint8), (1, 1, 10, 10))
+    recorder.finalize(ok, op)
+    return recorder
+
+
+def _history(root):
+    base = Path(root) / "_captures" / "match_diagnostics" / "BT" / "history"
+    return sorted(p for p in base.glob("*/*") if p.is_dir()) if base.exists() else []
+
+
+class HistoryTests(unittest.TestCase):
+    def test_two_runs_archived_as_jpeg_and_latest_keeps_second(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = time.time()
+            _run(root, "monitor_start", False, now)
+            _run(root, "check", True, now + 1)
+            runs = _history(root)
+            self.assertEqual(len(runs), 2)
+            self.assertTrue(runs[0].name.endswith("_monitor_start_FAIL"))
+            self.assertTrue(runs[1].name.endswith("_check_OK"))
+            for run in runs:
+                names = sorted(p.name for p in run.iterdir())
+                self.assertEqual(names, ["01_step.jpg", "summary.json"])
+            import json
+            summary = json.loads((runs[0] / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["records"][0]["image"], "01_step.jpg")
+            self.assertIsNotNone(cv2.imread(str(runs[0] / "01_step.jpg")))
+            latest = MatchDiagnostics.load(root, "BT")
+            self.assertEqual(latest["operation"], "check")
+            self.assertEqual(latest["records"][0]["image"], "01_step.png")
+            latest_dir = MatchDiagnostics.latest_directory(root, "BT")
+            self.assertEqual(sorted(p.name for p in latest_dir.iterdir()), ["01_step.png", "summary.json"])
+
+    def test_old_archives_are_deleted_and_empty_day_folder_removed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = time.time()
+            _run(root, "old", True, now - 25 * 3600)
+            _run(root, "recent", True, now - 3600)
+            _run(root, "new", True, now)
+            self.assertEqual([p.name[11:] for p in _history(root)], ["recent_OK", "new_OK"])
+            for day in (root / "_captures" / "match_diagnostics" / "BT" / "history").iterdir():
+                self.assertTrue(any(day.iterdir()))
+
+    def test_over_capacity_deletes_oldest_first(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = time.time()
+            _run(root, "a", True, now - 30)
+            one = sum(f.stat().st_size for f in _history(root)[0].iterdir())
+            limit_mb = (one * 2.5) / (1024 * 1024)
+            _run(root, "b", True, now - 20, history_max_mb=limit_mb)
+            _run(root, "c", True, now - 10, history_max_mb=limit_mb)
+            self.assertEqual([p.name[11:] for p in _history(root)], ["b_OK", "c_OK"])
+
+    def test_archive_write_failure_does_not_fail_the_flow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            recorder = MatchDiagnostics(root, "BT")
+            real = cv2.imwrite
+            recorder.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+
+            def boom(path, *args):
+                if str(path).endswith(".jpg"):
+                    raise OSError("disk full")
+                return real(path, *args)
+
+            with mock.patch("match_diagnostics.cv2.imwrite", side_effect=boom):
+                payload = recorder.finalize(False, "check")
+            self.assertFalse(payload["ok"])
+            self.assertTrue(MatchDiagnostics.load(root, "BT")["records"])
+
+    def test_cleanup_failure_does_not_fail_the_flow(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            with mock.patch.object(MatchDiagnostics, "_cleanup_history", side_effect=OSError("x")):
+                payload = _run(root, "check", True, time.time())
+            self.assertEqual(len(_history(root)), 1)
+            self.assertIsNotNone(payload)
+
+
+class ConfirmTimeoutDiagnosticsTests(unittest.TestCase):
+    def test_monitor_start_confirm_timeout_records_last_unreliable_frame(self):
+        import asyncio
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from hid_session import FlowError
+        from protocol_helpers import LogSolutionKVM
+        from template_catalog import TemplateCatalog
+        import monitor_flow
+
+        class Gate:
+            stats = None
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            seed = LogSolutionKVM()
+            frame = seed.latest_frame().image
+            x, y, w, h = seed.dock_icon_box()
+            TemplateCatalog(root).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "COMMON",
+                                            "log_solution_dock_icon")
+            kvm = LogSolutionKVM(state="standby")
+            kvm.close_window()
+            with self.assertRaises(FlowError) as raised:
+                asyncio.run(monitor_flow.run_monitor_start(
+                    kvm, Gate(), "DFU-01", template_root=root, confirm_sec=0.1, start_timeout_sec=0.1))
+            self.assertEqual(raised.exception.code, "log_solution_not_found")
+            latest = MatchDiagnostics.load(root, "DFU-01")
+            record = [r for r in latest["records"] if r["key"] == "confirm_last_unreliable"][0]
+            self.assertTrue(record["image"].endswith(".png"))
+            self.assertTrue((MatchDiagnostics.latest_directory(root, "DFU-01") / record["image"]).exists())
+            self.assertIn("last reading", record["note"]["en"])
+            self.assertIn("最後判讀", record["note"]["zh"])
 
 
 class NoteForLanguageTests(unittest.TestCase):
