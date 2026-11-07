@@ -26,9 +26,15 @@ class ReadingStats:
         self._scale: float = 0.0  # scale of the last reading; 0.0 when the app was not located
         self._reason: str = ""  # reason of the last reading; "" when it was reliable
         self._at: Optional[float] = None  # monotonic time of the last reading
+        self._frame_colorspace: Optional[str] = None  # the stream's own tag on the last recorded frame
+        self._decode_colorspace: Optional[str] = None  # the YUV->BGR matrix Core applied to it
 
-    def record(self, observation: Any, frame: Any, now: Optional[float] = None) -> None:
-        """Count one decoded reading. ``frame`` is the BGR image the observation was read from."""
+    def record(self, observation: Any, frame: Any, now: Optional[float] = None,
+               frame_colorspace: Optional[str] = None, decode_colorspace: Optional[str] = None) -> None:
+        """Count one decoded reading. ``frame`` is the BGR image the observation was read from.
+
+        The two colorspace names come from the snapshot (None when the source does not know them).
+        """
         now = time.monotonic() if now is None else now
         shape = getattr(frame, "shape", None)
         reliable = bool(observation.reliable)
@@ -39,9 +45,12 @@ class ReadingStats:
             self._reason = "" if reliable else str(observation.reason)
             self._scale = float(observation.scale or 0.0)
             self._at = now
+            # A source without the metadata (replay, tests) reports null rather than a stale value.
+            self._frame_colorspace = frame_colorspace
+            self._decode_colorspace = decode_colorspace
 
     def report(self, now: Optional[float] = None) -> Dict[str, Any]:
-        """The five per-device fields of core_status. Nothing read yet: every value is null, samples 0."""
+        """The per-device reading fields of core_status (five reading fields plus the two colorspace names). Nothing read yet: every value is null, samples 0."""
         now = time.monotonic() if now is None else now
         with self._lock:
             samples = len(self._window)
@@ -50,6 +59,8 @@ class ReadingStats:
             scale = self._scale
             reason = self._reason
             at = self._at
+            frame_colorspace = self._frame_colorspace
+            decode_colorspace = self._decode_colorspace
         picture_scale = round(scale, 3) if scale > 0 else None
         return {
             "frame_size": None if frame_size is None else [frame_size[0], frame_size[1]],
@@ -57,6 +68,8 @@ class ReadingStats:
             "cell_px": None if picture_scale is None else round(picture_scale * 10, 3),
             "last_reading": None if at is None else {"reason": reason, "age_sec": round(now - at, 2)},
             "readable_ratio": {"ratio": round(readable / samples, 3) if samples else None, "samples": samples},
+            "frame_colorspace": frame_colorspace,
+            "decode_colorspace": decode_colorspace,
         }
 
 
@@ -69,7 +82,9 @@ def read_app_frame_recorded(kvm: Any, stats: Optional[ReadingStats]) -> Tuple[An
     """``read_app_frame(kvm)`` that records the reading: ``(snapshot, observation)``."""
     snapshot, observation = read_app_frame(kvm)
     if stats is not None and snapshot is not None:
-        stats.record(observation, snapshot.image)
+        stats.record(observation, snapshot.image,
+                     frame_colorspace=getattr(snapshot, "frame_colorspace", None),
+                     decode_colorspace=getattr(snapshot, "decode_colorspace", None))
     return snapshot, observation
 
 
@@ -83,5 +98,7 @@ def read_snapshot_recorded(snapshot: Any, stats: Optional[ReadingStats]) -> Any:
     """``read_snapshot(snapshot)`` that records the reading. Used as the heartbeat probe's decode."""
     observation = read_snapshot(snapshot)
     if stats is not None and observation is not None:
-        stats.record(observation, snapshot.image)
+        stats.record(observation, snapshot.image,
+                     frame_colorspace=getattr(snapshot, "frame_colorspace", None),
+                     decode_colorspace=getattr(snapshot, "decode_colorspace", None))
     return observation

@@ -32,6 +32,8 @@ def test_nothing_recorded_reports_nulls_and_zero_samples():
         "cell_px": None,
         "last_reading": None,
         "readable_ratio": {"ratio": None, "samples": 0},
+        "frame_colorspace": None,
+        "decode_colorspace": None,
     }
 
 

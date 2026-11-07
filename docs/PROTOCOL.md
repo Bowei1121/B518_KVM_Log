@@ -403,6 +403,8 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `stations[].cell_px` | number or null | 標記小格像素，`picture_scale` × 10，四捨五入到 0.001。`picture_scale` 為 `null` 時也為 `null` |
 | `stations[].last_reading` | object or null | 最近一次讀取：`reason`（可靠時為 `""`，否則為實際不可見原因，例如 `locators_missing_or_ambiguous`）、`age_sec`（距今秒數）。尚無讀取為 `null` |
 | `stations[].readable_ratio` | object | `ratio`：最近 50 次讀取中可靠的比例（0–1，四捨五入到 0.001），無樣本為 `null`；`samples`：樣本數（≤ 50） |
+| `stations[].frame_colorspace` | string or null | 最近一次讀取的影格自帶的色彩空間標記（PyAV 的 `colorspace` 名稱，例如 `ITU709`、`UNSPECIFIED`）。尚無讀取或來源不提供為 `null` |
+| `stations[].decode_colorspace` | string or null | Core 把該影格由 YUV 轉成 BGR 時實際採用的矩陣：`ITU601`（預設）、`ITU709` 或 `auto`（跟隨影格標記）。尚無讀取或來源不提供為 `null`。設定見 `JETKVM_DECODE_COLORSPACE` |
 
 上列五欄位為讀取時累積的統計，`core_status` 本身不讀畫面、不拿設備鎖，因此未讀取過的設備一律為 `null`／0 樣本。每次解碼一張影格記一次，包括 check、inspect、monitor_start、HID 前拒絕判斷與心跳取樣。LabVIEW 的 `status` 不回傳這些欄位。
 

@@ -108,6 +108,166 @@ def note_for_language(note, lang):
     return "" if note is None else note
 
 
+def _text(image, text, origin, color, scale=0.5):
+    """Readable text on any background: a black outline under the colour."""
+    # Same thickness for every pass: the glyph advance depends on it, so a thicker outline would drift off the text.
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        cv2.putText(image, text, (origin[0] + dx, origin[1] + dy), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
+
+
+REASON_ABBREVIATIONS = {"no_hole": "NH", "hole_size": "HS", "hole_offset": "HO", "scale_range": "SR",
+                        "not_square": "NS"}
+LEFT_COLOR, RIGHT_COLOR, REJECT_COLOR, PAIR_COLOR = (255, 200, 0), (255, 0, 255), (150, 150, 150), (0, 220, 0)
+ZOOM_FACTOR = 4
+ZOOM_MAX_SOURCE_WIDTH = 480
+ZOOM_MAX_WIDTH = 2400  # output pixels
+
+
+def _draw_locating(image, explanation, tf, size=1):
+    """Locator candidates (left/right colours), near-miss boxes with reason, the chosen pair and the gate samples.
+
+    ``tf`` maps frame coordinates to ``image`` pixels; ``size`` scales line widths and text for zoomed pictures.
+    """
+    locate = explanation.get("locate")
+    if not locate:
+        return
+
+    def point(x, y):
+        px, py = tf(x, y)
+        return int(round(px)), int(round(py))
+
+    def rect(box, color, thickness):
+        x, y, w, h = box
+        cv2.rectangle(image, point(x, y), point(x + w, y + h), color, thickness)
+
+    for item in locate["rejected"]:
+        rect(item["box"], REJECT_COLOR, size)
+        px, py = point(item["box"][0], item["box"][1])
+        _text(image, REASON_ABBREVIATIONS.get(item["reason"], item["reason"]), (px, max(10, py - 3)),
+              REJECT_COLOR, 0.35 if size == 1 else 0.6)
+    for key, color in (("left", LEFT_COLOR), ("right", RIGHT_COLOR)):
+        for item in locate[key]:
+            rect(item["box"], color, size)
+    selected = locate.get("selected")
+    if selected is not None:
+        left, right = locate["left"][selected["left"]], locate["right"][selected["right"]]
+        cv2.line(image, point(*left["hole_centre"]), point(*right["hole_centre"]), PAIR_COLOR, 2 * size)
+        origin = point(*selected["origin"])
+        cv2.drawMarker(image, origin, PAIR_COLOR, cv2.MARKER_CROSS, 14 * size, 2)
+        _text(image, "scale {:.3f}".format(selected["scale"]), (origin[0] + 6, origin[1] + 14 * size),
+              PAIR_COLOR, 0.45 if size == 1 else 0.7)
+    samples = explanation.get("samples")
+    if samples:
+        for key, color in (("gutter", (0, 165, 255)), ("marker", (0, 0, 255)), ("heartbeat", (255, 255, 0))):
+            for x, y in samples[key]:
+                cv2.circle(image, point(x, y), 2 * size, color, -1 if size == 1 else 1)
+
+
+def draw_locator_zoom(frame, explanation):
+    """4x crop around the top of the Log Solution window (or the densest candidates) with the locating overlay.
+
+    None when there is nothing to show. Never raises.
+    """
+    try:
+        locate = explanation.get("locate") or {}
+        boxes = [c["box"] for c in locate.get("left", []) + locate.get("right", [])] + \
+            [r["box"] for r in locate.get("rejected", [])]
+        selected = locate.get("selected")
+        if selected is not None:
+            # Union of the chosen locators (and the window top), whatever the scale: both must be in the picture.
+            pair = [locate["left"][selected["left"]]["box"], locate["right"][selected["right"]]["box"]]
+            scale = selected["scale"]
+            left = min(b[0] for b in pair) - 20
+            right = max(b[0] + b[2] for b in pair) + 20
+            top = min(b[1] for b in pair) - 15
+            bottom = max(b[1] + b[3] for b in pair) + 40 * scale + 15
+        elif boxes:
+            # No pair: centre on the box with the most neighbours within one window width.
+            centres = [(b[0] + b[2] / 2.0, b[1] + b[3] / 2.0) for b in boxes]
+            best = max(centres, key=lambda c: sum(1 for o in centres if abs(o[0] - c[0]) <= ZOOM_MAX_SOURCE_WIDTH / 2
+                                                  and abs(o[1] - c[1]) <= 60))
+            left, top = best[0] - ZOOM_MAX_SOURCE_WIDTH / 2, best[1] - 60
+            right, bottom = best[0] + ZOOM_MAX_SOURCE_WIDTH / 2, best[1] + 60
+        else:
+            return None
+        height, width = frame.shape[:2]
+        left, top = max(0, int(left)), max(0, int(top))
+        right, bottom = min(width, int(right)), min(height, int(bottom))
+        if selected is None:  # the cap only serves the no-pair search view
+            right = min(right, left + ZOOM_MAX_SOURCE_WIDTH + 80)
+        if right - left < 8 or bottom - top < 8:
+            return None
+        # 4x, less only when the picture would exceed ZOOM_MAX_WIDTH (a 2x screen's whole locator row).
+        factor = min(float(ZOOM_FACTOR), max(1.0, ZOOM_MAX_WIDTH / float(right - left)))
+        crop = cv2.resize(frame[top:bottom, left:right], None, fx=factor, fy=factor, interpolation=cv2.INTER_NEAREST)
+        _draw_locating(crop, explanation, lambda x, y: ((x - left) * factor, (y - top) * factor),
+                       max(1, int(round(factor))))
+        summary = locate.get("summary")
+        if summary:
+            _text(crop, summary, (8, 20), (255, 255, 255), 0.55)
+        return crop
+    except Exception:
+        log.exception("match diagnostics: cannot draw the locator zoom")
+        return None
+
+
+def draw_reading_explanation(image, explanation, first_line_y=56):
+    """Draw an ``explain_app_frame`` result onto ``image`` (in place): origin, locators, result band and cells,
+    the scale / state / reason, the status of each cell, and the sampled colours of a failing cell.
+
+    Only the plain data of the explanation is used. Never raises: a drawing error is logged and skipped.
+    """
+    try:
+        _draw_reading_explanation(image, explanation, first_line_y)
+    except Exception:
+        log.exception("match diagnostics: cannot draw the reading explanation")
+
+
+def _draw_reading_explanation(image, explanation, first_line_y):
+    def rect(box, color, thickness=1):
+        x, y, w, h = box
+        cv2.rectangle(image, (int(round(x)), int(round(y))), (int(round(x + w)), int(round(y + h))), color, thickness)
+
+    green, red, yellow, white = (0, 220, 0), (0, 0, 255), (0, 255, 255), (255, 255, 255)
+    _draw_locating(image, explanation, lambda x, y: (x, y))
+    lines = []
+    if not explanation.get("located"):
+        lines.append(("Log Solution not located ({})".format(explanation.get("reason") or "?"), red))
+        if explanation.get("locate"):
+            lines.append((explanation["locate"]["summary"], white))
+    else:
+        origin = explanation["origin"]
+        for box in explanation["locators"]:
+            rect(box, yellow, 2)
+        if explanation.get("band"):
+            rect(explanation["band"], (255, 128, 0), 1)
+        cv2.drawMarker(image, (int(round(origin[0])), int(round(origin[1]))), yellow, cv2.MARKER_CROSS, 14, 2)
+        lines.append(("origin=({:.0f},{:.0f}) scale={:.3f} state={} reliable={} reason={}".format(
+            origin[0], origin[1], explanation["scale"], explanation.get("state"),
+            explanation.get("reliable"), explanation.get("reason") or "-"), white))
+        statuses = []
+        for cell in explanation["cells"]:
+            ok = cell["status"] is not None
+            rect(cell["box"], green if ok else red, 1 if ok else 2)
+            x, y = cell["box"][0], cell["box"][1]
+            _text(image, str(cell["slot"]), (int(x) + 2, int(y) + 12), green if ok else red, 0.4)
+            statuses.append("{}:{}".format(cell["slot"], cell["status"] or "?"))
+        if statuses:
+            lines.append(("cells " + " ".join(statuses), white))
+        failure = explanation.get("failure")
+        if failure:
+            lines.append(("cell {} corner samples (BGR):".format(failure["slot"]), red))
+            for sample in failure["samples"]:
+                px, py = sample["point"]
+                cv2.circle(image, (int(round(px)), int(round(py))), 3, red, -1)
+                b, g, r = sample["bgr"]
+                lines.append(("  ({:.0f},{:.0f}) BGR=({},{},{}) nearest={} dist={}".format(
+                    px, py, b, g, r, sample["nearest"], sample["distance"]), red))
+    for index, (text, color) in enumerate(lines):
+        _text(image, text, (12, first_line_y + 20 * index), color)
+
+
 class MatchDiagnostics:
     """One-run recorder with a small interface for matching flow code."""
 
@@ -138,17 +298,24 @@ class MatchDiagnostics:
         with summary.open("r", encoding="utf-8") as handle:
             return json.load(handle)
 
-    def record(self, key, score, threshold, frame=None, box=None, note=None, color=(0, 200, 255)):
-        matched = score is not None and box is not None and score >= threshold
+    def record(self, key, score, threshold, frame=None, box=None, note=None, color=(0, 200, 255),
+               explanation=None, matched=None, plain=False):
+        if matched is None:
+            matched = score is not None and box is not None and score >= threshold
         image_name = ""
         if frame is not None:
             annotated = frame.copy()
-            if box is not None:
+            if plain:  # a prepared picture (e.g. the locator zoom): keep it as is
+                pass
+            elif box is not None:
                 x, y, width, height = box
                 cv2.rectangle(annotated, (x, y), (x + width, y + height), color, 2)
-            score_text = "n/a" if score is None else "{:.3f}".format(score)
-            label = "{} {} ({})".format(key, score_text, "MATCH" if matched else "MISS")
-            cv2.putText(annotated, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+            if not plain:
+                score_text = "n/a" if score is None else "{:.3f}".format(score)
+                label = "{} {} ({})".format(key, score_text, "MATCH" if matched else "MISS")
+                cv2.putText(annotated, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+            if explanation is not None:
+                draw_reading_explanation(annotated, explanation)
             index = len(self.records) + 1
             image_name = "{:02d}_{}.png".format(index, key)
             self._annotated[index] = (image_name[:-4], annotated)
