@@ -16,7 +16,7 @@ import asyncio
 import time
 
 from hid_session import FlowError, HidSession
-from match_diagnostics import MatchDiagnostics
+from match_diagnostics import MatchDiagnostics, draw_locator_zoom
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import MarkerState, explain_app_frame
 from reading_stats import read_latest_app_frame_recorded
@@ -43,19 +43,24 @@ def _busy(state):
 
 
 def _explain_note(explanation):
-    """English / Chinese sentences with the numbers of a failing cell, or empty ones."""
-    failure = (explanation or {}).get("failure")
-    if not failure:
-        return "", ""
-    parts = ["({},{},{}) -> {} d={}".format(*sample["bgr"], sample["nearest"], sample["distance"])
-             for sample in failure["samples"]]
-    joined = "; ".join(parts)
-    return (f"; cell {failure['slot']} corner samples BGR: {joined}",
-            f"；第 {failure['slot']} 格四角取樣 BGR（最近契約色、距離）：{joined}")
+    """English / Chinese sentences with the locating summary and the numbers of a failing cell."""
+    explanation = explanation or {}
+    locate = explanation.get("locate")
+    en = zh = ""
+    if locate:
+        en = "; " + locate["summary"]
+        zh = "；定位：" + locate["summary"]
+    failure = explanation.get("failure")
+    if failure:
+        joined = "; ".join("({},{},{}) -> {} d={}".format(*sample["bgr"], sample["nearest"], sample["distance"])
+                           for sample in failure["samples"])
+        en += f"; cell {failure['slot']} corner samples BGR: {joined}"
+        zh += f"；第 {failure['slot']} 格四角取樣 BGR（最近契約色、距離）：{joined}"
+    return en, zh
 
 
 def _record_reading(diagnostics, key, frame, threshold, note, matched):
-    """Annotated Log Solution reading picture; diagnostics only, so any failure is swallowed (returns the log text)."""
+    """Annotated Log Solution reading picture plus the 4x locator zoom; diagnostics only, so callers swallow errors."""
     try:
         explanation = explain_app_frame(frame)
     except Exception as exc:
@@ -67,9 +72,14 @@ def _record_reading(diagnostics, key, frame, threshold, note, matched):
     box = None
     if matched and explanation is not None and explanation.get("band"):
         box = tuple(int(round(v)) for v in explanation["band"])
+    note = {"en": note["en"] + en_extra, "zh": note["zh"] + zh_extra}
     diagnostics.record(
-        key, 1.0 if matched else None, threshold, frame=frame, box=box,
-        note={"en": note["en"] + en_extra, "zh": note["zh"] + zh_extra}, explanation=explanation)
+        key, 1.0 if matched else None, threshold, frame=frame, box=box, note=note, explanation=explanation)
+    if explanation is not None:
+        zoom = draw_locator_zoom(frame, explanation)
+        if zoom is not None:
+            diagnostics.record("log_solution_locators_zoom", None, threshold, frame=zoom, matched=matched,
+                               plain=True, note=note)
     return explain_error
 
 

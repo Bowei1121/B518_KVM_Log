@@ -140,46 +140,95 @@ class FrameObservation:
         return not self.busy
 
 
-def _locator_candidates(frame):
+NEAR_SCALE_MIN, NEAR_SCALE_MAX = 0.5, 4.0  # outer boxes this close to a locator are worth explaining when rejected
+MAX_NEAR_REJECTED = 20
+MAX_PAIR_CHECKS = 50
+
+
+def _scan_locators(frame, report=None):
+    """``(left, right)`` locator candidates ``(x, y, scale, hole_cx, hole_cy)``.
+
+    ``report`` (optional dict) receives the same scan for diagnostics, without changing the answer:
+    ``left_boxes`` / ``right_boxes`` (outer box [x, y, w, h] per candidate, same order) and ``near_rejected``
+    (``{"box", "scale", "reason"}`` for near-square dark boxes rejected for scale range, shape or hole).
+    """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     _, dark = cv2.threshold(gray, BLACK_MAX, 255, cv2.THRESH_BINARY_INV)
     contours, hierarchy = cv2.findContours(dark, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    if hierarchy is None:
-        return [], []
-    hierarchy = hierarchy[0]
     left, right = [], []
+    if report is not None:
+        report.update(left_boxes=[], right_boxes=[], near_rejected=[])
+    if hierarchy is None:
+        return left, right
+    hierarchy = hierarchy[0]
     for index, contour in enumerate(contours):
         x, y, width, height = cv2.boundingRect(contour)
         scale = width / float(LOCATOR_SIZE)
-        if (scale < 0.70 or scale > 3.25 or abs(width - height) > max(2, scale * 0.10)):
+        reason = None
+        if scale < 0.70 or scale > 3.25:
+            reason = "scale_range"
+        elif abs(width - height) > max(2, scale * 0.10):
+            reason = "not_square"
+        if reason is not None:
+            if (report is not None and NEAR_SCALE_MIN <= scale <= NEAR_SCALE_MAX
+                    and abs(width - height) <= max(2, 0.3 * width)):
+                report["near_rejected"].append({"box": [x, y, width, height], "scale": scale, "reason": reason})
             continue
         child = hierarchy[index][2]
+        expected_size = LOCATOR_INSET_SIZE * scale
+        accepted = False
+        saw_child = saw_size = False
         while child >= 0:
             ix, iy, iw, ih = cv2.boundingRect(contours[child])
-            expected_size = LOCATOR_INSET_SIZE * scale
+            saw_child = True
             if (abs(iw - expected_size) <= max(4, scale * 0.35)
                     and abs(ih - expected_size) <= max(4, scale * 0.35)):
-                for expected, target in ((LEFT_LOCATOR[2], left), (RIGHT_LOCATOR[2], right)):
+                saw_size = True
+                for expected, target, key in ((LEFT_LOCATOR[2], left, "left_boxes"),
+                                              (RIGHT_LOCATOR[2], right, "right_boxes")):
                     offset = expected * scale
                     if (abs((ix - x) - offset) <= max(3, scale * 0.35)
                             and abs((iy - y) - offset) <= max(3, scale * 0.35)):
                         target.append((x, y, scale, ix + iw / 2.0, iy + ih / 2.0))
+                        accepted = True
+                        if report is not None:
+                            report[key].append([x, y, width, height])
             child = hierarchy[child][0]
+        if not accepted and report is not None:
+            reason = "hole_offset" if saw_size else ("hole_size" if saw_child else "no_hole")
+            report["near_rejected"].append({"box": [x, y, width, height], "scale": scale, "reason": reason})
+    if report is not None:
+        report["near_rejected"].sort(key=lambda item: (abs(item["box"][2] - item["box"][3]),
+                                                       abs(item["scale"] - 1.0)))
+        del report["near_rejected"][MAX_NEAR_REJECTED:]
     return left, right
 
 
-def _locate_app(frame):
-    left, right = _locator_candidates(frame)
+def _locator_candidates(frame):
+    return _scan_locators(frame)
+
+
+def _pair_locators(left, right, checks=None):
+    """Valid left/right pairs ``(score, x, y, hole_scale, left_index, right_index)``.
+
+    ``checks`` (optional list) receives every examined pair with its numbers and the failed conditions
+    (``dx``, ``dy``, ``scale_mismatch``); at most MAX_PAIR_CHECKS are kept.
+    """
     pairs = []
-    for lx, ly, ls, lcx, lcy in left:
-        for rx, ry, rs, rcx, rcy in right:
+    for li, (lx, ly, ls, lcx, lcy) in enumerate(left):
+        for ri, (rx, ry, rs, rcx, rcy) in enumerate(right):
             scale = (rx - lx) / float(LOCATOR_DISTANCE)
             expected_dx = LOCATOR_DISTANCE * scale
             tolerance = max(3.0, expected_dx * 0.035)
-            if (abs((rx - lx) - expected_dx) <= tolerance
-                    and abs(ry - ly) <= max(3.0, scale * 0.12)
-                    and abs(ls - rs) <= scale * 0.08
-                    and abs(((ls + rs) / 2.0) - scale) <= scale * 0.08):
+            dx_ok = abs((rx - lx) - expected_dx) <= tolerance
+            dy_ok = abs(ry - ly) <= max(3.0, scale * 0.12)
+            scale_ok = (abs(ls - rs) <= scale * 0.08 and abs(((ls + rs) / 2.0) - scale) <= scale * 0.08)
+            if checks is not None and len(checks) < MAX_PAIR_CHECKS:
+                checks.append({"left": li, "right": ri, "dx": float(rx - lx), "expected_dx": float(expected_dx),
+                               "dy": float(ry - ly), "scale_diff": float(abs(ls - rs)),
+                               "failed": [name for name, ok in (("dx", dx_ok), ("dy", dy_ok),
+                                                                ("scale_mismatch", scale_ok)) if not ok]})
+            if dx_ok and dy_ok and scale_ok:
                 # Hole centres, not outer corners, anchor the origin: a dark desktop neighbour
                 # widens the outer box, while blur moves the hole centre by about a pixel at most.
                 hole_scale = (rcx - lcx) / HOLE_DISTANCE
@@ -187,10 +236,16 @@ def _locate_app(frame):
                      + (rcx - (RIGHT_LOCATOR[0] + RIGHT_HOLE_CENTRE) * hole_scale)) / 2.0
                 y = ((lcy - (LEFT_LOCATOR[1] + LEFT_HOLE_CENTRE) * hole_scale)
                      + (rcy - (RIGHT_LOCATOR[1] + RIGHT_HOLE_CENTRE) * hole_scale)) / 2.0
-                pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly), x, y, hole_scale))
+                pairs.append((abs((rx - lx) - expected_dx) + abs(ry - ly), x, y, hole_scale, li, ri))
+    return pairs
+
+
+def _locate_app(frame):
+    left, right = _locator_candidates(frame)
+    pairs = _pair_locators(left, right)
     if not pairs:
         return None
-    _, x, y, scale = min(pairs, key=lambda item: item[0])
+    _, x, y, scale, _li, _ri = min(pairs, key=lambda item: item[0])
     return x, y, scale
 
 
@@ -485,17 +540,59 @@ def _explain_cell_samples(frame, x, y, scale):
     return samples
 
 
+def _explain_locating(frame):
+    """Locator candidates, pair checks, the chosen pair and near-miss boxes of one frame, as plain data."""
+    report, checks = {}, []
+    left, right = _scan_locators(frame, report)
+    pairs = _pair_locators(left, right, checks)
+    chosen = min(pairs, key=lambda item: item[0]) if pairs else None
+
+    def candidates(items, boxes):
+        return [{"box": [float(v) for v in box], "scale": float(item[2]),
+                 "hole_centre": [float(item[3]), float(item[4])]} for item, box in zip(items, boxes)]
+
+    selected = None if chosen is None else {
+        "left": chosen[4], "right": chosen[5], "origin": [float(chosen[1]), float(chosen[2])],
+        "scale": float(chosen[3])}
+    rejected = [{"box": [float(v) for v in item["box"]], "scale": float(item["scale"]), "reason": item["reason"]}
+                for item in report["near_rejected"]]
+    summary = "locators: left {}, right {}, pairs {} ({} valid), selected {}, near-miss boxes {}".format(
+        len(left), len(right), len(checks), len(pairs),
+        "none" if selected is None else "origin=({:.1f},{:.1f}) scale={:.3f}".format(*selected["origin"], selected["scale"]),
+        len(rejected))
+    reasons = {}
+    for item in rejected:
+        reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+    if reasons:
+        summary += " (" + ", ".join("{}:{}".format(k, v) for k, v in sorted(reasons.items())) + ")"
+    return {"left": candidates(left, report["left_boxes"]), "right": candidates(right, report["right_boxes"]),
+            "pairs": checks, "valid_pairs": len(pairs), "selected": selected, "rejected": rejected,
+            "summary": summary}
+
+
+def _explain_sample_points(x0, y0, scale):
+    """Frame points of gate 3 (gutter), the state marker cells and the heartbeat cells."""
+    def cells(origin):
+        return [[x0 + (origin[0] + MARKER_QUIET + column * (MARKER_CELL_SIZE + MARKER_GAP) + MARKER_CELL_SIZE / 2.0) * scale,
+                 y0 + (origin[1] + MARKER_QUIET + row * (MARKER_CELL_SIZE + MARKER_GAP) + MARKER_CELL_SIZE / 2.0) * scale]
+                for row in range(2) for column in range(2)]
+    return {"gutter": [[x0 + gx * scale, y0 + gy * scale] for gx, gy in GUTTER_POINTS],
+            "marker": cells(MARKER_ORIGIN), "heartbeat": cells(HEARTBEAT_ORIGIN)}
+
+
 def explain_app_frame(frame):
     """Diagnostics of one BGR frame as plain data (JSON-able), for annotated pictures. Never raises on a frame.
 
     Keys: ``located`` (bool), ``reliable``, ``reason``, ``state``, ``scale``, ``origin`` ([x, y] or None),
     ``locators`` (two [x, y, w, h] boxes), ``band`` (the result-cell band [x, y, w, h]),
     ``cells`` ([{"slot", "box", "status"}], status None for the failing cell) and ``failure``
-    (``{"slot", "reason", "samples"}`` when the reading failed on ``result_cell_unknown_N``, else None).
+    (``{"slot", "reason", "samples"}`` when the reading failed on ``result_cell_unknown_N``, else None),
+    ``locate`` (candidates, pair checks, chosen pair, near-miss boxes and a one-line ``summary``) and
+    ``samples`` (gutter / marker / heartbeat sample points, when located).
     The reading uses the same rules as ``read_snapshot`` (heartbeat included), on this frame alone.
     """
     out = {"located": False, "reliable": False, "reason": "", "state": None, "scale": 0.0, "origin": None,
-           "locators": [], "band": None, "cells": [], "failure": None}
+           "locators": [], "band": None, "cells": [], "failure": None, "locate": None, "samples": None}
     if frame is None or not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] != 3:
         out["reason"] = "invalid_frame"
         return out
@@ -503,12 +600,17 @@ def explain_app_frame(frame):
     observation = unreadable_heartbeat(inspect_app_frame(frame, now, now=now))
     out["reliable"] = bool(observation.reliable)
     out["reason"] = observation.reason
+    try:  # the locating story must never hide the reading itself
+        out["locate"] = _explain_locating(frame)
+    except Exception:
+        out["locate"] = None
     out["state"] = None if observation.state is None else observation.state.value
     located = _locate_app(frame)
     if located is None:
         return out
     x0, y0, scale = located
-    out.update(located=True, scale=float(scale), origin=[float(x0), float(y0)])
+    out.update(located=True, scale=float(scale), origin=[float(x0), float(y0)],
+               samples=_explain_sample_points(x0, y0, scale))
     out["locators"] = [[x0 + loc[0] * scale, y0 + loc[1] * scale, LOCATOR_SIZE * scale, LOCATOR_SIZE * scale]
                        for loc in (LEFT_LOCATOR, RIGHT_LOCATOR)]
     if observation.reliable:
