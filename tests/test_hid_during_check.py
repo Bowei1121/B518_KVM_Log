@@ -1,7 +1,9 @@
 """Manual HID while a check long-polls (ADR-0008 amendment): passes unless Core itself is sending HID."""
 
+import asyncio
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -249,10 +251,20 @@ def test_late_manual_rpc_error_is_not_a_dock_failure_whenever_it_arrives():
     assert kvm.rpc_errors == ["dock failed"]
 
 
+def _manual(srv, method, params, device="DFU-01"):
+    return _send(srv, "hid", device=device, method=method, params=params)
+
+
 def _press_a_and_left_button(srv):
-    for method, params in (("keyboardReport", {"modifier": 8, "keys": [4]}),
-                           ("absMouseReport", {"x": 5, "y": 6, "buttons": 1})):
-        assert _send(srv, "hid", device="DFU-01", method=method, params=params)["status"] == "ok"
+    assert _manual(srv, "keyboardReport", {"modifier": 8, "keys": [4]})["status"] == "ok"
+    assert _manual(srv, "absMouseReport", {"x": 5, "y": 6, "buttons": 1})["status"] == "ok"
+
+
+def _record_clicks(kvm):
+    async def click(x, y):
+        kvm.rpc_calls.append(("click", x, y))
+
+    kvm.click = click
 
 
 def _dock_rig(tmp_path, monkeypatch, dock):
@@ -260,6 +272,7 @@ def _dock_rig(tmp_path, monkeypatch, dock):
 
     srv, kvm, _ = _check_rig(tmp_path, None, monkeypatch)
     srv.visibility_lost_sec = 0.5
+    _record_clicks(kvm)
     monkeypatch.setattr(monitor_flow, "bring_log_solution_forward", dock)
     return srv, kvm
 
@@ -268,20 +281,23 @@ def _last(kvm, method):
     return [c for c in kvm.rpc_calls if c[0] == method][-1][1]
 
 
+async def _in_thread(fn):
+    import asyncio
+
+    return await asyncio.get_running_loop().run_in_executor(None, fn)
+
+
 def test_dock_handover_releases_before_the_first_click(tmp_path, monkeypatch):
     from hid_session import FlowError
 
     srv_box, seen = {}, {}
 
     async def dock(kvm_arg, diagnostics_key, template_root=None, threshold=0.8, stats=None):
-        import asyncio
-
         seen["before"] = list(kvm_arg.rpc_calls)  # target search: nothing released yet
-        kvm_arg.call("absMouseReport", {"x": 9, "y": 9, "buttons": 1})  # Core's own click
+        await kvm_arg.click(9, 9)  # Core's own click
         seen["after"] = list(kvm_arg.rpc_calls)
-        seen["late"] = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: _send(srv_box["srv"], "hid", device="DFU-01", method="keyboardReport",
-                                params={"modifier": 0, "keys": []}))
+        seen["late"] = await _in_thread(lambda: _manual(srv_box["srv"], "keyboardReport",
+                                                        {"modifier": 0, "keys": []}))
         raise FlowError("hid_failed", "stop")
 
     srv, kvm = _dock_rig(tmp_path, monkeypatch, dock)
@@ -290,39 +306,34 @@ def test_dock_handover_releases_before_the_first_click(tmp_path, monkeypatch):
         _press_a_and_left_button(srv)
         _send(srv, "check_start", device="DFU-01", timeout_sec=3)
         assert [c[0] for c in seen["before"]] == ["keyboardReport", "absMouseReport"]  # only the manual presses
-        released = seen["after"][2:]
-        assert released[:2] == [("keyboardReport", {"modifier": 0, "keys": []}),
-                                ("absMouseReport", {"x": 5, "y": 6, "buttons": 0})]  # before Core's click
-        assert released[2] == ("absMouseReport", {"x": 9, "y": 9, "buttons": 1})
+        assert seen["after"][2:] == [("keyboardReport", {"modifier": 0, "keys": []}),
+                                     ("absMouseReport", {"x": 5, "y": 6, "buttons": 0}),
+                                     ("click", 9, 9)]  # released before Core's click
         assert seen["late"]["error"] == "device_busy"  # the operator's late release is dropped, harmlessly
         assert _last(kvm, "keyboardReport") == {"modifier": 0, "keys": []}
-        assert _last(kvm, "absMouseReport")["buttons"] == 1  # Core's click, no manual state left
+        # The operator never let go of the mouse button, so once Core is done the target gets that state back.
+        assert _last(kvm, "absMouseReport") == {"x": 5, "y": 6, "buttons": 1}
     finally:
         srv.stop()
         srv.wait(timeout=2.0)
 
 
-def test_dock_without_target_still_releases_a_dropped_manual_release(tmp_path, monkeypatch):
+def test_partial_release_dropped_during_dock_keeps_the_still_held_modifier(tmp_path, monkeypatch):
     srv_box = {}
 
     async def dock(kvm_arg, diagnostics_key, template_root=None, threshold=0.8, stats=None):
-        import asyncio
-
-        await asyncio.get_running_loop().run_in_executor(  # operator lets go while Core only searches
-            None, lambda: [_send(srv_box["srv"], "hid", device="DFU-01", method="keyboardReport",
-                                 params={"modifier": 0, "keys": []}),
-                           _send(srv_box["srv"], "hid", device="DFU-01", method="absMouseReport",
-                                 params={"x": 5, "y": 6, "buttons": 0})])
-        return False  # Dock icon not on screen: Core never clicked
+        # Operator lets go of A only (Shift stays down) while Core merely searches for the Dock.
+        await _in_thread(lambda: _manual(srv_box["srv"], "keyboardReport", {"modifier": 2, "keys": []}))
+        return False
 
     srv, kvm = _dock_rig(tmp_path, monkeypatch, dock)
     srv_box["srv"] = srv
     try:
-        _press_a_and_left_button(srv)
+        assert _manual(srv, "keyboardReport", {"modifier": 2, "keys": [4]})["status"] == "ok"  # Shift+A
         reply = _send(srv, "check_start", device="DFU-01", timeout_sec=3)
         assert reply["error"] == "log_solution_not_found"
-        assert _last(kvm, "keyboardReport") == {"modifier": 0, "keys": []}
-        assert _last(kvm, "absMouseReport")["buttons"] == 0
+        assert _last(kvm, "keyboardReport") == {"modifier": 2, "keys": []}  # A released, Shift kept
+        assert not any(c[0] == "click" for c in kvm.rpc_calls)
     finally:
         srv.stop()
         srv.wait(timeout=2.0)
@@ -343,6 +354,20 @@ def test_refusal_before_any_automated_hid_sends_no_release(tmp_path, monkeypatch
         srv.wait(timeout=2.0)
 
 
+def test_move_while_keyboard_held_does_not_touch_the_keyboard(core):
+    srv, kvm = core
+    assert _send(srv, "hid", method="keyboardReport", params={"modifier": 8, "keys": [4]})["status"] == "ok"
+    assert srv.lock_manager.try_acquire("BT-01", holder="monitor_start")
+    try:
+        reply = _send(srv, "hid", method="absMouseReport", params={"x": 1, "y": 1, "buttons": 0})
+        assert reply["error"] == "device_busy"
+    finally:
+        srv.lock_manager.release("BT-01")
+    sent = len(kvm.rpc_calls)
+    asyncio.run(srv._release_dropped_manual("BT-01", kvm))
+    assert len(kvm.rpc_calls) == sent  # pointer move, no button change: zero HID
+
+
 def test_failed_release_is_kept_for_retry_and_blocks_the_automated_action(core):
     from hid_session import FlowError
     from tcp_server import _HandoverKvm
@@ -361,57 +386,22 @@ def test_failed_release_is_kept_for_retry_and_blocks_the_automated_action(core):
         real(method, params)
 
     kvm.call = call
-    clicked = []
-    kvm.click = lambda *a: clicked.append(a)
-    wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm),
-                           lambda: srv._neutralize_manual_hid("BT-01", kvm))
+    _record_clicks(kvm)
+    wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm))
     with pytest.raises(FlowError) as exc:
-        wrapped.call("absMouseReport", {"x": 0, "y": 0, "buttons": 1})
+        asyncio.run(wrapped.click(0, 0))
     assert exc.value.code == "hid_failed"
     assert ("absMouseReport", {"x": 1, "y": 2, "buttons": 0}) in kvm.rpc_calls  # the mouse part was still tried
-    assert ("absMouseReport", {"x": 0, "y": 0, "buttons": 1}) not in kvm.rpc_calls  # Core never acted
-    state = srv._slot("BT-01").manual_hid
-    assert state["kbd"] is not None and state["mouse"] is None  # only the failed part is kept
+    assert ("click", 0, 0) not in kvm.rpc_calls  # Core never acted
+    st = srv._slot("BT-01").manual_hid
+    assert st["remote_kbd"] == (8, (4,)) and st["remote_mouse"][2] == 0  # only the failed part is kept
     broken["on"] = False
-    wrapped.call("absMouseReport", {"x": 0, "y": 0, "buttons": 1})  # retried on the next attempt
+    asyncio.run(wrapped.click(0, 0))  # retried on the next attempt
     assert ("keyboardReport", {"modifier": 0, "keys": []}) in kvm.rpc_calls
-    assert srv._slot("BT-01").manual_hid["kbd"] is None
-
-
-def test_move_while_keyboard_held_does_not_release_the_keyboard(tmp_path, monkeypatch):
-    srv, kvm, _ = _check_rig(tmp_path, None, monkeypatch)
-    try:
-        assert _send(srv, "hid", device="DFU-01", method="keyboardReport",
-                     params={"modifier": 8, "keys": [4]})["status"] == "ok"
-        state = srv._slot("DFU-01").manual_hid
-        assert srv.lock_manager.try_acquire("DFU-01", holder="monitor_start")
-        sent = len(kvm.rpc_calls)
-        try:  # a plain pointer move is dropped while the lock is held: that is not a keyboard release
-            reply = _send(srv, "hid", device="DFU-01", method="absMouseReport",
-                          params={"x": 1, "y": 1, "buttons": 0})
-            assert reply["error"] == "device_busy"
-        finally:
-            srv.lock_manager.release("DFU-01")
-        assert state["drop_kbd"] is False and state["drop_mouse"] is False
-        import asyncio
-
-        asyncio.run(srv._release_dropped_manual("DFU-01", kvm))
-        assert len(kvm.rpc_calls) == sent  # zero HID, keyboard still recorded as held
-        assert state["kbd"] is not None
-        # A genuine keyboard release dropped under the lock is remembered, and only that part is released.
-        assert srv.lock_manager.try_acquire("DFU-01", holder="monitor_start")
-        try:
-            _send(srv, "hid", device="DFU-01", method="keyboardReport", params={"modifier": 0, "keys": []})
-        finally:
-            srv.lock_manager.release("DFU-01")
-        assert state["drop_kbd"] is True
-    finally:
-        srv.stop()
-        srv.wait(timeout=2.0)
+    assert srv._slot("BT-01").manual_hid["remote_kbd"] == (0, ())
 
 
 def test_unconfirmed_async_release_keeps_state_and_blocks_the_dock_click(monkeypatch):
-    import asyncio
     import json
 
     from hid_session import FlowError
@@ -419,14 +409,13 @@ def test_unconfirmed_async_release_keeps_state_and_blocks_the_dock_click(monkeyp
 
     kvm = _client()
     srv = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0)
-    state = srv._slot("BT-01").manual_hid
-    state["kbd"] = {"modifier": 8, "keys": [4]}
+    st = srv._slot("BT-01").manual_hid
+    st["remote_kbd"] = st["intent_kbd"] = (8, (4,))
     kvm.size = (1920, 1080)
 
     async def scenario(reply):
         loop = asyncio.get_running_loop()
-        wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm),
-                               lambda: srv._neutralize_manual_hid("BT-01", kvm))
+        wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm))
         task = asyncio.ensure_future(wrapped.click(10, 10))
         await asyncio.sleep(0.05)
         release = kvm.rpc.sent[-1]
@@ -442,7 +431,7 @@ def test_unconfirmed_async_release_keeps_state_and_blocks_the_dock_click(monkeyp
     with pytest.raises(FlowError):
         asyncio.run(scenario("error"))
     assert len(kvm.rpc.sent) == sent_before + 1  # only the release: no Dock mouse report went out
-    assert state["kbd"] is not None  # kept for a retry
+    assert st["remote_kbd"] == (8, (4,))  # kept for a retry
 
     import jetkvm_core
 
@@ -450,14 +439,80 @@ def test_unconfirmed_async_release_keeps_state_and_blocks_the_dock_click(monkeyp
     with pytest.raises(FlowError):  # no answer at all: bounded wait, still zero clicks
         asyncio.run(scenario("none"))
     assert all(m["method"] == "keyboardReport" for m in kvm.rpc.sent)
-    assert state["kbd"] is not None
+    assert st["remote_kbd"] == (8, (4,))
     # a late error for the unanswered release is the operator-space's, not a Dock failure
     kvm._on_rpc_message(json.dumps({"id": kvm.rpc.sent[-1]["id"], "error": {"message": "late"}}))
     assert kvm.rpc_errors == []
 
     asyncio.run(scenario("ok"))  # confirmed: state cleared, then the click goes out
-    assert state["kbd"] is None
+    assert st["remote_kbd"] == (0, ())
     assert kvm.rpc.sent[-1]["method"] == "absMouseReport"
+
+
+def test_manual_hid_is_refused_until_the_reconcile_ack_arrives(tmp_path, monkeypatch):
+    """A stale ACK must never overwrite a newer press: the lock / dock flag outlives the reconcile."""
+    srv_box, seen = {}, {}
+
+    async def dock(kvm_arg, diagnostics_key, template_root=None, threshold=0.8, stats=None):
+        await _in_thread(lambda: _manual(srv_box["srv"], "keyboardReport", {"modifier": 0, "keys": []}))
+        return False
+
+    srv, kvm = _dock_rig(tmp_path, monkeypatch, dock)
+    srv_box["srv"] = srv
+
+    async def slow_confirmed(method, params):
+        kvm.rpc_calls.append((method, params))
+        seen["flag"] = srv._slot("DFU-01").dock_recovering
+        seen["during"] = await _in_thread(lambda: _manual(srv, "keyboardReport", {"modifier": 2, "keys": [5]}))
+
+    kvm.call_confirmed = slow_confirmed
+    try:
+        assert _manual(srv, "keyboardReport", {"modifier": 8, "keys": [4]})["status"] == "ok"
+        _send(srv, "check_start", device="DFU-01", timeout_sec=3)
+        assert seen["flag"] is True and seen["during"]["error"] == "device_busy"
+        # The refused Shift+B is the operator's newest intent, so the reconcile loop delivers it afterwards.
+        assert srv._slot("DFU-01").manual_hid["intent_kbd"] == (2, (5,))
+        assert _last(kvm, "keyboardReport") == {"modifier": 2, "keys": [5]}
+        assert srv._slot("DFU-01").dock_recovering is False
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+
+def test_cancelled_reconcile_still_returns_the_lock_and_the_lease(core):
+    from tcp_server import CommandSpec, _Admitted
+
+    srv, kvm = core
+
+    async def noop(ctx, args):
+        return {"status": "ok", "data": {}}
+
+    srv.register_handler(CommandSpec("noop_lock", noop, device_bound=True))
+    srv._slot("BT-01").manual_hid["intent_kbd"] = (2, (4,))  # something to reconcile when the command ends
+    waiting = threading.Event()
+
+    async def stuck(method, params):
+        waiting.set()
+        await asyncio.sleep(30)
+
+    kvm.call_confirmed = stuck
+
+    async def scenario():
+        admitted = _Admitted(srv._commands["noop_lock"], srv.device_registry.get("BT-01"), None)
+        task = asyncio.ensure_future(srv._dispatch_command("r1", admitted))
+        for _ in range(300):
+            if waiting.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert waiting.is_set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run_coroutine_threadsafe(scenario(), srv._loop).result(10)
+    assert not srv.lock_manager.is_locked("BT-01")  # a later command can run
+    assert all(entry.in_use == 0 for entry in srv.kvm_pool._pool.values())  # the KVM lease came back
+    assert _send(srv, "hid", method="wheelReport", params={"wheelY": 1})["status"] == "ok"
 
 
 def test_lock_taking_command_releases_manual_state(core):
@@ -466,9 +521,9 @@ def test_lock_taking_command_releases_manual_state(core):
                            ("absMouseReport", {"x": 1, "y": 2, "buttons": 1})):
         assert _send(srv, "hid", method=method, params=params)["status"] == "ok"
     kvm.rpc_calls.clear()
-    srv._neutralize_manual_hid("BT-01", kvm)
+    asyncio.run(srv._neutralize_manual_hid_async("BT-01", kvm))
     assert kvm.rpc_calls == [("keyboardReport", {"modifier": 0, "keys": []}),
                              ("absMouseReport", {"x": 1, "y": 2, "buttons": 0})]
     kvm.rpc_calls.clear()
-    srv._neutralize_manual_hid("BT-01", kvm)
+    asyncio.run(srv._neutralize_manual_hid_async("BT-01", kvm))
     assert kvm.rpc_calls == []  # nothing left down: nothing sent

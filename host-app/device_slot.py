@@ -30,5 +30,8 @@ class DeviceSlot:
                                    heartbeat=self.heartbeat, stats=self.stats)
         self.inspect_tracker = ActivityTracker(max_gap=1.0)
         self.flights: Dict[str, Future] = {}
-        self.manual_hid = {"kbd": None, "mouse": None, "drop_kbd": False, "drop_mouse": False}  # last delivered manual report (to neutralize on handover)
+        # Manual keyboard / mouse state: what the target holds ("remote") vs what the operator last asked for
+        # ("intent", also from reports dropped while Core operates). Core reconciles the two (ADR-0008).
+        self.manual_hid = {"remote_kbd": (0, ()), "intent_kbd": (0, ()),
+                           "remote_mouse": (0, 0, 0), "intent_mouse": (0, 0, 0)}
         self.dock_recovering = False  # True while a check clicks the Dock: manual HID must stay out (ADR-0008)
