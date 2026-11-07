@@ -838,7 +838,7 @@ class TcpJsonServer:
             return {"status": "error", "error": exc.code, "message": str(exc), "data": {"entered": exc.entered}}
         return {"status": "ok", "data": result}
 
-    async def _handle_hid(self, ctx: CommandContext, args: Tuple[str, Dict[str, Any]]) -> Dict[str, Any]:
+    async def _handle_hid(self, ctx: CommandContext, args: Tuple[str, Dict[str, Any], bool]) -> Dict[str, Any]:
         """Monitor UI manual HID (ADR-0008). Dropped with device_busy only while Core itself sends HID.
 
         While check_start / check_finish merely wait for the screen, manual HID passes. Every other lock holder

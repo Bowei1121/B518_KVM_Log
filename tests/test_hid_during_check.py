@@ -725,3 +725,35 @@ def test_release_only_flag_is_validated_and_clipped(core):
     assert _send(srv, "hid", method="keyboardReport", params={"modifier": 2, "keys": [4]},
                  release_only=True)["status"] == "ok"
     assert kvm.rpc_calls == []  # nothing left to let go of: zero HID
+
+
+def test_same_mask_move_keeps_the_release_only_mark(core):
+    srv, kvm = core
+    gate = threading.Event()
+    payloads = []
+
+    def send(cmd, payload, timeout, device):
+        if payload["method"] == "wheelReport":
+            gate.wait(3)  # holds the worker while the queue is arranged
+        payloads.append(payload)
+        with socket.create_connection(srv.server_address, timeout=5.0) as sock:
+            sock.sendall(dumps_request(wire({"cmd": cmd, "device": device, **payload})))
+            return recv_reply(sock)
+
+    # Core already neutralized both buttons (the late-busy case) and unlocked.
+    st = srv._slot("BT-01").manual_hid
+    st["remote_mouse"] = st["intent_mouse"] = (5, 6, 0)
+    sender = HidSender(send, lambda: "BT-01")
+    sender("wheelReport", {"wheelY": 1})  # the worker takes it and waits on the gate
+    time.sleep(0.1)
+    with sender._cv:  # what _release_only left after the late busy reply
+        sender._queue[:] = [("BT-01", "absMouseReport", {"x": 5, "y": 6, "buttons": 1}, True)]
+    sender("absMouseReport", {"x": 7, "y": 8, "buttons": 1})  # same mask: coalesces into that report
+    with sender._cv:
+        assert sender._queue == [("BT-01", "absMouseReport", {"x": 7, "y": 8, "buttons": 1}, True)]
+    gate.set()
+    sender.close()
+    assert sender.join(3)
+    mouse = [p for p in payloads if p["method"] == "absMouseReport"]
+    assert mouse and mouse[-1].get("release_only") is True
+    assert not any(c[0] == "absMouseReport" and c[1]["buttons"] for c in kvm.rpc_calls)  # left never pressed

@@ -244,7 +244,9 @@ class HidSender:
             last = self._queue[-1] if self._queue else None
             if (method == "absMouseReport" and last is not None and last[0] == device and last[1] == method
                     and last[2].get("buttons") == params.get("buttons")):
-                self._queue[-1] = (device, method, params)
+                # Coalesce to the newest position, keeping a release-only mark: a move with the same mask must not
+                # turn a synthesized release into a plain report that bypasses Core's clipping (ADR-0008).
+                self._queue[-1] = (device, method, params, *last[3:])
             else:
                 buttons = params.get("buttons") if method == "absMouseReport" else None
                 # A move is droppable only when it changes no button state; a press or release never is.
