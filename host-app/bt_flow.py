@@ -23,12 +23,12 @@ def start_all_region(frame, window):
     return window.left, window.top, width - window.left, height - window.top
 
 
-def find_start_all(session, template, frame, window):
+def find_start_all(session, template, frame, window, suffix=""):
     """Start All right of / below the window corner; if that misses, the whole frame (the corner may have
     matched another window's traffic lights). Raises ``FlowError(hid_failed)`` with the better score."""
     try:
         return session.find(
-            "start_all", template, frame, within=start_all_region(frame, window), downscale=False,
+            "start_all" + suffix, template, frame, within=start_all_region(frame, window), downscale=False,
             message="Start All not found (similarity {value:.2f})",
         )
     except FlowError as exc:
@@ -37,7 +37,7 @@ def find_start_all(session, template, frame, window):
         first = exc.score
     try:
         return session.find(
-            "start_all_full_frame", template, frame, downscale=False,
+            "start_all_full_frame" + suffix, template, frame, downscale=False,
             message="Start All not found (similarity {value:.2f})",
         )
     except FlowError as exc:
@@ -64,15 +64,21 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
             "dock_icon", dock, frame,
             message="Dock icon not found (similarity {value:.2f})",
             settle=DOCK_SETTLE_DELAY,
+            after=lambda: session.park_pointer(frame),  # a Dock tooltip must not cover Start All
         )
+        frame = await session.wait_fresh_frame()
 
-        frame = session.frame()
-        found = session.find(
-            "window", window, frame, downscale=True, color=(0, 255, 0),
-            message="BT window not found (similarity {value:.2f})",
-        )
-        start = find_start_all(session, start_all, frame, found)
-        await session.click(start, failure="Start All HID failed", settle=0)
+        def locate_start_all(image, suffix):
+            found = session.find(
+                "window" + suffix, window, image, downscale=True, color=(0, 255, 0),
+                message="BT window not found (similarity {value:.2f})",
+            )
+            return find_start_all(session, start_all, image, found, suffix)
+
+        # One retry on fresh frames; the Dock is never clicked twice.
+        frame, start = await session.match_with_retry(frame, locate_start_all)
+        await session.click(start, failure="Start All HID failed", settle=0,
+                            after=lambda: session.park_pointer(frame))
         ok = True
         return {"action": "start_all"}
     finally:

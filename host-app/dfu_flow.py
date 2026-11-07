@@ -163,9 +163,9 @@ def _control(session, frame, region, template, key):
     return session.find(key, template, frame, within=region, downscale=False)
 
 
-def _boxes_or_fail(frame, window, templates, channels, diagnostics):
+def _boxes_or_fail(frame, window, templates, channels, diagnostics, suffix=""):
     boxes = find_checkboxes(frame, window, templates["checkbox_checked"], templates["checkbox_unchecked"])
-    diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
+    diagnostics.record("checkboxes" + suffix, len(boxes), CHECKBOX_THRESHOLD, frame, None,
                        note={"en": "expected {}".format(channels), "zh": "預期 {} 個 checkbox".format(channels)})
     if len(boxes) != channels:
         raise FlowError("hid_failed", f"DFU window has {len(boxes)} checkboxes; device is configured for {channels} channels")
@@ -201,11 +201,16 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         fixed = load_region(catalog)
         templates = _load(session, ["dock_icon", "checkbox_checked", "checkbox_unchecked", "input"])
         frame = session.frame()
-        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
+        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY,
+                                 after=lambda: session.park_pointer(frame))
+        frame = await session.wait_fresh_frame()
 
-        frame = session.frame(missing="No JetKVM frame available after Dock focus")
-        window = _window(session, frame, templates.get("window"), "window", fixed)
-        boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
+        def find_controls(image, suffix):
+            found = _window(session, image, templates.get("window"), "window" + suffix, fixed)
+            return found, _boxes_or_fail(image, found, templates, channels, diagnostics, suffix)
+
+        # Nothing was typed or clicked yet: one retry on fresh frames is safe. The Dock is not clicked again.
+        frame, (window, boxes) = await session.match_with_retry(frame, find_controls)
 
         for _channel, box in _mismatches(boxes, wanted):
             await session.click(box, failure="Checkbox HID failed")
@@ -259,12 +264,16 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
         fixed = load_region(catalog)
         templates = _load(session, ["dock_icon", "button"])
         frame = session.frame()
-        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
+        await session.focus_dock("dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY,
+                                 after=lambda: session.park_pointer(frame))
+        frame = await session.wait_fresh_frame()
 
-        frame = session.frame(missing="No JetKVM frame available after Dock focus")
-        window = _window(session, frame, templates.get("window"), "window", fixed)
-        button_box = _control(session, frame, window, templates["button"], "button")
-        await session.click(button_box, failure="OK HID failed")
+        def find_button(image, suffix):
+            found = _window(session, image, templates.get("window"), "window" + suffix, fixed)
+            return _control(session, image, found, templates["button"], "button" + suffix)
+
+        frame, button_box = await session.match_with_retry(frame, find_button)
+        await session.click(button_box, failure="OK HID failed", after=lambda: session.park_pointer(frame))
         ok = True
         return {"action": "ok"}
     except FlowError as exc:

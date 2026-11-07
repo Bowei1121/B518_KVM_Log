@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 
-from hid_session import FlowError, HidSession
+from hid_session import FlowError, HidSession, neutral_pointer_position  # noqa: F401
 from match_diagnostics import MatchDiagnostics, draw_locator_zoom
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import MarkerState, explain_app_frame
@@ -30,15 +30,6 @@ MATCH_THRESHOLD = 0.80
 MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
 MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 POLL_INTERVAL_SEC = 0.05
-
-
-def neutral_pointer_position(frame):
-    """Where the pointer rests after a Dock click: top edge, mid-screen.
-
-    Off the Dock (no hover magnification over the icon), off the Log Solution band, and away from
-    the screen corners (macOS Hot Corners).
-    """
-    return frame.shape[1] // 2, 1
 
 
 def _busy(state):
@@ -118,17 +109,15 @@ async def click_dock_icon(kvm, frame, session):
     if template is None:
         raise FlowError("hid_failed", f"Missing Log Solution Dock icon template: {dock_path}")
 
-    async def park():
-        if hasattr(kvm, "move"):
-            await kvm.move(*neutral_pointer_position(frame))
-
     try:
         box = await session.focus_dock(
-            "log_solution_dock_icon", template, frame, message="Dock icon not found", after=park)
+            "log_solution_dock_icon", template, frame, message="Dock icon not found",
+            after=lambda: session.park_pointer(frame))
     except FlowError as exc:
         if exc.score is None:
             raise
         return False, exc.score
+    await session.wait_fresh_frame()  # readings after this come from frames taken after the click and the park
     return True, box.score
 
 

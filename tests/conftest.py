@@ -51,3 +51,12 @@ def monitor_ui_language_default():
     ui_i18n.set_language(ui_i18n.DEFAULT_LANGUAGE)
     yield
     ui_i18n.set_language(ui_i18n.DEFAULT_LANGUAGE)
+
+
+@pytest.fixture(autouse=True)
+def short_fresh_frame_wait(monkeypatch):
+    """Static fake KVMs never deliver new frames: keep the fresh-frame wait short unless a test sets it."""
+    import hid_session
+
+    monkeypatch.setattr(hid_session, "FRESH_FRAME_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(hid_session, "FRESH_FALLBACK_SEC", 0.0)

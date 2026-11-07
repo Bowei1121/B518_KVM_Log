@@ -4,11 +4,32 @@ Flows only sequence steps. Matching, diagnostics, and ``rpc_errors`` stay here.
 """
 
 import asyncio
+import json
+import time
 
 import cv2
 
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
+
+
+SETTINGS_DEVICE = "COMMON"
+SETTINGS_FILE = "hid_settings.json"
+MAX_COORD = 20000
+FRESH_FRAME_TIMEOUT_SEC = 2.0  # upper bound of the wait for post-park frames (hid_settings.json: fresh_frame_timeout_sec)
+FRESH_FRAME_COUNT = 2  # frames that must arrive after the pointer was parked
+FRESH_POLL_SEC = 0.02
+FRESH_FALLBACK_SEC = 0.5  # KVMs that report no frame sequence: fixed wait instead of counting frames
+
+
+def neutral_pointer_position(frame):
+    """Where the pointer rests after a click: top edge, mid-screen.
+
+    Off the Dock (no hover magnification or program-name tooltip over the icon), off the Log Solution
+    band, and away from the screen corners (macOS Hot Corners). With "auto-hide the menu bar" the top
+    edge reveals the menu bar: override with ``pointer_park`` in ``COMMON/hid_settings.json``.
+    """
+    return frame.shape[1] // 2, 1
 
 
 class FlowError(Exception):
@@ -123,6 +144,108 @@ class HidSession:
             if self.diagnostics:
                 self.diagnostics.record(key, None, self.threshold, note={"en": en, "zh": zh})
         return image
+
+    def settings(self):
+        """``COMMON/hid_settings.json`` as a dict (empty when absent).
+
+        ``pointer_park``: ``[x, y]`` screen pixels where the pointer rests after a click.
+        ``fresh_frame_timeout_sec``: positive number, upper bound of the wait for fresh frames.
+        """
+        path = self.catalog.device_dir(SETTINGS_DEVICE) / SETTINGS_FILE
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("not an object")
+            park = data.get("pointer_park")
+            if park is not None:
+                ok = (isinstance(park, list) and len(park) == 2
+                      and all(isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= MAX_COORD for v in park))
+                if not ok:
+                    raise ValueError("pointer_park must be [x, y] integers")
+            timeout = data.get("fresh_frame_timeout_sec")
+            if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+                                        or not 0 < timeout <= 60):
+                raise ValueError("fresh_frame_timeout_sec must be a positive number")
+        except (OSError, ValueError) as exc:
+            raise FlowError("hid_failed", f"Invalid {SETTINGS_FILE}: {exc}")
+        return data
+
+    async def park_pointer(self, frame=None):
+        """Move the pointer to the park position and remember when (monotonic) for ``wait_fresh_frame``.
+
+        Default ``neutral_pointer_position``; ``pointer_park`` in the settings file overrides it (clamped to
+        the frame). A KVM without ``move`` only records the time.
+        """
+        if frame is None:
+            frame = self.frame()
+        park = self.settings().get("pointer_park")
+        x, y = neutral_pointer_position(frame) if park is None else park
+        height, width = frame.shape[:2]
+        x, y = min(max(int(x), 0), width - 1), min(max(int(y), 0), height - 1)
+        if hasattr(self.kvm, "move"):
+            await self.kvm.move(x, y)
+        self.park_mark = time.monotonic()
+        return self.park_mark
+
+    async def wait_fresh_frame(self, suffix="", *, since=None):
+        """Frame image received after the pointer was parked (needs at least FRESH_FRAME_COUNT of them).
+
+        ``since`` defaults to the last ``park_pointer``. On timeout the newest frame is used and a
+        ``fresh_frame_timeout<suffix>`` note goes to the diagnostics. A KVM without frame sequence numbers
+        waits a fixed FRESH_FALLBACK_SEC instead.
+        """
+        since = getattr(self, "park_mark", None) if since is None else since
+        if since is None:
+            return self.frame()
+        timeout = float(self.settings().get("fresh_frame_timeout_sec", FRESH_FRAME_TIMEOUT_SEC))
+        deadline = time.monotonic() + timeout
+        first_sequence = None
+        while True:
+            snapshot = self.kvm.latest_frame()
+            sequence = getattr(snapshot, "sequence", None)
+            received = getattr(snapshot, "received_monotonic", None)
+            if snapshot is not None and isinstance(sequence, int) and isinstance(received, (int, float)):
+                if received > since:
+                    if first_sequence is None:
+                        first_sequence = sequence
+                    if sequence - first_sequence >= FRESH_FRAME_COUNT - 1:
+                        return snapshot.image
+            elif snapshot is not None:
+                await asyncio.sleep(min(FRESH_FALLBACK_SEC, timeout))
+                return self.frame()
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(FRESH_POLL_SEC)
+        if self.diagnostics:
+            self.diagnostics.record("fresh_frame_timeout" + suffix, None, self.threshold, note={
+                "en": f"No {FRESH_FRAME_COUNT} frames received after the pointer was parked within {timeout:g}s; "
+                      "continuing with the newest frame",
+                "zh": f"移開滑鼠後 {timeout:g} 秒內未收到 {FRESH_FRAME_COUNT} 張新影格，改用當下最新影格繼續"})
+        return self.frame()
+
+    async def match_with_retry(self, frame, match):
+        """``(frame, result)`` of ``match(frame, "")``; one retry on a missed match, never a second Dock click.
+
+        ``match(frame, suffix)`` must only look (no HID): the retry parks the pointer again, waits for fresh
+        frames and matches once more with suffix ``_retry`` (diagnostics keys). Both missed: the error with
+        the higher score. Errors other than ``hid_failed`` pass through.
+        """
+        try:
+            return frame, match(frame, "")
+        except FlowError as first:
+            if first.code != "hid_failed":
+                raise
+            await self.park_pointer(frame)
+            frame = await self.wait_fresh_frame("_retry")
+            try:
+                return frame, match(frame, "_retry")
+            except FlowError as second:
+                if second.code != "hid_failed":
+                    raise
+                rank = lambda exc: -1.0 if exc.score is None else exc.score
+                raise (first if rank(first) > rank(second) else second)
 
     def frame(self, missing="No JetKVM frame available"):
         snapshot = self.kvm.latest_frame()
