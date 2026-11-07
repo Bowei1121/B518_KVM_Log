@@ -2,9 +2,10 @@
 
 import json
 import logging
+import queue
 import shutil
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -20,14 +21,62 @@ HISTORY_MAX_MB = 2048
 HISTORY_JPEG_QUALITY = 85
 
 
-# Archive and cleanup run on one background thread: the Core TCP event loop never waits for JPEG encoding or
-# directory scans, and a single worker serializes every write and sweep under the shared archive root.
-_HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="match-diag-history")
+# Archive and cleanup run on one daemon worker thread: the Core TCP event loop never waits for JPEG encoding or
+# directory scans, a single worker serializes every write and sweep under the shared archive root, and a daemon
+# thread never delays Core's exit (an unfinished archive is simply lost at shutdown).
+# The queue is bounded in jobs and in raw pixel bytes; when full, the new archive is dropped with a log line
+# (``latest/`` is unaffected), so a stuck disk cannot pile up memory.
+HISTORY_MAX_PENDING_JOBS = 8
+HISTORY_MAX_PENDING_MB = 128
+
+_jobs = queue.Queue()
+_pending_lock = threading.Lock()
+_pending = {"jobs": 0, "bytes": 0}
+_worker = {"thread": None}
 
 
-def wait_for_history():
-    """Block until every queued history archive/cleanup finished (tests and shutdown)."""
-    _HISTORY_EXECUTOR.submit(lambda: None).result()
+def _worker_loop():
+    while True:
+        job, nbytes = _jobs.get()
+        try:
+            job()
+        except Exception:
+            log.exception("match diagnostics history job failed")
+        finally:
+            with _pending_lock:
+                _pending["jobs"] -= 1
+                _pending["bytes"] -= nbytes
+
+
+def _submit(job, nbytes):
+    """Queue ``job`` for the worker. Returns False (and logs) when the queue is full or cannot start."""
+    with _pending_lock:
+        if _pending["jobs"] >= HISTORY_MAX_PENDING_JOBS or \
+                _pending["bytes"] + nbytes > HISTORY_MAX_PENDING_MB * 1024 * 1024:
+            log.warning("match diagnostics history queue full (%d jobs, %d bytes); archive skipped",
+                        _pending["jobs"], _pending["bytes"])
+            return False
+        if _worker["thread"] is None or not _worker["thread"].is_alive():
+            thread = threading.Thread(target=_worker_loop, name="match-diag-history", daemon=True)
+            thread.start()
+            _worker["thread"] = thread
+        _pending["jobs"] += 1
+        _pending["bytes"] += nbytes
+    _jobs.put((job, nbytes))
+    return True
+
+
+def wait_for_history(timeout=30.0):
+    """Block until every queued history job finished (tests). Returns False on timeout."""
+    done = threading.Event()
+    with _pending_lock:
+        _pending["jobs"] += 1  # the sentinel bypasses the cap
+        if _worker["thread"] is None or not _worker["thread"].is_alive():
+            thread = threading.Thread(target=_worker_loop, name="match-diag-history", daemon=True)
+            thread.start()
+            _worker["thread"] = thread
+    _jobs.put((done.set, 0))
+    return done.wait(timeout)
 
 
 def _bilingual_note(note):
@@ -92,9 +141,12 @@ class MatchDiagnostics:
             score_text = "n/a" if score is None else "{:.3f}".format(score)
             label = "{} {} ({})".format(key, score_text, "MATCH" if matched else "MISS")
             cv2.putText(annotated, label, (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
-            image_name = "{:02d}_{}.png".format(len(self.records) + 1, key)
-            cv2.imwrite(str(self.directory / image_name), annotated)
-            self._annotated[image_name] = annotated
+            index = len(self.records) + 1
+            image_name = "{:02d}_{}.png".format(index, key)
+            self._annotated[index] = (image_name[:-4], annotated)
+            if not cv2.imwrite(str(self.directory / image_name), annotated):
+                log.warning("match diagnostics: cannot write %s", self.directory / image_name)
+                image_name = ""
         self.records.append({
             "key": key,
             "score": score,
@@ -114,10 +166,14 @@ class MatchDiagnostics:
         }
         with (self.directory / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
-        annotated, self._annotated = self._annotated, {}
-        snapshot = dict(payload, records=[dict(record) for record in payload["records"]])
-        stamp = datetime.fromtimestamp(self._clock())
-        _HISTORY_EXECUTOR.submit(self._archive_and_cleanup, snapshot, annotated, ok, operation, stamp)
+        try:  # preparing and queuing the archive is diagnostics only: never fail the flow
+            annotated, self._annotated = self._annotated, {}
+            snapshot = dict(payload, records=[dict(record) for record in payload["records"]])
+            stamp = datetime.fromtimestamp(self._clock())
+            nbytes = sum(image.nbytes for _stem, image in annotated.values())
+            _submit(lambda: self._archive_and_cleanup(snapshot, annotated, ok, operation, stamp), nbytes)
+        except Exception:
+            log.exception("match diagnostics history archive could not be queued")
         return payload
 
     def _clock(self):
@@ -148,11 +204,12 @@ class MatchDiagnostics:
                 suffix += 1
                 target = day / "{}_{}".format(name, suffix)
         records = []
-        for record in payload["records"]:
+        for index, record in enumerate(payload["records"], 1):
             record = dict(record)
-            image = annotated.get(record["image"])
-            if image is not None:
-                jpg_name = Path(record["image"]).with_suffix(".jpg").name
+            item = annotated.get(index)
+            if item is not None:
+                stem, image = item
+                jpg_name = stem + ".jpg"
                 if cv2.imwrite(str(target / jpg_name), image, [cv2.IMWRITE_JPEG_QUALITY, HISTORY_JPEG_QUALITY]):
                     record["image"] = jpg_name
                 else:
@@ -173,6 +230,12 @@ class MatchDiagnostics:
             return run.stat().st_mtime
 
     @staticmethod
+    def _collision_index(name):
+        """1 for the first archive of a millisecond, N for its ``_N`` collision copies."""
+        tail = name.rsplit("_", 1)[-1]
+        return int(tail) if tail.isdigit() else 1
+
+    @staticmethod
     def _tree_size(path):
         return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
@@ -190,7 +253,7 @@ class MatchDiagnostics:
                             entries.append((self._archive_time(day, run), self._tree_size(run), run))
                         except OSError:
                             log.exception("cannot stat %s", run)
-        entries.sort(key=lambda item: item[0])
+        entries.sort(key=lambda item: (item[0], self._collision_index(item[2].name)))
         total = sum(item[1] for item in entries)
         limit = self.history_max_mb * 1024 * 1024
         for mtime, size, run in entries:

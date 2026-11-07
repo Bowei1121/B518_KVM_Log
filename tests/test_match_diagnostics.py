@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
+import match_diagnostics
 from match_diagnostics import MatchDiagnostics, note_for_language, wait_for_history
 
 
@@ -217,6 +218,105 @@ class ConfirmTimeoutDiagnosticsTests(unittest.TestCase):
             self.assertTrue((MatchDiagnostics.latest_directory(root, "DFU-01") / record["image"]).exists())
             self.assertIn("last reading", record["note"]["en"])
             self.assertIn("最後判讀", record["note"]["zh"])
+
+
+class QueueBoundTests(unittest.TestCase):
+    def test_stuck_worker_caps_pending_jobs_and_never_blocks_finalize(self):
+        import threading
+        release = threading.Event()
+        started = threading.Event()
+
+        def stuck():
+            started.set()
+            release.wait(10)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            self.assertTrue(match_diagnostics._submit(stuck, 0))
+            self.assertTrue(started.wait(5))
+            try:
+                with self.assertLogs("match_diagnostics", level="WARNING") as logs:
+                    t0 = time.monotonic()
+                    for _ in range(match_diagnostics.HISTORY_MAX_PENDING_JOBS + 4):
+                        rec = MatchDiagnostics(root, "BT")
+                        rec.record("big", 0.9, 0.8, np.zeros((1080, 1920, 3), dtype=np.uint8), (1, 1, 5, 5))
+                        rec.finalize(True, "check")
+                    self.assertLess(time.monotonic() - t0, 5)
+                self.assertTrue(any("queue full" in line for line in logs.output))
+                self.assertLessEqual(match_diagnostics._pending["jobs"],
+                                     match_diagnostics.HISTORY_MAX_PENDING_JOBS)
+                self.assertLessEqual(match_diagnostics._pending["bytes"],
+                                     match_diagnostics.HISTORY_MAX_PENDING_MB * 1024 * 1024)
+                self.assertIsNotNone(MatchDiagnostics.load(root, "BT"))
+            finally:
+                release.set()
+                wait_for_history()
+
+    def test_worker_is_a_daemon_thread_so_core_exit_never_waits(self):
+        match_diagnostics._submit(lambda: None, 0)
+        wait_for_history()
+        self.assertTrue(match_diagnostics._worker["thread"].daemon)
+
+    def test_queue_failure_keeps_return_value(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            rec = MatchDiagnostics(root, "BT")
+            rec.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            with mock.patch.object(match_diagnostics, "_submit", side_effect=RuntimeError("no thread")):
+                payload = rec.finalize(True, "check")
+            self.assertTrue(payload["ok"])
+
+    def test_queue_failure_keeps_original_flow_error(self):
+        import asyncio
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from hid_session import FlowError
+        from protocol_helpers import LogSolutionKVM
+        from template_catalog import TemplateCatalog
+        import monitor_flow
+
+        class Gate:
+            stats = None
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            seed = LogSolutionKVM()
+            frame = seed.latest_frame().image
+            x, y, w, h = seed.dock_icon_box()
+            TemplateCatalog(root).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "COMMON",
+                                            "log_solution_dock_icon")
+            kvm = LogSolutionKVM(state="standby")
+            kvm.close_window()
+            with mock.patch.object(match_diagnostics, "_submit", side_effect=RuntimeError("no thread")):
+                with self.assertRaises(FlowError) as raised:
+                    asyncio.run(monitor_flow.run_monitor_start(
+                        kvm, Gate(), "DFU-01", template_root=root, confirm_sec=0.1, start_timeout_sec=0.1,
+                        log=lambda *_: None))
+            self.assertEqual(raised.exception.code, "log_solution_not_found")
+
+    def test_collision_copies_are_deleted_in_numeric_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = 1_700_000_000.0
+            _run(root, "monitor_start", False, now)
+            one = sum(f.stat().st_size for f in _history(root)[0].iterdir())
+            limit_mb = (one * 2.5) / (1024 * 1024)
+            for _ in range(2):
+                _run(root, "monitor_start", False, now, history_max_mb=limit_mb)
+            self.assertEqual([p.name.rsplit("_", 1)[-1] for p in _history(root)], ["2", "3"])
+
+    def test_latest_png_write_returning_false_clears_summary_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            rec = MatchDiagnostics(root, "BT")
+            real = cv2.imwrite
+            with mock.patch("match_diagnostics.cv2.imwrite",
+                            side_effect=lambda path, *a: False if str(path).endswith(".png") else real(path, *a)):
+                with self.assertLogs("match_diagnostics", level="WARNING"):
+                    rec.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+                rec.finalize(True, "check")
+                wait_for_history()
+            self.assertEqual(MatchDiagnostics.load(root, "BT")["records"][0]["image"], "")
+            self.assertEqual(sorted(p.name for p in _history(root)[0].iterdir()), ["01_step.jpg", "summary.json"])
 
 
 class ConfirmWriteFailureTests(unittest.TestCase):
