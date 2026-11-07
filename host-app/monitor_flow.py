@@ -151,12 +151,15 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
             unreliable = {}
             observation, last_reason = await _wait_for_reliable_reading(kvm, confirm_sec, gate.stats, unreliable)
             if observation is None:
-                diagnostics.record(
-                    "confirm_last_unreliable", None, threshold, frame=unreliable.get("frame"),
-                    note={"en": f"No reliable Log Solution reading within {confirm_sec:g} s after Dock click"
-                                f" (last reading: {last_reason})",
-                          "zh": f"點擊 Dock 後 {confirm_sec:g} 秒內沒有可靠的 Log Solution 判讀"
-                                f"（最後判讀：{last_reason}）"})
+                try:  # best-effort diagnostics: a write failure must not replace log_solution_not_found
+                    diagnostics.record(
+                        "confirm_last_unreliable", None, threshold, frame=unreliable.get("frame"),
+                        note={"en": f"No reliable Log Solution reading within {confirm_sec:g} s after Dock click"
+                                    f" (last reading: {last_reason})",
+                              "zh": f"點擊 Dock 後 {confirm_sec:g} 秒內沒有可靠的 Log Solution 判讀"
+                                    f"（最後判讀：{last_reason}）"})
+                except Exception as exc:
+                    log(f"confirm_last_unreliable diagnostics not saved: {exc!r}")
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution not found within {confirm_sec:g} s after Dock click; no shortcut sent"
                                 f" (last reading: {last_reason})")

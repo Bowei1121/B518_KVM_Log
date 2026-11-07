@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
-from match_diagnostics import MatchDiagnostics, note_for_language
+from match_diagnostics import MatchDiagnostics, note_for_language, wait_for_history
 
 
 class MatchDiagnosticsTests(unittest.TestCase):
@@ -52,6 +52,7 @@ def _run(root, op, ok, now, **kwargs):
     recorder = MatchDiagnostics(root, "BT", now=now, **kwargs)
     recorder.record("step", 0.9, 0.8, np.full((60, 80, 3), 128, dtype=np.uint8), (1, 1, 10, 10))
     recorder.finalize(ok, op)
+    wait_for_history()
     return recorder
 
 
@@ -120,6 +121,7 @@ class HistoryTests(unittest.TestCase):
 
             with mock.patch("match_diagnostics.cv2.imwrite", side_effect=boom):
                 payload = recorder.finalize(False, "check")
+                wait_for_history()
             self.assertFalse(payload["ok"])
             self.assertTrue(MatchDiagnostics.load(root, "BT")["records"])
 
@@ -128,8 +130,59 @@ class HistoryTests(unittest.TestCase):
             root = Path(temp) / "template"
             with mock.patch.object(MatchDiagnostics, "_cleanup_history", side_effect=OSError("x")):
                 payload = _run(root, "check", True, time.time())
+            wait_for_history()
             self.assertEqual(len(_history(root)), 1)
             self.assertIsNotNone(payload)
+
+    def test_same_millisecond_runs_keep_both_archives(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = 1_700_000_000.0
+            first = MatchDiagnostics(root, "BT", now=now)
+            first.record("one", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            first.finalize(False, "monitor_start")
+            second = MatchDiagnostics(root, "BT", now=now)
+            second.record("two", 0.1, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            second.finalize(False, "monitor_start")
+            wait_for_history()
+            import json
+            runs = _history(root)
+            self.assertEqual(len(runs), 2)
+            keys = sorted(json.loads((r / "summary.json").read_text(encoding="utf-8"))["records"][0]["key"]
+                          for r in runs)
+            self.assertEqual(keys, ["one", "two"])
+
+    def test_jpeg_write_returning_false_is_logged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            recorder = MatchDiagnostics(root, "BT")
+            real = cv2.imwrite
+            recorder.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+
+            def refuse(path, *args):
+                return False if str(path).endswith(".jpg") else real(path, *args)
+
+            with mock.patch("match_diagnostics.cv2.imwrite", side_effect=refuse):
+                with self.assertLogs("match_diagnostics", level="WARNING") as logs:
+                    recorder.finalize(True, "check")
+                    wait_for_history()
+            self.assertIn("01_step.jpg", logs.output[0])
+            import json
+            summary = json.loads((_history(root)[0] / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["records"][0]["image"], "")
+
+    def test_finalize_does_not_wait_for_slow_history_sweep(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            recorder = MatchDiagnostics(root, "BT")
+            recorder.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            with mock.patch.object(MatchDiagnostics, "_cleanup_history", side_effect=lambda: time.sleep(0.4)):
+                started = time.monotonic()
+                recorder.finalize(True, "check")
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 0.2)
+                wait_for_history()
+            self.assertEqual(len(_history(root)), 1)
 
 
 class ConfirmTimeoutDiagnosticsTests(unittest.TestCase):
@@ -157,12 +210,51 @@ class ConfirmTimeoutDiagnosticsTests(unittest.TestCase):
                 asyncio.run(monitor_flow.run_monitor_start(
                     kvm, Gate(), "DFU-01", template_root=root, confirm_sec=0.1, start_timeout_sec=0.1))
             self.assertEqual(raised.exception.code, "log_solution_not_found")
+            wait_for_history()
             latest = MatchDiagnostics.load(root, "DFU-01")
             record = [r for r in latest["records"] if r["key"] == "confirm_last_unreliable"][0]
             self.assertTrue(record["image"].endswith(".png"))
             self.assertTrue((MatchDiagnostics.latest_directory(root, "DFU-01") / record["image"]).exists())
             self.assertIn("last reading", record["note"]["en"])
             self.assertIn("最後判讀", record["note"]["zh"])
+
+
+class ConfirmWriteFailureTests(unittest.TestCase):
+    def test_confirm_record_write_failure_keeps_original_flow_error(self):
+        import asyncio
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from hid_session import FlowError
+        from protocol_helpers import LogSolutionKVM
+        from template_catalog import TemplateCatalog
+        import monitor_flow
+
+        class Gate:
+            stats = None
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            seed = LogSolutionKVM()
+            frame = seed.latest_frame().image
+            x, y, w, h = seed.dock_icon_box()
+            TemplateCatalog(root).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h), "COMMON",
+                                            "log_solution_dock_icon")
+            kvm = LogSolutionKVM(state="standby")
+            kvm.close_window()
+            real = cv2.imwrite
+
+            def boom(path, *args):
+                if "confirm_last_unreliable" in str(path):
+                    raise OSError("disk full")
+                return real(path, *args)
+
+            with mock.patch("match_diagnostics.cv2.imwrite", side_effect=boom):
+                with self.assertRaises(FlowError) as raised:
+                    asyncio.run(monitor_flow.run_monitor_start(
+                        kvm, Gate(), "DFU-01", template_root=root, confirm_sec=0.1, start_timeout_sec=0.1,
+                        log=lambda *_: None))
+            wait_for_history()
+            self.assertEqual(raised.exception.code, "log_solution_not_found")
+            self.assertIn("last reading", str(raised.exception))
 
 
 class NoteForLanguageTests(unittest.TestCase):

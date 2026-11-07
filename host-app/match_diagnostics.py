@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,16 @@ log = logging.getLogger(__name__)
 HISTORY_HOURS = 24
 HISTORY_MAX_MB = 2048
 HISTORY_JPEG_QUALITY = 85
+
+
+# Archive and cleanup run on one background thread: the Core TCP event loop never waits for JPEG encoding or
+# directory scans, and a single worker serializes every write and sweep under the shared archive root.
+_HISTORY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="match-diag-history")
+
+
+def wait_for_history():
+    """Block until every queued history archive/cleanup finished (tests and shutdown)."""
+    _HISTORY_EXECUTOR.submit(lambda: None).result()
 
 
 def _bilingual_note(note):
@@ -103,40 +114,54 @@ class MatchDiagnostics:
         }
         with (self.directory / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
+        annotated, self._annotated = self._annotated, {}
+        snapshot = dict(payload, records=[dict(record) for record in payload["records"]])
+        stamp = datetime.fromtimestamp(self._clock())
+        _HISTORY_EXECUTOR.submit(self._archive_and_cleanup, snapshot, annotated, ok, operation, stamp)
+        return payload
+
+    def _clock(self):
+        return time.time() if self._now is None else self._now
+
+    def _archive_and_cleanup(self, payload, annotated, ok, operation, stamp):
         try:
-            self._archive(payload, ok, operation)
+            self._archive(payload, annotated, ok, operation, stamp)
         except Exception:  # archiving is diagnostics only: never fail the flow
             log.exception("match diagnostics history archive failed")
         try:
             self._cleanup_history()
         except Exception:
             log.exception("match diagnostics history cleanup failed")
-        return payload
 
-    def _clock(self):
-        return time.time() if self._now is None else self._now
-
-    def _archive(self, payload, ok, operation):
-        stamp = datetime.fromtimestamp(self._clock())
+    def _archive(self, payload, annotated, ok, operation, stamp):
         name = "{}_{:03d}_{}_{}".format(stamp.strftime("%H%M%S"), stamp.microsecond // 1000, operation,
                                         "OK" if ok else "FAIL")
-        target = self._root / self.device / "history" / stamp.strftime("%Y%m%d") / name
-        target.mkdir(parents=True, exist_ok=True)
+        day = self._root / self.device / "history" / stamp.strftime("%Y%m%d")
+        day.mkdir(parents=True, exist_ok=True)
+        target = day / name
+        suffix = 1
+        while True:  # exclusive create: same millisecond/operation/result must not overwrite an earlier run
+            try:
+                target.mkdir()
+                break
+            except FileExistsError:
+                suffix += 1
+                target = day / "{}_{}".format(name, suffix)
         records = []
         for record in payload["records"]:
             record = dict(record)
-            image = self._annotated.get(record["image"])
+            image = annotated.get(record["image"])
             if image is not None:
                 jpg_name = Path(record["image"]).with_suffix(".jpg").name
                 if cv2.imwrite(str(target / jpg_name), image, [cv2.IMWRITE_JPEG_QUALITY, HISTORY_JPEG_QUALITY]):
                     record["image"] = jpg_name
                 else:
+                    log.warning("match diagnostics history: cannot write %s", target / jpg_name)
                     record["image"] = ""
             records.append(record)
         archived = dict(payload, records=records)
         with (target / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(archived, handle, ensure_ascii=False, indent=2)
-        self._annotated = {}
 
     @staticmethod
     def _archive_time(day, run):
