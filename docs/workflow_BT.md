@@ -49,9 +49,13 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 ## `start_test` 狀態機
 
 1. 讀取 Log Solution 狀態。不是監控中（含準備中、看不清楚或沒有影格）回 `monitor_not_ready`，不送 HID。
-2. 以 `BT_dock_icon.png` 定位並點擊，等待 0.5 秒讓 BT 視窗回到最前方。Dock 未命中或 HID 錯誤回 `hid_failed`。
-3. 重新取得影格，以 `BT_window.png` 定位視窗，再以 `BT_start_all.png` 定位並點擊一次 Start All。視窗或按鈕未命中、HID 錯誤回 `hid_failed`。
-4. 成功回 `data.action = "start_all"`。
+2. 以 `BT_dock_icon.png` 定位並點擊，**立刻把滑鼠移到停放點**（避免 Dock 的程式名稱提示蓋住 Start All），等待 0.5 秒讓 BT 視窗回到最前方。Dock 未命中或 HID 錯誤回 `hid_failed`。
+3. **等新影格**：等到至少 2 張在移開滑鼠之後才收到的影格（上限 2 秒；逾時就用最新影格繼續，診斷多一筆 `fresh_frame_timeout`），以最後一張辨識，不用點擊前的舊影格。
+4. 以 `BT_window.png` 定位視窗，再以 `BT_start_all.png` 定位。任一未命中時**不再點 Dock**：再移開滑鼠一次、再等新影格、重新比對一次（診斷 key 加 `_retry`）。兩次都失敗回 `hid_failed`，訊息帶兩次中較高的相似度。
+5. 命中後點擊一次 Start All，點完把滑鼠移回停放點，避免 hover／提示影響之後 `check_*` 讀 Log Solution。HID 錯誤回 `hid_failed`。
+6. 成功回 `data.action = "start_all"`。
+
+停放位置與等待上限設定：`~/Documents/template/COMMON/hid_settings.json`（選用）：`{"pointer_park": [x, y], "fresh_frame_timeout_sec": 2.0}`。`pointer_park` 為點擊後滑鼠停放的螢幕像素位置（兩個整數，0–20000）（預設螢幕上緣中間 `(寬/2, 1)`，超出畫面會夾回邊界）；現場若開啟「自動隱藏選單列」，上緣會讓選單列跑出來，請改成不會觸發選單列／Dock／熱角的空白處，例如 `[960, 600]`。`fresh_frame_timeout_sec` 為等新影格上限（預設 2 秒）。格式錯誤（含明確寫 `null`）在第一次 HID 之前就回 `hid_failed`。移開滑鼠走獨立的 RPC id（回覆錯誤不會被當成點擊錯誤），失敗不影響已成功的點擊，只在診斷記 `park_failed`。
 
 ## `check_start`／`check_finish`
 
@@ -69,7 +73,7 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 | Log Solution 未在監控中就要求開測 | `monitor_not_ready`，不送 HID |
 | Dock 圖示、Log Solution 視窗找不到 | `log_solution_not_found`，未送快捷鍵 |
 | `timeout_sec` 內未見監控中 | `monitor_not_started`，不清除本輪開始請求 |
-| 找不到 BT 視窗或 Start All | `hid_failed`，停止後續動作 |
+| 找不到 BT 視窗或 Start All（已用新影格重試一次） | `hid_failed`，停止後續動作，Dock 只點過一次 |
 | 看不到 Log Solution 且點 Dock 3 次仍看不到 | `log_solution_not_visible`，暫停，不得判 FAIL |
 | 本輪見過 Monitoring 後回到 Standby | `round_lost`，暫停，不得判 FAIL |
 | JetKVM HID endpoint 錯誤 | `hid_failed`，檢查 USB 線與 Mojave 的裝置辨識狀態 |
@@ -83,4 +87,5 @@ BT 不再使用 `testing`、`pass`、`fail` 模板；結果判讀全部來自 Lo
 ## 現場待辦
 
 - 在 Mojave 10.14.5 上確認 JetKVM 鍵盤、絕對滑鼠與相對滑鼠的實機操作紀錄。
+- Dock 提示蓋住 Start All 的排錯：看診斷圖有無 `*_retry` 與 `fresh_frame_timeout`；確認 `hid_settings.json` 的 `pointer_park` 不在 Dock 或選單列上。
 - 確認 Dock 點擊後 BT 視窗回到前景，並以現場畫面建立 `BT_dock_icon.png`、`BT_window.png`、`BT_start_all.png`。
