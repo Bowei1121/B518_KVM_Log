@@ -1,14 +1,53 @@
-# 專案摘要 2026-11-08：未來改用 C#／Rust 的語言評估（純討論）
+# 專案摘要 2026-11-08：#193 合併、ATE PR #145 跨 repo 審查、C#／Rust 語言評估
 
-接續 `PROJECT_SUMMARY_20261107.md`。11-07～11-08 的 session 只做討論，沒有改程式、沒有開票。
+接續 `PROJECT_SUMMARY_20261107.md`。
 
-## 1. 前提（使用者提供）
+## 1. 11-07 摘要之後合併到本 repo 的內容
+
+| PR／提交 | 內容 |
+| --- | --- |
+| #191 | check 期間可手動 HID（復盤：`docs/retros/2026-11-07-pr191-check期間手動HID.md`） |
+| #192 | 比對診斷圖歷史歸檔（復盤：`docs/retros/2026-11-07-比對診斷圖歷史歸檔.md`） |
+| #193（`df1b5f3`） | JetKVM 影格改用 BT.601 解碼；替 Log Solution 讀取存下標註診斷圖，加上 LS 定位配對過程與最高 4 倍放大圖 |
+
+GitHub `main` 在 `df1b5f3`。Gitea `origin/main` 原本停在 `2e12906`（少 #193），這次隨本摘要一起補推。
+
+## 2. 跨 repo 審查：`Bowei1121/B518_205_207_ATE` PR #145
+
+PR 內容：Log Solution 設定頁在 macOS 改用 `osascript choose folder ... invisibles true`，讓 KVM 只用滑鼠也能選到 `.` 開頭的隱藏資料夾；工站啟動時路徑錯誤會顯示「專案 / 機型：欄位（路徑值或未設定）」。
+
+審查格式沿用本 repo PR #178：範圍、驗證、必須修改、建議，最後附結論表（審查版本／結論／阻擋／驗證），並依 ATE repo 的 `skills/issue-pr-review-loop/references/workflow.md`。
+
+| 輪次 | head | 結論 | 重點 |
+| --- | --- | --- | --- |
+| 初審（Review 5813381017） | `66a1128` | 需修改 | ① `subprocess.run` 同步等 osascript，Tk 主迴圈停住，KVM 心跳凍結，所有 `_schedule_ui` 計時器停擺，輪次中也能開設定；② darwin 分支的測試全被 patch 掉 |
+| 再審（Review 5813485685） | `bf198d0` | 審查通過 | 改成 `Popen` 加 `_schedule_ui` 100 ms 輪詢；關設定窗、root destroy、`close()` 時 terminate；防連點；去掉結尾 `/`；新測試鎖住心跳持續跳動、成功、取消、兩種 fallback、關窗取消 |
+
+仍未處理的非阻擋建議：
+- osascript 對話框可能在 App 後面（加 `activate`／`default location`），連點時沒有任何提示。
+- `stderr=DEVNULL`，fallback 時沒有記錄。
+- 錯誤訊息沒列出原因，`repr()` 會露出引號。
+- 測試名稱與實際驗證的內容不符；optional 欄位的錯誤訊息沒有測試。
+- PR 沒有 `Refs #`，修正者也沒有逐項回覆。
+
+限制：審查 session 的本機 pytest 被權限擋下，只能靠讀程式加上 CI `test-and-package` pass；osascript 實際顯示與實機 DFU／KVM 都還沒驗證。合併需使用者授權，並以 `--match-head-commit bf198d0…` 綁定版本。
+
+## 3. 待辦
+
+- ATE #145：等使用者授權合併；合併後實機確認對話框是否在前景，以及選取期間 JetKVM 端的心跳是否持續跳動。
+- 本 repo 延續 11-07 的待辦：11-09 客戶看線（BT 測試、DFU 條碼），JetKVM 串流品質調最高，觀察 `core_status.readable_ratio`。
+
+## 4. 未來改用 C#／Rust 的語言評估（純討論）
+
+11-07～11-08 的另一個 session 只做討論，沒有改程式，也沒有開票。
+
+### 4.1 前提（使用者提供）
 
 - 上位機是 **Windows 11**，工廠環境。
 - 優先順序：**穩定性第一，效能第二**。
 - 現狀：Python 約 1.55 萬行（`host-app`），其中 Monitor UI 約 4,400 行（`ui_app.py` 2,177 行，加上 widgets、stream_view、設定頁等）。主要依賴有 `aiortc`／`av`（WebRTC＋H.264）、`opencv-python`、`rapidocr_onnxruntime`、Tkinter，用 PyInstaller onedir 打包。
 
-## 2. 結論
+### 4.2 結論
 
 | 語言 | 評價 | 理由 |
 | --- | --- | --- |
@@ -20,7 +59,7 @@
 - **效能不是換語言的理由**：九台設備，比對都在 OpenCV 的 C++ 裡跑。
 - **重寫本身就是最大的穩定性風險**：現有版本累積的現場規則（例如 freeze latch 的例外）都會被歸零。
 
-## 3. 建議路線（strangler fig，沿著 ADR-0004 的 TCP 接縫）
+### 4.3 建議路線（strangler fig，沿著 ADR-0004 的 TCP 接縫）
 
 1. **先做不需要換語言的穩定性改善**（候選，尚未開票）：
    - `host-app/AtlasKVM.spec` 第 45、62、70 行的 `upx=True` 改成 `False`，避免防毒誤判。
@@ -31,21 +70,21 @@
 3. **Core 改寫要有條件**：出現 Python／aiortc 本身造成、而且修不掉的現場問題時，才做 SIPSorcery PoC。PoC 要測長時間執行、斷線重連，以及 **RTP timestamp 能不能取代 PTS 給 Frame Freeze Guard 用**。
 4. `docs/PROTOCOL.md` 就是合約；現有的協定測試要能拿來驗證新的實作。
 
-## 4. SIPSorcery 重點
+### 4.4 SIPSorcery 重點
 
 - 純 C# 的 WebRTC 實作（SDP、ICE、DTLS、SRTP、SCTP DataChannel），主要由一個人維護。
 - 不負責解碼；H.264 解碼要另外用 `SIPSorceryMedia.FFmpeg`（跟現在 `av` 一樣，底層都是 FFmpeg）。
 - 可以跟 `jetkvm_core.py:168-236` 一對一對照：`rpc` DataChannel、`recvonly` H.264、WebSocket signaling `/webrtc/signaling/client`。JetKVM 端不用改。
 - 待確認：授權近年可能有調整（推測），導入前要看 LICENSE。
 
-## 5. 費用
+### 4.5 費用
 
 - C#、.NET SDK／Runtime、WPF：免費（MIT），產線部署不用授權費。
 - **Visual Studio Community 不能用**：公司超過 250 台電腦或年營收超過 100 萬美元就算企業。**C# Dev Kit 也套用同一條規定。**
 - 零成本的路線：`dotnet` CLI＋VS Code 開源 C# 擴充套件（不裝 Dev Kit）＋GitHub Actions。需要 UI 設計器或進階除錯的人，再買 VS Professional（約 USD 45／人／月，以官網為準）。
 - 其他授權：OpenCvSharp4 是 Apache 2.0、ONNX Runtime 是 MIT；FFmpeg 要用 LGPL 版本並以 DLL 動態連結。
 
-## 6. 尚未決定／後續
+### 4.6 尚未決定／後續
 
 - 使用者傾向 C#，但目前只是討論，**沒有開票，也還沒寫 ADR**。
 - 上面第 3 節第 1 點的穩定性改善，使用者選擇先不開票。
