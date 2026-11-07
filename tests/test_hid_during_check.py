@@ -215,27 +215,38 @@ def test_hid_sender_records_last_busy():
     assert sender.last_busy is not None
 
 
-def test_late_manual_rpc_error_is_not_a_dock_failure():
-    import json
+class _Chan:
+    def __init__(self):
+        self.sent = []
 
+    def send(self, text):
+        import json
+
+        self.sent.append(json.loads(text))
+
+
+def _client():
     from jetkvm_core import JetKVMClient
 
-    class Chan:
-        def __init__(self):
-            self.sent = []
-
-        def send(self, text):
-            self.sent.append(json.loads(text))
-
     kvm = JetKVMClient("127.0.0.1")
-    kvm.rpc = Chan()
-    kvm.call_manual("wheelReport", {"wheelY": 1})  # id 1: the operator's
-    kvm.call("absMouseReport", {"x": 1, "y": 1, "buttons": 0})  # id 2: Core's own
-    kvm._on_rpc_message(json.dumps({"id": 1, "error": {"message": "manual wheel failed"}}))
-    assert kvm.rpc_errors == []  # the late manual error is attributed to the operator
-    kvm._on_rpc_message(json.dumps({"id": 2, "error": {"message": "dock failed"}}))
-    assert kvm.rpc_errors == ["dock failed"]  # Core's own error still counts
-    assert kvm._manual_ids == {}
+    kvm.rpc = _Chan()
+    return kvm
+
+
+def test_late_manual_rpc_error_is_not_a_dock_failure_whenever_it_arrives():
+    import json
+
+    kvm = _client()
+    kvm.call_manual("wheelReport", {"wheelY": 1})  # operator's id: separate id space
+    kvm.call("absMouseReport", {"x": 1, "y": 1, "buttons": 0})  # Core's own
+    manual_id, auto_id = kvm.rpc.sent[0]["id"], kvm.rpc.sent[1]["id"]
+    assert manual_id >= 1_000_000_000 > auto_id
+    for _ in range(1000):  # any amount of later manual traffic or time cannot detach the attribution
+        kvm.call_manual("wheelReport", {"wheelY": 1})
+    kvm._on_rpc_message(json.dumps({"id": manual_id, "error": {"message": "manual wheel failed"}}))
+    assert kvm.rpc_errors == []
+    kvm._on_rpc_message(json.dumps({"id": auto_id, "error": {"message": "dock failed"}}))
+    assert kvm.rpc_errors == ["dock failed"]
 
 
 def _press_a_and_left_button(srv):
@@ -352,7 +363,8 @@ def test_failed_release_is_kept_for_retry_and_blocks_the_automated_action(core):
     kvm.call = call
     clicked = []
     kvm.click = lambda *a: clicked.append(a)
-    wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid("BT-01", kvm))
+    wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm),
+                           lambda: srv._neutralize_manual_hid("BT-01", kvm))
     with pytest.raises(FlowError) as exc:
         wrapped.call("absMouseReport", {"x": 0, "y": 0, "buttons": 1})
     assert exc.value.code == "hid_failed"
@@ -366,27 +378,86 @@ def test_failed_release_is_kept_for_retry_and_blocks_the_automated_action(core):
     assert srv._slot("BT-01").manual_hid["kbd"] is None
 
 
-def test_manual_id_table_flow_controls_instead_of_evicting():
+def test_move_while_keyboard_held_does_not_release_the_keyboard(tmp_path, monkeypatch):
+    srv, kvm, _ = _check_rig(tmp_path, None, monkeypatch)
+    try:
+        assert _send(srv, "hid", device="DFU-01", method="keyboardReport",
+                     params={"modifier": 8, "keys": [4]})["status"] == "ok"
+        state = srv._slot("DFU-01").manual_hid
+        assert srv.lock_manager.try_acquire("DFU-01", holder="monitor_start")
+        sent = len(kvm.rpc_calls)
+        try:  # a plain pointer move is dropped while the lock is held: that is not a keyboard release
+            reply = _send(srv, "hid", device="DFU-01", method="absMouseReport",
+                          params={"x": 1, "y": 1, "buttons": 0})
+            assert reply["error"] == "device_busy"
+        finally:
+            srv.lock_manager.release("DFU-01")
+        assert state["drop_kbd"] is False and state["drop_mouse"] is False
+        import asyncio
+
+        asyncio.run(srv._release_dropped_manual("DFU-01", kvm))
+        assert len(kvm.rpc_calls) == sent  # zero HID, keyboard still recorded as held
+        assert state["kbd"] is not None
+        # A genuine keyboard release dropped under the lock is remembered, and only that part is released.
+        assert srv.lock_manager.try_acquire("DFU-01", holder="monitor_start")
+        try:
+            _send(srv, "hid", device="DFU-01", method="keyboardReport", params={"modifier": 0, "keys": []})
+        finally:
+            srv.lock_manager.release("DFU-01")
+        assert state["drop_kbd"] is True
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+
+def test_unconfirmed_async_release_keeps_state_and_blocks_the_dock_click(monkeypatch):
+    import asyncio
     import json
 
-    from jetkvm_core import MANUAL_ID_MAX, JetKVMClient
+    from hid_session import FlowError
+    from tcp_server import TcpJsonServer, _HandoverKvm
 
-    class Chan:
-        def send(self, text):
-            pass
+    kvm = _client()
+    srv = TcpJsonServer(device_registry=make_registry(), host="127.0.0.1", port=0)
+    state = srv._slot("BT-01").manual_hid
+    state["kbd"] = {"modifier": 8, "keys": [4]}
+    kvm.size = (1920, 1080)
 
-    kvm = JetKVMClient("127.0.0.1")
-    kvm.rpc = Chan()
-    for _ in range(MANUAL_ID_MAX):
-        kvm.call_manual("wheelReport", {"wheelY": 1})
-    with pytest.raises(RuntimeError):
-        kvm.call_manual("wheelReport", {"wheelY": 1})  # refused, id 1 keeps its attribution
-    kvm._on_rpc_message(json.dumps({"id": 1, "error": {"message": "late manual error"}}))
+    async def scenario(reply):
+        loop = asyncio.get_running_loop()
+        wrapped = _HandoverKvm(kvm, lambda: srv._neutralize_manual_hid_async("BT-01", kvm),
+                               lambda: srv._neutralize_manual_hid("BT-01", kvm))
+        task = asyncio.ensure_future(wrapped.click(10, 10))
+        await asyncio.sleep(0.05)
+        release = kvm.rpc.sent[-1]
+        assert release["method"] == "keyboardReport" and release["params"]["keys"] == []
+        if reply == "error":
+            loop.call_soon(kvm._on_rpc_message, json.dumps({"id": release["id"],
+                                                            "error": {"message": "USB release failed"}}))
+        elif reply == "ok":
+            loop.call_soon(kvm._on_rpc_message, json.dumps({"id": release["id"], "result": None}))
+        await task
+
+    sent_before = len(kvm.rpc.sent)
+    with pytest.raises(FlowError):
+        asyncio.run(scenario("error"))
+    assert len(kvm.rpc.sent) == sent_before + 1  # only the release: no Dock mouse report went out
+    assert state["kbd"] is not None  # kept for a retry
+
+    import jetkvm_core
+
+    monkeypatch.setattr(jetkvm_core, "CONFIRM_TIMEOUT_SEC", 0.1)
+    with pytest.raises(FlowError):  # no answer at all: bounded wait, still zero clicks
+        asyncio.run(scenario("none"))
+    assert all(m["method"] == "keyboardReport" for m in kvm.rpc.sent)
+    assert state["kbd"] is not None
+    # a late error for the unanswered release is the operator-space's, not a Dock failure
+    kvm._on_rpc_message(json.dumps({"id": kvm.rpc.sent[-1]["id"], "error": {"message": "late"}}))
     assert kvm.rpc_errors == []
-    kvm.call("absMouseReport", {"x": 1, "y": 1, "buttons": 0})
-    kvm._on_rpc_message(json.dumps({"id": MANUAL_ID_MAX + 1, "error": {"message": "dock error"}}))
-    assert kvm.rpc_errors == ["dock error"]
-    kvm.call_manual("wheelReport", {"wheelY": 1})  # a freed slot accepts the next report
+
+    asyncio.run(scenario("ok"))  # confirmed: state cleared, then the click goes out
+    assert state["kbd"] is None
+    assert kvm.rpc.sent[-1]["method"] == "absMouseReport"
 
 
 def test_lock_taking_command_releases_manual_state(core):

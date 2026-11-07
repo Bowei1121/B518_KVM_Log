@@ -62,8 +62,8 @@ class KVMNoSignal(RuntimeError):
     reason = "no_signal"
 
 
-MANUAL_ID_TTL_SEC = 30.0
-MANUAL_ID_MAX = 256
+MANUAL_ID_BASE = 1_000_000_000  # operator / release RPCs use ids >= this; Core's automatic ones stay below
+CONFIRM_TIMEOUT_SEC = 1.0
 
 
 class JetKVMClient:
@@ -90,7 +90,8 @@ class JetKVMClient:
         self._ws = None
         self._recv_task = None
         self.rpc_errors = []          # 裝置回傳的 error (例如 HID 寫入失敗)
-        self._manual_ids = {}         # 手動 HID 的 JSON-RPC id (有序, 上限 256): 它們的回覆不算 flow 的錯誤
+        self._manual_id = MANUAL_ID_BASE  # 手動 HID 專用 id 空間: 回覆以 id 範圍歸屬, 不靠會過期的表
+        self._confirm = {}            # id -> (loop, future): 等待回覆的釋放 RPC
 
     # ---- 連線 ----
     def _login_cookie(self):
@@ -288,8 +289,14 @@ class JetKVMClient:
             j = json.loads(msg)
         except Exception:
             return
-        if isinstance(j, dict) and j.get("id") in self._manual_ids:
-            self._manual_ids.pop(j["id"], None)  # late manual HID reply: never a flow's hid_failed
+        rid = j.get("id") if isinstance(j, dict) else None
+        if isinstance(rid, int) and rid >= MANUAL_ID_BASE:
+            # Operator / release reply, however late: never a flow's hid_failed.
+            waiter = self._confirm.pop(rid, None)
+            if waiter is not None:
+                err = j.get("error")
+                detail = (err.get("data") or err.get("message")) if isinstance(err, dict) else err
+                waiter[0].call_soon_threadsafe(waiter[1].set_result, str(detail) if err else None)
             return
         if isinstance(j, dict) and j.get("error"):
             err = j["error"]
@@ -298,19 +305,33 @@ class JetKVMClient:
 
     def call(self, method, params):
         self._id += 1
-        self.rpc.send(json.dumps({"jsonrpc": "2.0", "method": method,
-                                  "params": params, "id": self._id}))
+        self._send(method, params, self._id)
+
+    def _send(self, method, params, rid):
+        self.rpc.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": rid}))
 
     def call_manual(self, method, params):
         """Like ``call`` for operator HID: its reply (even a late error) is kept out of ``rpc_errors``."""
-        now = time.monotonic()
-        for rid in [r for r, t in self._manual_ids.items() if now - t > MANUAL_ID_TTL_SEC]:
-            del self._manual_ids[rid]  # a reply this late will not come; keeps the table bounded
-        if len(self._manual_ids) >= MANUAL_ID_MAX:
-            # Never evict an attribution that may still get its reply: flow-control the operator instead.
-            raise RuntimeError("too many manual HID reports awaiting replies")
-        self._manual_ids[self._id + 1] = now
-        self.call(method, params)
+        self._manual_id += 1
+        self._send(method, params, self._manual_id)
+
+    async def call_confirmed(self, method, params, timeout=None):
+        """Send in the manual id space and wait (bounded) for the device's reply; RuntimeError on error / timeout."""
+        timeout = CONFIRM_TIMEOUT_SEC if timeout is None else timeout
+        self._manual_id += 1
+        rid = self._manual_id
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        self._confirm[rid] = (loop, fut)
+        try:
+            self._send(method, params, rid)
+            detail = await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"{method} was not confirmed within {timeout}s") from None
+        finally:
+            self._confirm.pop(rid, None)
+        if detail is not None:
+            raise RuntimeError(f"{method} failed: {detail}")
 
     def _to_abs(self, px, py):
         w, h = self.size

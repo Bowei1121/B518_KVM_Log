@@ -30,5 +30,5 @@ class DeviceSlot:
                                    heartbeat=self.heartbeat, stats=self.stats)
         self.inspect_tracker = ActivityTracker(max_gap=1.0)
         self.flights: Dict[str, Future] = {}
-        self.manual_hid = {"kbd": None, "mouse": None, "release_dropped": False}  # last delivered manual report (to neutralize on handover)
+        self.manual_hid = {"kbd": None, "mouse": None, "drop_kbd": False, "drop_mouse": False}  # last delivered manual report (to neutralize on handover)
         self.dock_recovering = False  # True while a check clicks the Dock: manual HID must stay out (ADR-0008)
