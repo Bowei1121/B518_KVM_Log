@@ -20,6 +20,7 @@ class MatchDiagnosticsTests(unittest.TestCase):
             recorder = MatchDiagnostics(root, "BT")
             recorder.record("dock_icon", 0.9, 0.8, np.zeros((40, 40, 3), dtype=np.uint8), (1, 1, 10, 10))
             recorder.finalize(True, "button")
+            wait_for_history()
             first = MatchDiagnostics.load(root, "BT")
             self.assertTrue(first["ok"])
             self.assertEqual(first["records"][0]["key"], "dock_icon")
@@ -28,6 +29,7 @@ class MatchDiagnosticsTests(unittest.TestCase):
             recorder = MatchDiagnostics(root, "BT")
             recorder.record("window", 0.2, 0.8, note={"en": "low similarity", "zh": "相似度過低"})
             recorder.finalize(False, "check")
+            wait_for_history()
             latest = MatchDiagnostics.load(root, "BT")
             self.assertFalse(latest["ok"])
             self.assertEqual([item["key"] for item in latest["records"]], ["window"])
@@ -41,6 +43,7 @@ class MatchDiagnosticsTests(unittest.TestCase):
             recorder.record("frame", None, 0.8)
             recorder.record("legacy", 0.1, 0.8, note="plain text")
             recorder.finalize(False, "check")
+            wait_for_history()
             notes = [item["note"] for item in MatchDiagnostics.load(root, "BT")["records"]]
             self.assertEqual(notes, [
                 {"en": "low similarity", "zh": "相似度過低"},
@@ -303,6 +306,70 @@ class QueueBoundTests(unittest.TestCase):
             for _ in range(2):
                 _run(root, "monitor_start", False, now, history_max_mb=limit_mb)
             self.assertEqual([p.name.rsplit("_", 1)[-1] for p in _history(root)], ["2", "3"])
+
+    def test_same_millisecond_archive_after_cleanup_keeps_newest(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            now = 1_700_000_000.0
+
+            def run(key, **kwargs):
+                rec = MatchDiagnostics(root, "BT", now=now, **kwargs)
+                rec.record(key, 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+                rec.finalize(False, "monitor_start")
+                wait_for_history()
+
+            run("r1")
+            one = sum(f.stat().st_size for f in _history(root)[0].iterdir())
+            limit_mb = (one * 2.5) / (1024 * 1024)
+            for key in ("r2", "r3", "r4"):
+                run(key, history_max_mb=limit_mb)
+            keys = [json.loads((r / "summary.json").read_text(encoding="utf-8"))["records"][0]["key"]
+                    for r in _history(root)]
+            self.assertEqual(sorted(keys), ["r3", "r4"])
+
+    def test_interrupted_archive_leaves_no_half_archive_and_stale_staging_is_swept(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            stale = root / "_captures" / "match_diagnostics" / "BT" / "history_tmp" / "dead"
+            stale.mkdir(parents=True)
+            (stale / "01_x.jpg").write_bytes(b"x")
+            rec = MatchDiagnostics(root, "BT")
+            rec.record("step", 0.9, 0.8, np.zeros((20, 20, 3), dtype=np.uint8), (1, 1, 5, 5))
+            real_dump = match_diagnostics.json.dump
+
+            def dump(obj, handle, **kwargs):
+                if "history_tmp" in str(handle.name):
+                    raise OSError("exit mid-write")
+                return real_dump(obj, handle, **kwargs)
+
+            with mock.patch("match_diagnostics.json.dump", side_effect=dump):
+                rec.finalize(True, "check")
+                wait_for_history()
+            self.assertEqual(_history(root), [])
+            self.assertFalse(stale.exists())
+
+    def test_idle_worker_does_not_keep_raw_frames_alive(self):
+        import gc
+        import weakref
+        refs = []
+
+        def fake(self, payload, annotated, ok, operation, stamp):
+            refs.append(weakref.ref(annotated[1][1]))
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "template"
+            rec = MatchDiagnostics(root, "BT")
+            rec.record("step", 0.9, 0.8, np.zeros((1080, 1920, 3), dtype=np.uint8), (1, 1, 5, 5))
+            with mock.patch.object(MatchDiagnostics, "_archive_and_cleanup", fake):
+                rec.finalize(True, "check")
+                deadline = time.monotonic() + 5
+                while match_diagnostics._pending["jobs"] and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(match_diagnostics._pending["jobs"], 0)
+            rec._annotated = {}
+            gc.collect()
+            self.assertIsNone(refs[0]())
 
     def test_latest_png_write_returning_false_clears_summary_image(self):
         with tempfile.TemporaryDirectory() as temp:

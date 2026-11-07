@@ -2,10 +2,12 @@
 
 import json
 import logging
+import os
 import queue
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +45,7 @@ def _worker_loop():
         except Exception:
             log.exception("match diagnostics history job failed")
         finally:
+            job = None  # an idle worker must not keep the last raw frames alive
             with _pending_lock:
                 _pending["jobs"] -= 1
                 _pending["bytes"] -= nbytes
@@ -192,17 +195,12 @@ class MatchDiagnostics:
     def _archive(self, payload, annotated, ok, operation, stamp):
         name = "{}_{:03d}_{}_{}".format(stamp.strftime("%H%M%S"), stamp.microsecond // 1000, operation,
                                         "OK" if ok else "FAIL")
-        day = self._root / self.device / "history" / stamp.strftime("%Y%m%d")
-        day.mkdir(parents=True, exist_ok=True)
-        target = day / name
-        suffix = 1
-        while True:  # exclusive create: same millisecond/operation/result must not overwrite an earlier run
-            try:
-                target.mkdir()
-                break
-            except FileExistsError:
-                suffix += 1
-                target = day / "{}_{}".format(name, suffix)
+        history = self._root / self.device / "history"
+        day = history / stamp.strftime("%Y%m%d")
+        # Build the archive in a staging folder outside history/ and publish it with one rename, so an exit
+        # or crash mid-write never leaves a half archive that looks complete. Leftovers are swept on cleanup.
+        staging = self._root / self.device / "history_tmp" / uuid.uuid4().hex
+        staging.mkdir(parents=True)
         records = []
         for index, record in enumerate(payload["records"], 1):
             record = dict(record)
@@ -210,15 +208,30 @@ class MatchDiagnostics:
             if item is not None:
                 stem, image = item
                 jpg_name = stem + ".jpg"
-                if cv2.imwrite(str(target / jpg_name), image, [cv2.IMWRITE_JPEG_QUALITY, HISTORY_JPEG_QUALITY]):
+                if cv2.imwrite(str(staging / jpg_name), image, [cv2.IMWRITE_JPEG_QUALITY, HISTORY_JPEG_QUALITY]):
                     record["image"] = jpg_name
                 else:
-                    log.warning("match diagnostics history: cannot write %s", target / jpg_name)
+                    log.warning("match diagnostics history: cannot write %s", staging / jpg_name)
                     record["image"] = ""
             records.append(record)
         archived = dict(payload, records=records)
-        with (target / "summary.json").open("w", encoding="utf-8") as handle:
+        with (staging / "summary.json").open("w", encoding="utf-8") as handle:
             json.dump(archived, handle, ensure_ascii=False, indent=2)
+        day.mkdir(parents=True, exist_ok=True)
+        # Same millisecond/operation/result: continue after the highest existing suffix, so the newest copy
+        # never reuses a name that cleanup freed (and then sorts as oldest).
+        highest = 0
+        for existing in day.iterdir():
+            if existing.name == name:
+                highest = max(highest, 1)
+            elif existing.name.startswith(name + "_") and existing.name[len(name) + 1:].isdigit():
+                highest = max(highest, int(existing.name[len(name) + 1:]))
+        target = day / (name if highest == 0 else "{}_{}".format(name, highest + 1))
+        os.rename(str(staging), str(target))
+        try:
+            staging.parent.rmdir()
+        except OSError:
+            pass
 
     @staticmethod
     def _archive_time(day, run):
@@ -242,6 +255,8 @@ class MatchDiagnostics:
     def _cleanup_history(self):
         """Drop archives older than ``history_hours``, then oldest-first until under ``history_max_mb``."""
         cutoff = self._clock() - self.history_hours * 3600
+        for staging in self._root.glob("*/history_tmp"):  # leftovers of an interrupted archive (one worker only)
+            shutil.rmtree(str(staging), ignore_errors=True)
         entries = []  # (mtime, size, path)
         for history in self._root.glob("*/history"):
             for day in history.iterdir():
