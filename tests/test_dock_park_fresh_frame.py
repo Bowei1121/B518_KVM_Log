@@ -392,8 +392,9 @@ def test_frames_that_arrived_during_the_settle_count_as_fresh(tmp_path):
     session = _session(kvm, tmp_path)
 
     async def go():
-        await session.park_pointer(old)
-        kvm.frame, kvm.frame_sequence, kvm.frame_received_monotonic = fresh, 12, time.monotonic()  # 11, 12 came in
+        mark = await session.park_pointer(old)
+        # 11 and 12 came in during the settle (explicit time: the Windows clock ticks in ~15 ms steps)
+        kvm.frame, kvm.frame_sequence, kvm.frame_received_monotonic = fresh, 12, mark + 0.05
         return await session.wait_fresh_frame()
 
     assert np.array_equal(asyncio.run(go()), fresh)
