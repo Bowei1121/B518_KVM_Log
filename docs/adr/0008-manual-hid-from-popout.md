@@ -14,8 +14,8 @@ ADR-0004 解耦後 Monitor UI 只透過 TCP 連 Core，沒有 KVM 連線，#183 
 3. Monitor UI 以獨立連線（`hid`）加背景佇列送出：滑鼠移動（按鍵遮罩相同）合併為最新一筆，按鍵／鍵盤／滾輪保序；設備 ID 於入列時固定；pop-out 固定綁定開啟時的設備（換設備須關閉重開）。佇列滿時只丟滾輪與無按鍵移動，按鍵／按鈕狀態變化不丟；關窗時已排隊的放開報告會送完。收到 `device_busy` 清空佇列。
 4. pop-out 底部提供「監看／手動控制」radio，預設監看（輸入全部不送出）；切到手動控制才轉送 HID，切回監看時放開所有按鍵。提示文字註明 Core 自動操作時手動操作會被忽略；收到 `device_busy` 時狀態列短暫顯示「手動操作已忽略」（顯示狀態翻轉才重繪，不隨每次滑鼠移動刷新）。
 
-5. **自動接手時交接輸入狀態（#191 審查）**：Core 記錄每台設備最後送達的手動鍵盤／滑鼠報告；`start_test`／`input`／`monitor_start` 取得鎖後與 check 點 Dock 前（兩者之間無 await，與手動 HID 的判斷不會交錯），若有按下的修飾鍵／按鍵／滑鼠鍵，先以 `keyboardReport` 空鍵與 `absMouseReport buttons=0` 釋放，避免放開報告被丟棄造成卡鍵、或 Dock 點擊帶著修飾鍵。
-6. **RPC 錯誤歸屬（#191 審查）**：手動 HID 以 `call_manual` 送出，其 JSON-RPC id 記錄後，晚到的回覆（含錯誤）不寫入共用 `rpc_errors`，不會被 Dock 等 flow 誤判為自己的 `hid_failed`。
+5. **自動接手時交接輸入狀態（#191 審查）**：Core 記錄每台設備最後送達的手動鍵盤／滑鼠報告。自動指令（`start_test`／`input`／`monitor_start`，與 check 點 Dock）以 `_HandoverKvm` 包住 KVM，**在第一筆自動 HID 之前**才釋放被按住的修飾鍵／按鍵／滑鼠鍵；預檢被拒絕或 Dock 找不到目標時零 HID（ADR-0005）。鍵盤與滑鼠分開追蹤，釋放失敗的那筆保留以便重試，並以 `hid_failed` 中止自動動作（不帶修飾鍵點擊）。釋放被丟棄的操作（放開報告在自動階段被擋）會記為 `release_dropped`，於自動階段結束時補送釋放。
+6. **RPC 錯誤歸屬（#191 審查）**：手動 HID 以 `call_manual` 送出，其 JSON-RPC id 記錄後，晚到的回覆（含錯誤）不寫入共用 `rpc_errors`，不會被 Dock 等 flow 誤判為自己的 `hid_failed`。id 表有時間上限（30 秒）與數量上限（256）；表滿時對新的手動報告流量控制（回 `hid_failed`），不淘汰仍可能收到回覆的歸屬。
 
 ## Consequences
 - **Pros**: 不需 JetKVM Web UI；預設不影響 LabVIEW 自動流程。

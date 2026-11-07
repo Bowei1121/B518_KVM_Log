@@ -192,6 +192,31 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
 _WAITING_CHECKS = frozenset({"check_start", "check_finish"})
 
 
+class _HandoverKvm:
+    """Wraps a KVM for an automated command: the held manual keys are released once, right before the first HID."""
+
+    _HID = frozenset({"call", "click", "move", "type_text", "press_key", "press_enter", "press_command_shift_m"})
+
+    def __init__(self, kvm: Any, release: Callable[[], None]) -> None:
+        self._kvm = kvm
+        self._release = release
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._kvm, name)
+        if name not in self._HID or not callable(attr):
+            return attr
+        if inspect.iscoroutinefunction(attr):
+            async def wrapped_async(*args: Any, **kwargs: Any) -> Any:
+                self._release()
+                return await attr(*args, **kwargs)
+            return wrapped_async
+
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            self._release()
+            return attr(*args, **kwargs)
+        return wrapped
+
+
 def _manual_call(kvm: Any, method: str, params: Dict[str, Any]) -> None:
     """Send an operator HID report; a KVM that attributes RPC replies keeps its errors out of the flows."""
     getattr(kvm, "call_manual", kvm.call)(method, params)
@@ -815,6 +840,7 @@ class TcpJsonServer:
             slot = self._slots.get(str(device_id))
             waiting_check = holder in _WAITING_CHECKS and not (slot is not None and slot.dock_recovering)
             if not waiting_check:
+                self._note_dropped(device_id, args)
                 return {"status": "busy", "error": "device_busy",
                         "message": "An automated command is running; manual HID is dropped"}
         method, params = args
@@ -835,19 +861,48 @@ class TcpJsonServer:
         elif method == "absMouseReport":
             state["mouse"] = params if params.get("buttons") else None
 
+    def _note_dropped(self, device_id: str, args: Tuple[str, Dict[str, Any]]) -> None:
+        """A dropped release (empty keys / no buttons) leaves the remote holding the key: remember to let go."""
+        method, params = args
+        if (method == "keyboardReport" and not params.get("modifier") and not params.get("keys")) or (
+                method == "absMouseReport" and not params.get("buttons")):
+            self._slot(device_id).manual_hid["release_dropped"] = True
+
     def _neutralize_manual_hid(self, device_id: str, kvm: Any) -> None:
-        """Core takes over HID: release keys / buttons a manual press left down (its release would be dropped)."""
+        """Core takes over HID: release keys / buttons a manual press left down (its release would be dropped).
+
+        Each report is tracked on its own: one that fails stays recorded for a retry, and FlowError(hid_failed)
+        stops the automated action so Core never clicks with a held modifier.
+        """
         state = self._slot(device_id).manual_hid
-        kbd, mouse = state["kbd"], state["mouse"]
-        state["kbd"] = state["mouse"] = None
+        failed = []
+        for part, method, build in (
+                ("kbd", "keyboardReport", lambda p: {"modifier": 0, "keys": []}),
+                ("mouse", "absMouseReport", lambda p: {"x": p["x"], "y": p["y"], "buttons": 0})):
+            report = state[part]
+            if report is None:
+                continue
+            try:
+                kvm.call(method, build(report))
+                state[part] = None
+            except Exception:
+                logger.warning("Releasing manual %s on %s failed", part, device_id, exc_info=True,
+                               extra={"zh": "釋放 %s 的手動 %s 失敗"})
+                failed.append(part)
+        if not failed:
+            state["release_dropped"] = False
+            return
+        raise FlowError("hid_failed", "Could not release the manual keyboard or mouse before the automated action")
+
+    def _release_dropped_manual(self, device_id: str, kvm: Any) -> None:
+        """End of an automated phase: release what the operator let go of while their release was dropped."""
+        if not self._slot(device_id).manual_hid["release_dropped"]:
+            return
         try:
-            if kbd is not None:
-                _manual_call(kvm, "keyboardReport", {"modifier": 0, "keys": []})
-            if mouse is not None:
-                _manual_call(kvm, "absMouseReport", {"x": mouse["x"], "y": mouse["y"], "buttons": 0})
+            self._neutralize_manual_hid(device_id, kvm)
         except Exception:
-            logger.warning("Releasing manual HID on %s failed", device_id, exc_info=True,
-                           extra={"zh": "釋放 %s 的手動 HID 失敗"})
+            logger.warning("Late manual release on %s failed", device_id, exc_info=True,
+                           extra={"zh": "%s 的手動釋放補送失敗"})
 
     async def _handle_check_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """check_start: two fresh frames of activity, or a finished round delivered once."""
@@ -922,14 +977,16 @@ class TcpJsonServer:
                 return outcome.payload
             if isinstance(outcome, ClickDock):
                 slot.dock_recovering = True  # Core itself sends HID now: manual HID is dropped (ADR-0008)
-                self._neutralize_manual_hid(entry.device_id, kvm)  # no atomic gap: no await since the flag
                 try:
-                    clicked = await bring_log_solution_forward(kvm, template_root=self._template_root(),
+                    clicked = await bring_log_solution_forward(
+                        _HandoverKvm(kvm, lambda: self._neutralize_manual_hid(entry.device_id, kvm)),
+                        template_root=self._template_root(),
                                                                diagnostics_key=entry.device_id, stats=slot.stats)
                 except FlowError as exc:
                     return check.fail(exc.code, str(exc))
                 finally:
                     slot.dock_recovering = False
+                    self._release_dropped_manual(entry.device_id, kvm)
                 if not clicked:
                     return check.fail("log_solution_not_found", "Log Solution Dock icon is not on screen")
                 await asyncio.sleep(self.dock_recheck_sec)
@@ -1054,6 +1111,11 @@ class TcpJsonServer:
                     err_resp["device"] = device_id
                 return err_resp
 
+        hands_over = device_id is not None and spec.takes_lock and spec.name not in _WAITING_CHECKS
+        raw_kvm = kvm_client
+        if hands_over and kvm_client is not None:
+            # The held manual keys are released right before the first automated HID, never on a refusal.
+            kvm_client = _HandoverKvm(kvm_client, lambda: self._neutralize_manual_hid(device_id, raw_kvm))
         ctx = CommandContext(
             entry=entry,
             kvm=kvm_client,
@@ -1062,8 +1124,6 @@ class TcpJsonServer:
             reader=reader,
             writer=writer,
         )
-        if device_id is not None and spec.takes_lock and kvm_client is not None and spec.name not in _WAITING_CHECKS:
-            self._neutralize_manual_hid(device_id, kvm_client)
         try:
             if inspect.iscoroutinefunction(spec.handler):
                 result = await spec.handler(ctx, admitted.args)
@@ -1099,6 +1159,8 @@ class TcpJsonServer:
                 err_resp["device"] = device_id
             return err_resp
         finally:
+            if hands_over and raw_kvm is not None:
+                self._release_dropped_manual(device_id, raw_kvm)
             if device_id is not None and spec.takes_lock:
                 self.lock_manager.release(device_id)
             if leased_kvm_ip is not None:

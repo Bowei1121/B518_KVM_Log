@@ -62,6 +62,10 @@ class KVMNoSignal(RuntimeError):
     reason = "no_signal"
 
 
+MANUAL_ID_TTL_SEC = 30.0
+MANUAL_ID_MAX = 256
+
+
 class JetKVMClient:
     def __init__(self, host, password=""):
         # host 可為 "192.168.1.50" 或 "http://192.168.1.50"
@@ -299,9 +303,13 @@ class JetKVMClient:
 
     def call_manual(self, method, params):
         """Like ``call`` for operator HID: its reply (even a late error) is kept out of ``rpc_errors``."""
-        self._manual_ids[self._id + 1] = True
-        while len(self._manual_ids) > 256:
-            self._manual_ids.pop(next(iter(self._manual_ids)))
+        now = time.monotonic()
+        for rid in [r for r, t in self._manual_ids.items() if now - t > MANUAL_ID_TTL_SEC]:
+            del self._manual_ids[rid]  # a reply this late will not come; keeps the table bounded
+        if len(self._manual_ids) >= MANUAL_ID_MAX:
+            # Never evict an attribution that may still get its reply: flow-control the operator instead.
+            raise RuntimeError("too many manual HID reports awaiting replies")
+        self._manual_ids[self._id + 1] = now
         self.call(method, params)
 
     def _to_abs(self, px, py):
