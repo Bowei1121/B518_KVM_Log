@@ -213,3 +213,82 @@ def test_hid_sender_records_last_busy():
     time.sleep(0.2)
     sender.close()
     assert sender.last_busy is not None
+
+
+def test_late_manual_rpc_error_is_not_a_dock_failure():
+    import json
+
+    from jetkvm_core import JetKVMClient
+
+    class Chan:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, text):
+            self.sent.append(json.loads(text))
+
+    kvm = JetKVMClient("127.0.0.1")
+    kvm.rpc = Chan()
+    kvm.call_manual("wheelReport", {"wheelY": 1})  # id 1: the operator's
+    kvm.call("absMouseReport", {"x": 1, "y": 1, "buttons": 0})  # id 2: Core's own
+    kvm._on_rpc_message(json.dumps({"id": 1, "error": {"message": "manual wheel failed"}}))
+    assert kvm.rpc_errors == []  # the late manual error is attributed to the operator
+    kvm._on_rpc_message(json.dumps({"id": 2, "error": {"message": "dock failed"}}))
+    assert kvm.rpc_errors == ["dock failed"]  # Core's own error still counts
+    assert kvm._manual_ids == {}
+
+
+def _press_a_and_left_button(srv):
+    for method, params in (("keyboardReport", {"modifier": 8, "keys": [4]}),
+                           ("absMouseReport", {"x": 5, "y": 6, "buttons": 1})):
+        assert _send(srv, "hid", device="DFU-01", method=method, params=params)["status"] == "ok"
+
+
+def test_dock_handover_releases_manual_keys_and_buttons(tmp_path, monkeypatch):
+    from hid_session import FlowError
+
+    srv_box = {}
+    at_dock = {}
+
+    async def dock(kvm_arg, diagnostics_key, template_root=None, threshold=0.8, stats=None):
+        import asyncio
+
+        at_dock["calls"] = list(kvm_arg.rpc_calls)
+        at_dock["release"] = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: _send(srv_box["srv"], "hid", device="DFU-01", method="keyboardReport",
+                                params={"modifier": 0, "keys": []}))
+        raise FlowError("hid_failed", "stop")
+
+    srv, kvm, _ = _check_rig(tmp_path, None, monkeypatch)
+    srv.visibility_lost_sec = 0.5
+    import monitor_flow
+    monkeypatch.setattr(monitor_flow, "bring_log_solution_forward", dock)
+    srv_box["srv"] = srv
+    try:
+        _press_a_and_left_button(srv)
+        _send(srv, "check_start", device="DFU-01", timeout_sec=3)
+        calls = at_dock["calls"]
+        # Before Core's Dock click the held Cmd+A and the mouse button were released.
+        assert ("keyboardReport", {"modifier": 0, "keys": []}) in calls
+        assert ("absMouseReport", {"x": 5, "y": 6, "buttons": 0}) in calls
+        assert at_dock["release"]["error"] == "device_busy"  # the late release is dropped, harmlessly
+        kbd = [c for c in kvm.rpc_calls if c[0] == "keyboardReport"][-1]
+        mouse = [c for c in kvm.rpc_calls if c[0] == "absMouseReport"][-1]
+        assert kbd[1] == {"modifier": 0, "keys": []} and mouse[1]["buttons"] == 0  # remote ends neutral
+    finally:
+        srv.stop()
+        srv.wait(timeout=2.0)
+
+
+def test_lock_taking_command_releases_manual_state(core):
+    srv, kvm = core
+    for method, params in (("keyboardReport", {"modifier": 2, "keys": [4]}),
+                           ("absMouseReport", {"x": 1, "y": 2, "buttons": 1})):
+        assert _send(srv, "hid", method=method, params=params)["status"] == "ok"
+    kvm.rpc_calls.clear()
+    srv._neutralize_manual_hid("BT-01", kvm)
+    assert kvm.rpc_calls == [("keyboardReport", {"modifier": 0, "keys": []}),
+                             ("absMouseReport", {"x": 1, "y": 2, "buttons": 0})]
+    kvm.rpc_calls.clear()
+    srv._neutralize_manual_hid("BT-01", kvm)
+    assert kvm.rpc_calls == []  # nothing left down: nothing sent

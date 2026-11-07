@@ -192,6 +192,11 @@ def _hid_args(req: Dict[str, Any], entry: Any) -> Tuple[str, Dict[str, Any]]:
 _WAITING_CHECKS = frozenset({"check_start", "check_finish"})
 
 
+def _manual_call(kvm: Any, method: str, params: Dict[str, Any]) -> None:
+    """Send an operator HID report; a KVM that attributes RPC replies keeps its errors out of the flows."""
+    getattr(kvm, "call_manual", kvm.call)(method, params)
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """Every rule of one protocol command: what validation accepts, how dispatch runs it, what the reply carries.
@@ -814,12 +819,35 @@ class TcpJsonServer:
                         "message": "An automated command is running; manual HID is dropped"}
         method, params = args
         try:
-            ctx.kvm.call(method, params)
+            _manual_call(ctx.kvm, method, params)
+            self._note_manual(device_id, method, params)
         except Exception as exc:
             logger.warning("Manual HID %s failed on %s: %s", method, device_id, exc,
                            extra={"zh": "手動 HID %s 在 %s 失敗: %s"})
             return {"status": "error", "error": "hid_failed", "message": "HID report could not be sent"}
         return {"status": "ok", "data": {}}
+
+    def _note_manual(self, device_id: str, method: str, params: Dict[str, Any]) -> None:
+        """Remember the last manual keyboard / mouse report that reached the target."""
+        state = self._slot(device_id).manual_hid
+        if method == "keyboardReport":
+            state["kbd"] = params if (params.get("modifier") or params.get("keys")) else None
+        elif method == "absMouseReport":
+            state["mouse"] = params if params.get("buttons") else None
+
+    def _neutralize_manual_hid(self, device_id: str, kvm: Any) -> None:
+        """Core takes over HID: release keys / buttons a manual press left down (its release would be dropped)."""
+        state = self._slot(device_id).manual_hid
+        kbd, mouse = state["kbd"], state["mouse"]
+        state["kbd"] = state["mouse"] = None
+        try:
+            if kbd is not None:
+                _manual_call(kvm, "keyboardReport", {"modifier": 0, "keys": []})
+            if mouse is not None:
+                _manual_call(kvm, "absMouseReport", {"x": mouse["x"], "y": mouse["y"], "buttons": 0})
+        except Exception:
+            logger.warning("Releasing manual HID on %s failed", device_id, exc_info=True,
+                           extra={"zh": "釋放 %s 的手動 HID 失敗"})
 
     async def _handle_check_start(self, ctx: CommandContext, args: float) -> Dict[str, Any]:
         """check_start: two fresh frames of activity, or a finished round delivered once."""
@@ -894,6 +922,7 @@ class TcpJsonServer:
                 return outcome.payload
             if isinstance(outcome, ClickDock):
                 slot.dock_recovering = True  # Core itself sends HID now: manual HID is dropped (ADR-0008)
+                self._neutralize_manual_hid(entry.device_id, kvm)  # no atomic gap: no await since the flag
                 try:
                     clicked = await bring_log_solution_forward(kvm, template_root=self._template_root(),
                                                                diagnostics_key=entry.device_id, stats=slot.stats)
@@ -1033,6 +1062,8 @@ class TcpJsonServer:
             reader=reader,
             writer=writer,
         )
+        if device_id is not None and spec.takes_lock and kvm_client is not None and spec.name not in _WAITING_CHECKS:
+            self._neutralize_manual_hid(device_id, kvm_client)
         try:
             if inspect.iscoroutinefunction(spec.handler):
                 result = await spec.handler(ctx, admitted.args)

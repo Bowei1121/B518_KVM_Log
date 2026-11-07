@@ -207,7 +207,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "stream_mode_monitor": "Monitor",
         "stream_mode_control": "Manual control",
         "streaming_hint_control": "Streaming (click the picture to control the remote machine; mouse move/click/wheel + keyboard; ignored while Core is operating automatically: clicking the Dock, pressing Start, entering barcodes)",
-        "streaming_hint_busy": "Core is sending HID automatically; manual input ignored",
+        "streaming_hint_busy": "An automated command is running on this device; manual input ignored",
         # ---- match results window
         "match_title": "Latest match results",
         "match_device": "Device:",
@@ -521,7 +521,7 @@ STRINGS: Dict[str, Dict[str, str]] = {
         "stream_mode_monitor": "監看",
         "stream_mode_control": "手動控制",
         "streaming_hint_control": "串流中 (點畫面操作遠端; 滑鼠移動/點擊/滾輪 + 鍵盤；Core 正在自動操作（點 Dock、按開始、輸入條碼）時，手動操作會被忽略)",
-        "streaming_hint_busy": "自動指令送出 HID 中，手動操作已忽略",
+        "streaming_hint_busy": "設備正在執行自動指令，手動操作已忽略",
         # ---- match results window
         "match_title": "最近一次匹配結果",
         "match_device": "設備：",

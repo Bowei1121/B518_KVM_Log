@@ -86,6 +86,7 @@ class JetKVMClient:
         self._ws = None
         self._recv_task = None
         self.rpc_errors = []          # 裝置回傳的 error (例如 HID 寫入失敗)
+        self._manual_ids = {}         # 手動 HID 的 JSON-RPC id (有序, 上限 256): 它們的回覆不算 flow 的錯誤
 
     # ---- 連線 ----
     def _login_cookie(self):
@@ -109,17 +110,7 @@ class JetKVMClient:
         def _open():
             rpc_open.set()
 
-        @self.rpc.on("message")
-        def _rpc_msg(msg):
-            # 記錄裝置回傳的 error (例如 HID 寫入失敗: USB 連線中斷)
-            try:
-                j = json.loads(msg)
-            except Exception:
-                return
-            if isinstance(j, dict) and j.get("error"):
-                err = j["error"]
-                detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
-                self.rpc_errors.append(str(detail))
+        self.rpc.on("message")(self._on_rpc_message)
 
         self._watch_session(pc, first_frame)
 
@@ -287,10 +278,31 @@ class JetKVMClient:
             pass
 
     # ---- 輸入 ----
+    def _on_rpc_message(self, msg):
+        # 記錄裝置回傳的 error (例如 HID 寫入失敗: USB 連線中斷)
+        try:
+            j = json.loads(msg)
+        except Exception:
+            return
+        if isinstance(j, dict) and j.get("id") in self._manual_ids:
+            self._manual_ids.pop(j["id"], None)  # late manual HID reply: never a flow's hid_failed
+            return
+        if isinstance(j, dict) and j.get("error"):
+            err = j["error"]
+            detail = err.get("data") or err.get("message") if isinstance(err, dict) else err
+            self.rpc_errors.append(str(detail))
+
     def call(self, method, params):
         self._id += 1
         self.rpc.send(json.dumps({"jsonrpc": "2.0", "method": method,
                                   "params": params, "id": self._id}))
+
+    def call_manual(self, method, params):
+        """Like ``call`` for operator HID: its reply (even a late error) is kept out of ``rpc_errors``."""
+        self._manual_ids[self._id + 1] = True
+        while len(self._manual_ids) > 256:
+            self._manual_ids.pop(next(iter(self._manual_ids)))
+        self.call(method, params)
 
     def _to_abs(self, px, py):
         w, h = self.size

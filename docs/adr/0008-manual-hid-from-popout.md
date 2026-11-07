@@ -14,6 +14,9 @@ ADR-0004 解耦後 Monitor UI 只透過 TCP 連 Core，沒有 KVM 連線，#183 
 3. Monitor UI 以獨立連線（`hid`）加背景佇列送出：滑鼠移動（按鍵遮罩相同）合併為最新一筆，按鍵／鍵盤／滾輪保序；設備 ID 於入列時固定；pop-out 固定綁定開啟時的設備（換設備須關閉重開）。佇列滿時只丟滾輪與無按鍵移動，按鍵／按鈕狀態變化不丟；關窗時已排隊的放開報告會送完。收到 `device_busy` 清空佇列。
 4. pop-out 底部提供「監看／手動控制」radio，預設監看（輸入全部不送出）；切到手動控制才轉送 HID，切回監看時放開所有按鍵。提示文字註明 Core 自動操作時手動操作會被忽略；收到 `device_busy` 時狀態列短暫顯示「手動操作已忽略」（顯示狀態翻轉才重繪，不隨每次滑鼠移動刷新）。
 
+5. **自動接手時交接輸入狀態（#191 審查）**：Core 記錄每台設備最後送達的手動鍵盤／滑鼠報告；`start_test`／`input`／`monitor_start` 取得鎖後與 check 點 Dock 前（兩者之間無 await，與手動 HID 的判斷不會交錯），若有按下的修飾鍵／按鍵／滑鼠鍵，先以 `keyboardReport` 空鍵與 `absMouseReport buttons=0` 釋放，避免放開報告被丟棄造成卡鍵、或 Dock 點擊帶著修飾鍵。
+6. **RPC 錯誤歸屬（#191 審查）**：手動 HID 以 `call_manual` 送出，其 JSON-RPC id 記錄後，晚到的回覆（含錯誤）不寫入共用 `rpc_errors`，不會被 Dock 等 flow 誤判為自己的 `hid_failed`。
+
 ## Consequences
 - **Pros**: 不需 JetKVM Web UI；預設不影響 LabVIEW 自動流程。
 - **Cons**: 檢查鎖與送出之間有極小競態；LabVIEW 指令開始瞬間若恰有手動 HID，可能插入一筆報告。若自動流程開始時操作員正按住某鍵，放開報告會被丟棄，目標機按鍵可能卡住（失焦時 UI 會再送全放開）。check 長輪詢期間手動操作放行，若此時 check 恰好開始點 Dock，兩者的 HID 報告可能交錯（check 的 Dock 點擊約數百毫秒）；操作員在 `start_test`／`input` 期間不應操作 pop-out。
