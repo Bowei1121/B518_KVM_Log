@@ -35,6 +35,7 @@
 - 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時，第一次 DFU 動作會自動建立全螢幕預設（0,0,1920,1080）；現場請改成實際視窗矩形以縮小範圍。
 - **決策記錄（2026-11-07，使用者於 session 中明確選擇）**：缺 `DFU_region.json` 時自動建立全螢幕預設以便現場先跑；已知限制：預設全螢幕時，視窗外同圖樣的 checkbox／OK／輸入欄位可能被誤採納。完成實際視窗矩形設定後此限制消失；固定矩形要求 DFU 視窗位置保持一致。矩形小於 checkbox 模板時回 `hid_failed`。
 - `DFU/DFU_dock_icon.png`、`DFU/DFU_window.png`、`DFU/DFU_input.png`、`DFU/DFU_button.png`（OK 按鈕）
+  - **`DFU_button.png` 要截 focus 狀態（藍底白字）**：`input` 輸完 SN 後 focus 會停在 OK 上，`start_test` 先點 Dock 讓視窗回到前景再找 OK，這時 OK 是藍底白字。比對用灰階 `TM_CCOEFF_NORMED`，藍底白字和白底黑字明暗相反，一張模板無法同時涵蓋兩種狀態。截法：跑完 `input`、點 DFU Dock 圖示後再裁 OK。
 - `DFU/DFU_checkbox_checked.png`、`DFU/DFU_checkbox_unchecked.png`
   - **兩張都要在 DFU 視窗「取得焦點」時截取**（先點 Dock 圖示讓視窗到前景）。macOS 非焦點視窗的勾選 checkbox 是灰色、焦點時才是藍底白勾；`input` 一律先點 Dock 前景化，所以用非焦點狀態做的模板永遠比對不到（2026-11-08 現場 `hid_failed` 的原因）。藍底備援只涵蓋焦點狀態。
 - `COMMON/COMMON_log_solution_dock_icon.png`：Log Solution 的 Dock 圖示，三站共用，`monitor_start` 與 `check_start`／`check_finish` 的可見性恢復使用。
