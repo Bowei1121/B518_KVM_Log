@@ -36,6 +36,7 @@
 - **決策記錄（2026-11-07，使用者於 session 中明確選擇）**：缺 `DFU_region.json` 時自動建立全螢幕預設以便現場先跑；已知限制：預設全螢幕時，視窗外同圖樣的 checkbox／OK／輸入欄位可能被誤採納。完成實際視窗矩形設定後此限制消失；固定矩形要求 DFU 視窗位置保持一致。矩形小於 checkbox 模板時回 `hid_failed`。
 - `DFU/DFU_dock_icon.png`、`DFU/DFU_window.png`、`DFU/DFU_input.png`、`DFU/DFU_button.png`（OK 按鈕）
 - `DFU/DFU_checkbox_checked.png`、`DFU/DFU_checkbox_unchecked.png`
+  - **兩張都要在 DFU 視窗「取得焦點」時截取**（先點 Dock 圖示讓視窗到前景）。macOS 非焦點視窗的勾選 checkbox 是灰色、焦點時才是藍底白勾；`input` 一律先點 Dock 前景化，所以用非焦點狀態做的模板永遠比對不到（2026-11-08 現場 `hid_failed` 的原因）。藍底備援只涵蓋焦點狀態。
 - `COMMON/COMMON_log_solution_dock_icon.png`：Log Solution 的 Dock 圖示，三站共用，`monitor_start` 與 `check_start`／`check_finish` 的可見性恢復使用。
 
 checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板。結果判讀不使用任何模板，全部來自 Log Solution 的顯示契約。
