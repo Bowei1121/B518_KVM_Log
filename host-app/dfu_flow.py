@@ -1,9 +1,14 @@
 """DFU input 1.0: find every checkbox in the DFU window, then enter SNs by channel.
 
 Channels come from the device list. The window is located with a window template,
-checkboxes with the checked/unchecked templates only, and channels 1..N are the
-checkboxes read top to bottom, then left to right. Any count other than the
-configured channel count refuses the round before a single SN is typed.
+checkboxes with the checked/unchecked templates (plus a blue-fill fallback for the
+macOS checked state), and channels 1..N are the first N checkboxes read top to
+bottom, then left to right. The ATE window may show more slots than the device's
+channels (e.g. a 7-slot DFU window on a 4-channel round): the extra boxes are kept
+unchecked. Extra boxes are only accepted once DFU_region.json is narrowed from the
+full-screen default; otherwise any count other than the channel count refuses the
+round (a stray checkbox outside the window would shift every channel). Fewer
+checkboxes than channels always refuses the round before any SN is typed.
 """
 import asyncio
 import json
@@ -20,6 +25,17 @@ CHECKBOX_THRESHOLD = 0.80
 FOCUS_DELAY = 0.30
 SN_MAX_LENGTH = 64
 ROW_TOLERANCE = 0.5  # fraction of a checkbox height that still counts as the same row
+
+# macOS checked checkbox = solid accent-blue square with a white tick. Over a JetKVM frame the
+# grayscale checked template can miss it (the slot panel behind it is tinted per slot), so a
+# blue blob the size of the unchecked template also counts as a checked box.
+BLUE_MIN_B = 180
+BLUE_MIN_B_MINUS_R = 110
+BLUE_MIN_B_MINUS_G = 40
+BLUE_MIN_FILL = 0.45
+BLUE_MIN_SIDE = 6
+BLUE_SIZE_RANGE = (0.4, 1.3)  # blob side relative to the unchecked template side
+BLUE_ASPECT_RANGE = (0.8, 1.2)  # Log Solution folder icons are ~1.25+ wide, so they stay out
 
 
 def parse_items(items, channels):
@@ -61,6 +77,30 @@ def _intersects(a, b):
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
 
 
+def _blue_checked(region_bgr, template_shape):
+    """Checked-looking blue squares in ``region_bgr`` as ``[(x, y, w, h)]`` template-sized boxes."""
+    th, tw = template_shape[:2]
+    pixels = region_bgr.astype(np.int16)
+    b, g, r = pixels[..., 0], pixels[..., 1], pixels[..., 2]
+    mask = ((b >= BLUE_MIN_B) & (b - r >= BLUE_MIN_B_MINUS_R) & (b - g >= BLUE_MIN_B_MINUS_G)).astype(np.uint8)
+    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    low = max(BLUE_MIN_SIDE, BLUE_SIZE_RANGE[0] * min(tw, th))
+    high = BLUE_SIZE_RANGE[1] * max(tw, th)
+    region_h, region_w = mask.shape
+    boxes = []
+    for index in range(1, count):
+        x, y, w, h, area = (int(v) for v in stats[index])
+        if not (low <= w <= high and low <= h <= high):
+            continue
+        if not BLUE_ASPECT_RANGE[0] <= w / h <= BLUE_ASPECT_RANGE[1] or area / (w * h) < BLUE_MIN_FILL:
+            continue
+        # Report a template-sized box centred on the blob so the click lands in the middle.
+        bx = min(max(x + w // 2 - tw // 2, 0), max(region_w - tw, 0))
+        by = min(max(y + h // 2 - th // 2, 0), max(region_h - th, 0))
+        boxes.append((bx, by, tw, th))
+    return boxes
+
+
 def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_THRESHOLD):
     """Every checkbox inside the window as ``[{state, score, box}]`` in channel order (1..N)."""
     wx, wy, ww, wh = window_box
@@ -73,6 +113,10 @@ def find_checkboxes(frame, window_box, checked, unchecked, threshold=CHECKBOX_TH
     for state, template in (("checked", checked), ("unchecked", unchecked)):
         for score, x, y, w, h in _find_matches(gray, template, threshold):
             found.append({"state": state, "score": score, "box": (wx + x, wy + y, w, h)})
+    if frame.ndim == 3:
+        # Fallback scores sit just below any template hit, so a real template match always wins.
+        for x, y, w, h in _blue_checked(frame[wy:wy + wh, wx:wx + ww], unchecked.shape):
+            found.append({"state": "checked", "score": threshold - 1e-6, "box": (wx + x, wy + y, w, h)})
     # A single box cannot be both states; the stronger match wins.
     found.sort(key=lambda box: box["score"], reverse=True)
     kept = []
@@ -163,17 +207,28 @@ def _control(session, frame, region, template, key):
     return session.find(key, template, frame, within=region, downscale=False)
 
 
-def _boxes_or_fail(frame, window, templates, channels, diagnostics):
+def _allows_extra_boxes(fixed):
+    """Extra ATE slots are trusted only inside a DFU_region.json narrowed from the full-screen default."""
+    return fixed is not None and fixed != tuple(DEFAULT_REGION[k] for k in ("x", "y", "width", "height"))
+
+
+def _boxes_or_fail(frame, window, templates, channels, diagnostics, allow_extra=False):
     boxes = find_checkboxes(frame, window, templates["checkbox_checked"], templates["checkbox_unchecked"])
+    expected = ("at least {}" if allow_extra else "{}").format(channels)
+    expected_zh = ("至少 {}" if allow_extra else "{}").format(channels)
     diagnostics.record("checkboxes", len(boxes), CHECKBOX_THRESHOLD, frame, None,
-                       note={"en": "expected {}".format(channels), "zh": "預期 {} 個 checkbox".format(channels)})
-    if len(boxes) != channels:
-        raise FlowError("hid_failed", f"DFU window has {len(boxes)} checkboxes; device is configured for {channels} channels")
+                       note={"en": "expected " + expected, "zh": "預期 {} 個 checkbox".format(expected_zh)})
+    if len(boxes) < channels or (len(boxes) > channels and not allow_extra):
+        hint = "" if allow_extra or len(boxes) < channels else f"; set {REGION_FILE} to the DFU window to allow extra ATE slots"
+        raise FlowError("hid_failed", f"DFU window has {len(boxes)} checkboxes; device is configured for {channels} channels{hint}")
     return boxes
 
 
 def _mismatches(boxes, wanted):
-    """Checkboxes whose state differs from the request: checked for requested channels, unchecked otherwise."""
+    """Checkboxes whose state differs from the request: checked for requested channels, unchecked otherwise.
+
+    Boxes past the configured channels (extra ATE slots) are never requested, so they are kept unchecked.
+    """
     result = []
     for channel, box in enumerate(boxes, 1):
         desired = "checked" if channel in wanted else "unchecked"
@@ -205,7 +260,8 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
 
         frame = session.frame(missing="No JetKVM frame available after Dock focus")
         window = _window(session, frame, templates.get("window"), "window", fixed)
-        boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics)
+        allow_extra = _allows_extra_boxes(fixed)
+        boxes = _boxes_or_fail(frame, window, templates, channels, diagnostics, allow_extra)
 
         for _channel, box in _mismatches(boxes, wanted):
             await session.click(box, failure="Checkbox HID failed")
@@ -220,7 +276,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
                 if exc.score is None:
                     raise
                 raise FlowError("hid_failed", "DFU_window not found during checkbox verification") from exc
-            boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics)
+            boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics, allow_extra)
             remaining = _mismatches(boxes, wanted)
             if not remaining:
                 frame, window = verify, verified_window

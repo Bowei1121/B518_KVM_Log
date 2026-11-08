@@ -45,7 +45,8 @@ checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板�
 1. 驗證 `items`：slot 為 1..N 的整數、不可重複，SN 為 1–64 字元（可含逗號與冒號）。不合法回 `invalid_argument`，不送 HID。
 2. 讀取 Log Solution 狀態。待命可以輸入。一般完成或人工停止完成，且本輪已 `taken` 或已回過 `manual_verification_required`，可以輸入下一輪 SN。這兩種完成狀態若本輪尚未交付、也沒回過 `manual_verification_required`，回 `log_solution_busy`。監控中、準備中、待確認也回 `log_solution_busy`。沒有影格或狀態無法讀取回 `hid_failed`。以上皆不送 HID。
 3. 以 `DFU_dock_icon.png` 定位並點擊，前景化 DFU 視窗，等待 0.3 秒。找不到或 HID 錯誤回 `hid_failed`。
-4. 在 `DFU_region.json` 設定的搜尋矩形內（window 模板已停用）找出全部 checkbox（只用兩種狀態模板）。數量必須等於通道數，否則回 `hid_failed`，不輸入任何 SN。
+4. 在 `DFU_region.json` 設定的搜尋矩形內（window 模板已停用）找出全部 checkbox：兩種狀態模板，加上「藍底實心方塊」備援（macOS 勾選狀態；寬高比 0.8–1.2、邊長為 unchecked 模板的 0.4–1.3 倍，資料夾等寬圖示不算），模板分數優先。數量少於通道數回 `hid_failed`。數量多於通道數（例如 ATE 視窗 7 格、本輪 4 通道）時：`DFU_region.json` 已從全螢幕預設改成實際矩形才接受，多出的 checkbox 一律保持不勾；仍是全螢幕預設則回 `hid_failed`（訊息提示設定 `DFU_region.json`），因為範圍外的 checkbox（如右上 `group0`）會讓所有通道錯位。以上失敗都不輸入任何 SN。
+   - **決策記錄（2026-11-08）**：現場 DFU ATE（AtlasUI）視窗固定 7 格，Demo 與 Log Solution 為 4 通道；原「數量必須等於通道數」使 `channels=4` 無法輸入、`channels=7` 則 `check_finish` 會 `capacity_mismatch`。改為「≥ 通道數且只在已設定矩形時接受多出的格」。
 5. 排序：依 y 分列（同列容許半個 checkbox 高的差距），同列依 x 由左到右。排序後第 1 個為通道 1，依此類推。
 6. 請求的通道應為 checked，其餘為 unchecked。只點擊狀態不符的 checkbox，等待 0.3 秒後以新影格複驗；仍不符的只重試一次。第二次仍不符回 `hid_failed`，不輸入 SN。
 7. 以複驗影格定位 input 欄位，點一次，依 slot 由小到大逐筆輸入 SN，每筆後按 Enter。`data.entered` 記錄已輸入的 slot。
