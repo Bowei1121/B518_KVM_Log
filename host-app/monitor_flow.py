@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 
-from hid_session import FlowError, HidSession
+from hid_session import FlowError, HidSession, neutral_pointer_position  # noqa: F401
 from match_diagnostics import MatchDiagnostics, draw_locator_zoom
 from log_solution_heartbeat import HEARTBEAT_STOPPED, HEARTBEAT_STOPPED_MESSAGE
 from log_solution_reader import MarkerState, explain_app_frame
@@ -30,15 +30,6 @@ MATCH_THRESHOLD = 0.80
 MONITOR_CONFIRM_SEC = 3.0  # wait for Log Solution to show on screen after the Dock click
 MONITOR_START_TIMEOUT_SEC = 10.0  # wait for Monitoring after Cmd+Shift+M
 POLL_INTERVAL_SEC = 0.05
-
-
-def neutral_pointer_position(frame):
-    """Where the pointer rests after a Dock click: top edge, mid-screen.
-
-    Off the Dock (no hover magnification over the icon), off the Log Solution band, and away from
-    the screen corners (macOS Hot Corners).
-    """
-    return frame.shape[1] // 2, 1
 
 
 def _busy(state):
@@ -83,18 +74,28 @@ def _record_reading(diagnostics, key, frame, threshold, note, matched):
                                plain=True, note=note)
 
 
-async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None):
+async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliable=None, last_reliable=None,
+                                     deadline=None):
     """``(observation, last_reason)``: the newest reliable reading within timeout_sec, or None with
     the reason of the last unreliable one (``no_frame`` when there was no picture).
 
     ``last_unreliable`` (optional dict) receives ``{"frame": ...}`` with the newest unreliable picture, so the
     caller can keep it as diagnostics when the wait times out. ``last_reliable`` likewise receives the
     picture of the reliable reading that ended the wait.
+
+    ``deadline`` (absolute ``time.monotonic()``) makes the wait strict: nothing is read once it has passed, and
+    a reading finished after it is not accepted, so a reliable picture that shows up late never counts.
     """
-    deadline = time.monotonic() + timeout_sec
+    strict = deadline is not None
+    if deadline is None:
+        deadline = time.monotonic() + timeout_sec
     last_reason = "no_frame"
     while True:
+        if strict and time.monotonic() >= deadline:
+            return None, last_reason
         frame, observation = read_latest_app_frame_recorded(kvm, stats)
+        if strict and time.monotonic() > deadline:
+            return None, last_reason
         if observation is not None and observation.reliable:
             if frame is not None and last_reliable is not None:
                 last_reliable["frame"] = frame
@@ -108,8 +109,8 @@ async def _wait_for_reliable_reading(kvm, timeout_sec, stats=None, last_unreliab
         await asyncio.sleep(POLL_INTERVAL_SEC)
 
 
-async def click_dock_icon(kvm, frame, session):
-    """Click the shared Dock icon once. Returns ``(clicked, score)``; no click when the icon is not on screen.
+async def click_dock_icon(kvm, frame, session, confirm_sec=None):
+    """Click the shared Dock icon once, park the pointer, wait for fresh frames (within ``confirm_sec`` of the click). Returns ``(clicked, score)``; no click when the icon is not on screen.
 
     A missing template or a HID error raises ``FlowError(hid_failed)``.
     """
@@ -118,13 +119,9 @@ async def click_dock_icon(kvm, frame, session):
     if template is None:
         raise FlowError("hid_failed", f"Missing Log Solution Dock icon template: {dock_path}")
 
-    async def park():
-        if hasattr(kvm, "move"):
-            await kvm.move(*neutral_pointer_position(frame))
-
     try:
-        box = await session.focus_dock(
-            "log_solution_dock_icon", template, frame, message="Dock icon not found", after=park)
+        box, _fresh = await session.focus_dock_fresh(
+            "log_solution_dock_icon", template, frame, message="Dock icon not found", within_sec=confirm_sec)
     except FlowError as exc:
         if exc.score is None:
             raise
@@ -188,14 +185,16 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
         if observation.reliable and observation.state == MarkerState.REVIEW:
             raise _review("before start")
         if observation.may_send_hid:
-            clicked, score = await click_dock_icon(kvm, frame, session)
+            clicked, score = await click_dock_icon(kvm, frame, session, confirm_sec)
             if not clicked:
                 raise FlowError("log_solution_not_found",
                                 f"Log Solution Dock icon not found (similarity {score:.2f})")
             unreliable = {}
             reliable = {}
+            # One confirm window from the click: the fresh-frame wait above is part of it, not added to it.
             observation, last_reason = await _wait_for_reliable_reading(
-                kvm, confirm_sec, gate.stats, unreliable, reliable)
+                kvm, confirm_sec, gate.stats, unreliable, reliable,
+                deadline=session.dock_clicked_at + confirm_sec)
             if observation is not None:
                 try:  # best-effort diagnostics: the annotated reading of the screen we are about to act on
                     _record_reading(
