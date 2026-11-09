@@ -270,3 +270,73 @@ def test_wide_blue_icons_are_not_mistaken_for_checked_boxes():
     useless_checked = np.random.RandomState(0).randint(0, 255, (BOX, BOX), dtype=np.uint8)
 
     assert dfu_flow.find_checkboxes(frame, (0, 0, 200, 120), useless_checked, unchecked) == []
+
+
+@pytest.mark.parametrize("region", [(0, 0, 1921, 1080), (0, 0, 20000, 20000),
+                                   (0, 0, 1920, 1080), (0, 0, 1919, 1080)])
+def test_extra_boxes_permission_uses_clipped_region_and_actual_frame(region):
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    assert dfu_flow._allows_extra_boxes(frame, dfu_flow._clip(frame, region)) == (region[2] < 1920)
+
+
+@pytest.mark.parametrize("width,height", [(1921, 1080), (20000, 20000)])
+def test_oversized_full_frame_region_requires_exact_count(root, width, height):
+    import json
+    save_templates(root, SEVEN)
+    (root / "DFU" / "DFU_region.json").write_text(json.dumps(
+        {"x": 0, "y": 0, "width": width, "height": height}))
+    kvm = SyntheticDfuKVM(SEVEN)
+
+    with pytest.raises(FlowError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert not any(event[0] == "type" for event in kvm.events)
+
+
+@pytest.mark.parametrize("change", ["missing", "inserted", "reordered", "second_verify"])
+def test_changed_channel_identity_stops_before_correction_or_typing(root, monkeypatch, change):
+    save_templates(root, SEVEN)
+    _narrow_region(root)
+    kvm = SyntheticDfuKVM(SEVEN)
+    if change == "second_verify":
+        kvm.lost_clicks = [0]
+    find = dfu_flow.find_checkboxes
+    calls = 0
+    events_at_change = []
+
+    def changed_boxes(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        boxes = find(*args, **kwargs)
+        if calls == (3 if change == "second_verify" else 2):
+            events_at_change.extend(kvm.events)
+            if change in ("missing", "second_verify"):
+                return boxes[1:]  # 7 -> 6 still passes the old >= 4 count check.
+            if change == "inserted":
+                return [{"state": "unchecked", "box": (20, 30, BOX, BOX)}] + boxes
+            return [boxes[1], boxes[0]] + boxes[2:]
+        return boxes
+
+    monkeypatch.setattr(dfu_flow, "find_checkboxes", changed_boxes)
+    with pytest.raises(FlowError) as excinfo:
+        _run(kvm, 4, [{"slot": 1, "sn": "SN1"}], root)
+
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value).isascii()
+    assert "identity changed" in str(excinfo.value)
+    assert kvm.events == events_at_change  # No correction click can remap a channel.
+    assert not any(event[0] == "type" for event in kvm.events)
+
+
+def test_locked_slots_allow_small_jitter_and_changes_to_trailing_extras():
+    slots = [(x, y, BOX, BOX) for x, y in SEVEN[:4]]
+    boxes = [{"box": (x + 2, y - 2, w, h)} for x, y, w, h in slots]
+    boxes.append({"box": (100, 100, BOX, BOX)})
+    dfu_flow._verify_slots(slots, boxes)
+
+
+def test_locked_slot_must_have_a_unique_position_match():
+    slot = (40, 50, BOX, BOX)
+    with pytest.raises(FlowError, match="identity changed"):
+        dfu_flow._verify_slots([slot], [{"box": slot}, {"box": slot}])

@@ -207,9 +207,24 @@ def _control(session, frame, region, template, key):
     return session.find(key, template, frame, within=region, downscale=False)
 
 
-def _allows_extra_boxes(fixed):
-    """Extra ATE slots are trusted only inside a DFU_region.json narrowed from the full-screen default."""
-    return fixed is not None and fixed != tuple(DEFAULT_REGION[k] for k in ("x", "y", "width", "height"))
+def _allows_extra_boxes(frame, region):
+    """Trust extra slots only when the clipped DFU region excludes part of the frame."""
+    frame_h, frame_w = frame.shape[:2]
+    return _clip(frame, region) != (0, 0, frame_w, frame_h)
+
+
+def _verify_slots(first_slots, boxes):
+    """Require each locked channel to uniquely match the same ordered checkbox."""
+    for index, (x, y, w, h) in enumerate(first_slots):
+        tolerance = min(3, min(w, h) / 4)
+        matches = []
+        for candidate, box in enumerate(boxes):
+            bx, by, bw, bh = box["box"]
+            if (abs(x + w / 2 - bx - bw / 2) <= tolerance
+                    and abs(y + h / 2 - by - bh / 2) <= tolerance):
+                matches.append(candidate)
+        if matches != [index]:
+            raise FlowError("hid_failed", "DFU checkbox slot identity changed during verification")
 
 
 def _boxes_or_fail(frame, window, templates, channels, diagnostics, suffix="", allow_extra=False):
@@ -259,14 +274,15 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         _box, frame = await session.focus_dock_fresh(
             "dock_icon", templates["dock_icon"], frame, message=None, settle=FOCUS_DELAY)
 
-        allow_extra = _allows_extra_boxes(fixed)
-
         def find_controls(image, suffix):
             found = _window(session, image, templates.get("window"), "window" + suffix, fixed)
-            return found, _boxes_or_fail(image, found, templates, channels, diagnostics, suffix, allow_extra)
+            return found, _boxes_or_fail(image, found, templates, channels, diagnostics, suffix,
+                                        _allows_extra_boxes(image, found))
 
         # Nothing was typed or clicked yet: one retry on fresh frames is safe. The Dock is not clicked again.
         frame, (window, boxes) = await session.match_with_retry(frame, find_controls)
+
+        first_slots = [box["box"] for box in boxes[:channels]]
 
         for _channel, box in _mismatches(boxes, wanted):
             await session.click(box, failure="Checkbox HID failed")
@@ -281,7 +297,9 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
                 if exc.score is None:
                     raise
                 raise FlowError("hid_failed", "DFU_window not found during checkbox verification") from exc
-            boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics, allow_extra=allow_extra)
+            boxes = _boxes_or_fail(verify, verified_window, templates, channels, diagnostics,
+                                   allow_extra=_allows_extra_boxes(verify, verified_window))
+            _verify_slots(first_slots, boxes)
             remaining = _mismatches(boxes, wanted)
             if not remaining:
                 frame, window = verify, verified_window
