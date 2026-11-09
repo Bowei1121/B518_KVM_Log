@@ -35,7 +35,9 @@
 - 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時，第一次 DFU 動作會自動建立全螢幕預設（0,0,1920,1080）；現場請改成實際視窗矩形以縮小範圍。
 - **決策記錄（2026-11-07，使用者於 session 中明確選擇）**：缺 `DFU_region.json` 時自動建立全螢幕預設以便現場先跑；已知限制：預設全螢幕時，視窗外同圖樣的 checkbox／OK／輸入欄位可能被誤採納。完成實際視窗矩形設定後此限制消失；固定矩形要求 DFU 視窗位置保持一致。矩形小於 checkbox 模板時回 `hid_failed`。
 - `DFU/DFU_dock_icon.png`、`DFU/DFU_window.png`、`DFU/DFU_input.png`、`DFU/DFU_button.png`（OK 按鈕）
+  - **`DFU_button.png` 要截 focus 狀態（藍底白字）**：`input` 輸完 SN 後 focus 會停在 OK 上，`start_test` 先點 Dock 讓視窗回到前景再找 OK，這時 OK 是藍底白字。比對用灰階 `TM_CCOEFF_NORMED`，藍底白字和白底黑字明暗相反，一張模板無法同時涵蓋兩種狀態。截法：跑完 `input`、點 DFU Dock 圖示後再裁 OK。
 - `DFU/DFU_checkbox_checked.png`、`DFU/DFU_checkbox_unchecked.png`
+  - **兩張都要在 DFU 視窗「取得焦點」時截取**（先點 Dock 圖示讓視窗到前景）。macOS 非焦點視窗的勾選 checkbox 是灰色、焦點時才是藍底白勾；`input` 一律先點 Dock 前景化，所以用非焦點狀態做的模板永遠比對不到（2026-11-08 現場 `hid_failed` 的原因）。藍底備援只涵蓋焦點狀態。
 - `COMMON/COMMON_log_solution_dock_icon.png`：Log Solution 的 Dock 圖示，三站共用，`monitor_start` 與 `check_start`／`check_finish` 的可見性恢復使用。
 
 checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板。結果判讀不使用任何模板，全部來自 Log Solution 的顯示契約。
@@ -45,7 +47,8 @@ checkbox 只需這兩種狀態模板，不需要每通道一張的錨點模板�
 1. 驗證 `items`：slot 為 1..N 的整數、不可重複，SN 為 1–64 字元（可含逗號與冒號）。不合法回 `invalid_argument`，不送 HID。
 2. 讀取 Log Solution 狀態。待命可以輸入。一般完成或人工停止完成，且本輪已 `taken` 或已回過 `manual_verification_required`，可以輸入下一輪 SN。這兩種完成狀態若本輪尚未交付、也沒回過 `manual_verification_required`，回 `log_solution_busy`。監控中、準備中、待確認也回 `log_solution_busy`。沒有影格或狀態無法讀取回 `hid_failed`。以上皆不送 HID。
 3. 以 `DFU_dock_icon.png` 定位並點擊，立刻把滑鼠移到停放點，前景化 DFU 視窗，等待 0.3 秒，再等至少 2 張移開滑鼠之後的新影格（上限 2 秒，逾時用最新影格並在診斷記 `fresh_frame_timeout`）。找不到或 HID 錯誤回 `hid_failed`。
-4. 在 `DFU_region.json` 設定的搜尋矩形內（window 模板已停用）找出全部 checkbox（只用兩種狀態模板）。數量必須等於通道數，否則先移開滑鼠、等新影格、**重試比對一次**（此階段尚未送出任何 HID，不會重複點擊或輸入；不再點 Dock，診斷 key 加 `_retry`）；兩次都失敗回 `hid_failed`，不輸入任何 SN。
+4. 在 `DFU_region.json` 設定的搜尋矩形內（window 模板已停用）找出全部 checkbox：兩種狀態模板，加上「藍底實心方塊」備援（macOS 勾選狀態；寬高比 0.8–1.2、邊長為 unchecked 模板的 0.4–1.3 倍，資料夾等寬圖示不算），模板分數優先。數量少於通道數，或在全螢幕預設矩形下數量多於通道數（訊息提示設定 `DFU_region.json`，因為範圍外的 checkbox 如右上 `group0` 會讓所有通道錯位）時，先移開滑鼠、等新影格、**重試比對一次**（此階段尚未送出任何 HID，不會重複點擊或輸入；不再點 Dock，診斷 key 加 `_retry`）；兩次都失敗回 `hid_failed`，不輸入任何 SN。`DFU_region.json` 已從全螢幕預設改成實際矩形時，數量多於通道數（例如 ATE 視窗 7 格、本輪 4 通道）可接受，多出的 checkbox 一律保持不勾。
+   - **決策記錄（2026-11-08）**：現場 DFU ATE（AtlasUI）視窗固定 7 格，Demo 與 Log Solution 為 4 通道；原「數量必須等於通道數」使 `channels=4` 無法輸入、`channels=7` 則 `check_finish` 會 `capacity_mismatch`。改為「≥ 通道數且只在已設定矩形時接受多出的格」。
 5. 排序：依 y 分列（同列容許半個 checkbox 高的差距），同列依 x 由左到右。排序後第 1 個為通道 1，依此類推。
 6. 請求的通道應為 checked，其餘為 unchecked。只點擊狀態不符的 checkbox，等待 0.3 秒後以新影格複驗；仍不符的只重試一次。第二次仍不符回 `hid_failed`，不輸入 SN。
 7. 以複驗影格定位 input 欄位，點一次，依 slot 由小到大逐筆輸入 SN，每筆後按 Enter。`data.entered` 記錄已輸入的 slot。
