@@ -26,6 +26,42 @@ HISTORY_JPEG_QUALITY = 85
 # process (e.g. jetkvm_auto focus) still writing into the same template root, so they are never swept.
 STAGING_STALE_SEC = 3600
 PUBLISH_ATTEMPTS = 10
+LATEST_RETRY_DELAYS = (0.05, 0.10)
+
+
+def _latest_warning(action, exc):
+    # Do not include localized OS error text or user paths in protocol-facing logs.
+    log.warning("match diagnostics latest: %s (%s, errno=%s, winerror=%s); continuing",
+                action, type(exc).__name__, getattr(exc, "errno", None), getattr(exc, "winerror", None))
+
+
+def _reset_latest(directory):
+    """Reset with bounded retries, isolating locked files from every new round."""
+    for attempt in range(len(LATEST_RETRY_DELAYS) + 1):
+        try:
+            shutil.rmtree(str(directory))
+            break
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            _latest_warning("cleanup failed; possible sharing violation", exc)
+            if attempt < len(LATEST_RETRY_DELAYS):
+                time.sleep(LATEST_RETRY_DELAYS[attempt])
+                continue
+            try:
+                directory.rename(directory.with_name("latest_locked_" + uuid.uuid4().hex))
+            except OSError as rename_exc:
+                _latest_warning("rename failed; using isolated round directory", rename_exc)
+                directory = directory.with_name("latest_round_" + uuid.uuid4().hex)
+    directory.mkdir(parents=True, exist_ok=True)
+    # A sibling selector also works when Windows denies renaming the entire latest directory.
+    # Publish before recording so readers cannot mistake an old summary for this round.
+    selector = directory.parent / "latest_directory.txt"
+    if directory.name != "latest" or selector.exists():
+        staging = selector.with_name("latest_selector_" + uuid.uuid4().hex)
+        staging.write_text(directory.name, encoding="ascii")
+        os.replace(str(staging), str(selector))
+    return directory
 
 
 # Archive and cleanup run on one daemon worker thread: the Core TCP event loop never waits for JPEG encoding or
@@ -279,15 +315,21 @@ class MatchDiagnostics:
         self._now = now  # injectable clock (epoch seconds) for tests
         self._root = Path(template_root) / "_captures" / "match_diagnostics"
         self._annotated = {}  # image name -> annotated frame, kept for the history JPEG
-        self.directory = self._root / self.device / "latest"
-        if self.directory.exists():
-            shutil.rmtree(str(self.directory))
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory = _reset_latest(self._root / self.device / "latest")
         self.records = []
 
     @staticmethod
     def latest_directory(template_root, device):
-        return Path(template_root) / "_captures" / "match_diagnostics" / str(device).upper() / "latest"
+        parent = Path(template_root) / "_captures" / "match_diagnostics" / str(device).upper()
+        try:
+            name = (parent / "latest_directory.txt").read_text(encoding="ascii")
+        except FileNotFoundError:
+            name = "latest"
+        if name != "latest" and not (name.startswith("latest_round_") and
+                                     len(name) == len("latest_round_") + 32 and
+                                     all(c in "0123456789abcdef" for c in name[len("latest_round_"):])):
+            raise ValueError("Invalid match diagnostics latest directory selector")
+        return parent / name
 
     @classmethod
     def load(cls, template_root, device):

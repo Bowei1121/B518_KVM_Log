@@ -8,6 +8,7 @@ from unittest import mock
 
 import cv2
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 import match_diagnostics
@@ -364,6 +365,7 @@ class QueueBoundTests(unittest.TestCase):
 import sys, time, json
 from pathlib import Path
 import numpy as np
+import pytest
 sys.path.insert(0, sys.argv[1])
 import match_diagnostics as md
 flag_ready, flag_go = Path(sys.argv[3]), Path(sys.argv[4])
@@ -557,3 +559,126 @@ class NoteForLanguageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These locks are simulated on every platform; no real Windows file handles are needed.
+
+
+def _reset_error(kind):
+    if kind == "winerror32":
+        error = PermissionError(13, "sharing violation: \u6a94\u6848\u4f7f\u7528\u4e2d")
+        error.winerror = 32
+        return error
+    if kind == "permission":
+        return PermissionError(13, "access denied")
+    return OSError(16, "resource busy")
+
+
+@pytest.mark.parametrize("kind", ["permission", "winerror32", "oserror"])
+@pytest.mark.parametrize("outcome", ["retry", "rename", "isolated"])
+def test_latest_reset_lock_preserves_new_round(tmp_path, monkeypatch, caplog, kind, outcome):
+    root = tmp_path / "template"
+    old = _run(root, "old", False, time.time())
+    canonical = old.directory
+    stale_summary = (canonical / "summary.json").read_bytes()
+    real_rmtree = match_diagnostics.shutil.rmtree
+    real_rename = Path.rename
+    calls, sleeps = [], []
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == canonical:
+            calls.append(path)
+            if outcome != "retry" or len(calls) == 1:
+                raise _reset_error(kind)
+        return real_rmtree(path, *args, **kwargs)
+
+    def rename(path, target):
+        if path == canonical and outcome == "isolated":
+            raise _reset_error(kind)
+        return real_rename(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        patch.setattr(Path, "rename", rename)
+        patch.setattr(match_diagnostics.time, "sleep", sleeps.append)
+        recorder = MatchDiagnostics(root, "BT")
+        assert recorder.records == []
+        assert MatchDiagnostics.load(root, "BT") is None
+        assert list(recorder.directory.iterdir()) == []
+        recorder.record("step", 0.95, 0.8, np.full((60, 80, 3), 255, dtype=np.uint8), (1, 1, 10, 10))
+        recorder.record("next", 0.95, 0.8, np.zeros((60, 80, 3), dtype=np.uint8), (1, 1, 10, 10))
+        recorder.finalize(True, "monitor_start")
+        assert wait_for_history()
+
+    assert len(calls) == (2 if outcome == "retry" else 3)
+    assert sleeps == ([0.05] if outcome == "retry" else [0.05, 0.10])
+    latest = MatchDiagnostics.load(root, "BT")
+    assert latest["ok"] is True
+    assert [r["key"] for r in latest["records"]] == ["step", "next"]
+    assert MatchDiagnostics.latest_directory(root, "BT") == recorder.directory
+    for record in latest["records"]:
+        assert cv2.imread(str(recorder.directory / record["image"])) is not None
+    assert len(_history(root)) == 2
+    if outcome == "isolated":
+        assert (canonical / "summary.json").read_bytes() == stale_summary
+        assert recorder.directory != canonical
+    assert all(record.getMessage().isascii() for record in caplog.records)
+    assert any("sharing violation" in record.getMessage() for record in caplog.records)
+    if kind == "winerror32":
+        assert any("winerror=32" in record.getMessage() for record in caplog.records)
+    # Once the lock goes away, normal layout and readers recover on the next round.
+    following = MatchDiagnostics(root, "BT")
+    assert following.directory == canonical
+    assert MatchDiagnostics.load(root, "BT") is None
+    following.record("fresh", None, 0.8)
+    following.finalize(True, "check")
+    assert wait_for_history()
+    assert [r["key"] for r in MatchDiagnostics.load(root, "BT")["records"]] == ["fresh"]
+
+
+@pytest.mark.parametrize("rename_locked", [False, True])
+def test_monitor_start_continues_after_winerror32_reset(tmp_path, monkeypatch, rename_locked):
+    import asyncio
+    from types import SimpleNamespace
+    from protocol_helpers import LogSolutionKVM
+    from log_solution_reader import MarkerState
+    import monitor_flow
+
+    canonical = MatchDiagnostics(tmp_path, "DFU-01").directory
+    (canonical / "summary.json").write_text("stale invalid JSON", encoding="ascii")
+    real_rmtree, real_rename = match_diagnostics.shutil.rmtree, Path.rename
+    from template_catalog import TemplateCatalog
+    seed = LogSolutionKVM()
+    frame = seed.latest_frame().image
+    x, y, w, h = seed.dock_icon_box()
+    TemplateCatalog(tmp_path).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h),
+                                      "COMMON", "log_solution_dock_icon")
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == canonical:
+            raise _reset_error("winerror32")
+        return real_rmtree(path, *args, **kwargs)
+
+    def rename(path, target):
+        if path == canonical and rename_locked:
+            raise _reset_error("winerror32")
+        return real_rename(path, target)
+
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(monitor_flow.asyncio, "to_thread", inline_thread)
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        patch.setattr(Path, "rename", rename)
+        patch.setattr(match_diagnostics.time, "sleep", lambda _: None)
+        patch.setattr(LogSolutionKVM, "is_healthy", lambda _: True)
+        patch.setattr(monitor_flow, "observe_latest_round_frame", lambda *_: SimpleNamespace(
+            kind="reading", state=MarkerState.MONITORING, capacity=10))
+        result = asyncio.run(monitor_flow.run_monitor_start(
+            LogSolutionKVM(state="standby"), SimpleNamespace(stats=None), "DFU-01", template_root=tmp_path))
+        assert result == {"state": "monitoring", "capacity": 10}
+        assert wait_for_history()
+    summary = MatchDiagnostics.load(tmp_path, "DFU-01")
+    assert summary["ok"] is True
+    assert summary["operation"] == "monitor_start"
