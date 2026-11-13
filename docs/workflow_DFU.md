@@ -32,7 +32,7 @@
 
 正式模板根目錄為 `~/Documents/template/`：
 
-- 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時，第一次 DFU 動作會自動建立全螢幕預設（0,0,1920,1080）；現場請改成實際視窗矩形以縮小範圍。
+- 選用 `DFU/DFU_region.json`（`{"x":…,"y":…,"width":…,"height":…}`，螢幕像素，現場 1920×1080／100%）：存在時以此矩形作為 DFU 視窗範圍，**不再使用 `DFU_window.png`**（視窗底色會隨 ATE 模式變化）；checkbox／輸入欄位／OK 只在矩形內找，範圍外一律不比對、不點擊。不存在時，第一次 DFU 動作會自動建立全螢幕預設（0,0,1920,1080）；現場請緊密框住實際 DFU 視窗本身，不能只把全螢幕寬度縮小 1 px；否則啟用 `allow_extra` 接受多餘 ATE slot 時，仍可能納入視窗外的 checkbox，造成通道錯位。
 - **決策記錄（2026-11-07，使用者於 session 中明確選擇）**：缺 `DFU_region.json` 時自動建立全螢幕預設以便現場先跑；已知限制：預設全螢幕時，視窗外同圖樣的 checkbox／OK／輸入欄位可能被誤採納。完成實際視窗矩形設定後此限制消失；固定矩形要求 DFU 視窗位置保持一致。矩形小於 checkbox 模板時回 `hid_failed`。
 - `DFU/DFU_dock_icon.png`、`DFU/DFU_window.png`、`DFU/DFU_input.png`、`DFU/DFU_button.png`（OK 按鈕）
   - **`DFU_button.png` 要截 focus 狀態（藍底白字）**：`input` 輸完 SN 後 focus 會停在 OK 上，`start_test` 先點 Dock 讓視窗回到前景再找 OK，這時 OK 是藍底白字。比對用灰階 `TM_CCOEFF_NORMED`，藍底白字和白底黑字明暗相反，一張模板無法同時涵蓋兩種狀態。截法：跑完 `input`、點 DFU Dock 圖示後再裁 OK。

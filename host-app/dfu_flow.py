@@ -12,6 +12,7 @@ checkboxes than channels always refuses the round before any SN is typed.
 """
 import asyncio
 import json
+import logging
 
 import cv2
 import numpy as np
@@ -19,6 +20,8 @@ import numpy as np
 from hid_session import FlowError, HidSession
 from match_diagnostics import MatchDiagnostics
 from template_catalog import TemplateCatalog
+
+logger = logging.getLogger(__name__)
 
 MATCH_THRESHOLD = 0.80
 CHECKBOX_THRESHOLD = 0.80
@@ -146,6 +149,7 @@ def _load(session, keys):
     return loaded
 
 
+# Tightly frame the actual DFU window itself, not just 1 px less than the full screen.
 REGION_FILE = "DFU_region.json"
 MAX_COORD = 20000
 
@@ -170,7 +174,8 @@ def load_region(catalog):
     (1920x1080, 100%). The window template's background changes with the ATE mode, so when this file
     exists the window template is not used at all: every DFU control is searched only inside the
     rectangle and nothing outside it is ever matched or clicked. A missing file is created with the
-    full-screen default on the first DFU action.
+    full-screen default on the first DFU action. Tightly frame the actual DFU window itself,
+    not just 1 px narrower than the full screen: allow_extra can otherwise include outside checkboxes.
     """
     path = catalog.device_dir("DFU") / REGION_FILE
     if not path.is_file():
@@ -208,9 +213,9 @@ def _control(session, frame, region, template, key):
 
 
 def _allows_extra_boxes(frame, region):
-    """Trust extra slots only when the clipped DFU region excludes part of the frame."""
+    """Accept the region already clipped by _window; trust extras only outside full-screen mode."""
     frame_h, frame_w = frame.shape[:2]
-    return _clip(frame, region) != (0, 0, frame_w, frame_h)
+    return region != (0, 0, frame_w, frame_h)
 
 
 def _verify_slots(first_slots, boxes):
@@ -224,6 +229,19 @@ def _verify_slots(first_slots, boxes):
                     and abs(y + h / 2 - by - bh / 2) <= tolerance):
                 matches.append(candidate)
         if matches != [index]:
+            for slot, (sx, sy, sw, sh) in enumerate(first_slots, 1):
+                expected = (sx + sw / 2, sy + sh / 2)
+                tol = min(3, min(sw, sh) / 4)
+                logger.warning("DFU slot verification: slot=%s expected_center=%s tol=%s candidates=%s",
+                               slot, expected, tol, len(boxes))
+                for candidate, box in enumerate(boxes, 1):
+                    bx, by, bw, bh = box["box"]
+                    center = (bx + bw / 2, by + bh / 2)
+                    logger.warning(
+                        "DFU slot verification: slot=%s expected_center=%s candidate=%s "
+                        "candidate_center=%s bounds=%s dx=%s dy=%s tol=%s",
+                        slot, expected, candidate, center, box["box"],
+                        center[0] - expected[0], center[1] - expected[1], tol)
             raise FlowError("hid_failed", "DFU checkbox slot identity changed during verification")
 
 
@@ -234,7 +252,11 @@ def _boxes_or_fail(frame, window, templates, channels, diagnostics, suffix="", a
     diagnostics.record("checkboxes" + suffix, len(boxes), CHECKBOX_THRESHOLD, frame, None,
                        note={"en": "expected " + expected, "zh": "預期 {} 個 checkbox".format(expected_zh)})
     if len(boxes) < channels or (len(boxes) > channels and not allow_extra):
-        hint = "" if allow_extra or len(boxes) < channels else f"; set {REGION_FILE} to the DFU window to allow extra ATE slots"
+        hint = ""
+        if not allow_extra and len(boxes) > channels:
+            hint = (f"; set {REGION_FILE} to tightly frame the actual DFU window itself, "
+                    "not just 1 px narrower than the full screen, to exclude outside checkboxes "
+                    "when allowing extra ATE slots")
         raise FlowError("hid_failed", f"DFU window has {len(boxes)} checkboxes; device is configured for {channels} channels{hint}")
     return boxes
 
