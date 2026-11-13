@@ -33,6 +33,8 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Disable UPX for both executables and shared DLLs to reduce antivirus false positives
+# and startup delays in factory deployments (issue #202).
 exe = EXE(
     pyz,
     a.scripts,
@@ -42,7 +44,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -59,7 +61,7 @@ core = Analysis(
 )
 core_pyz = PYZ(core.pure)
 core_exe = EXE(core_pyz, core.scripts, [], exclude_binaries=True, name='Core',
-               debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
+               debug=False, bootloader_ignore_signals=False, strip=False, upx=False,
                console=False, disable_windowed_traceback=True,
                icon='assets/bridge.ico' if sys.platform.startswith('win') else None)
 coll = COLLECT(
@@ -67,7 +69,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='AtlasKVM',
 )

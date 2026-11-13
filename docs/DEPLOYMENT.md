@@ -60,7 +60,7 @@
 
 ## 5. 啟動與重啟
 
-Windows CI artifact 內有 `Core.exe`（無主控台視窗）、`AtlasKVM.exe`（橋接程式）、`install-core.bat`／`remove-core.bat` 與 `core-scheduler.json`。上位機不需要安裝 Python，解壓即可。
+Windows CI artifact 內有 `Core.exe`（無主控台視窗）、`AtlasKVM.exe`（橋接程式）、`install-core.bat`／`remove-core.bat` 與 `core-scheduler.json`。上位機不需要安裝 Python，解壓即可。Windows 打包統一使用 `host-app/AtlasKVM.spec`，Monitor UI、Core 與共用 DLL 收集目錄皆設定 `upx=False`，停用 UPX 壓縮以降低工廠防毒誤判與啟動延遲風險。
 
 **自動啟動**：雙擊 `install-core.bat`（不需系統管理員，以目前登入使用者執行）。它在工作排程器建立 `B518 Core`：使用者登入時啟動，並每 1 分鐘重複觸發一次，沒有次數與期限；每次觸發執行 `Core.exe start`，先 ping `127.0.0.1:5000`，沒回應才帶起 Core。已有執行個體時不啟動新的（`IgnoreNew`），不限執行時間，使用電池時仍啟動且不停止。重複執行會覆蓋同名工作；`remove-core.bat` 移除。不用 Windows 服務，也不用啟動資料夾。
 
