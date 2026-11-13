@@ -229,6 +229,9 @@ def test_extra_ate_slots_are_refused_with_the_full_screen_default_region(root):
 
     assert excinfo.value.code == "hid_failed"
     assert "DFU_region.json" in str(excinfo.value)
+    assert "tightly frame the actual DFU window itself" in str(excinfo.value)
+    assert "not just 1 px narrower" in str(excinfo.value)
+    assert str(excinfo.value).isascii()
     assert not any(event[0] == "type" for event in kvm.events)
 
 
@@ -274,9 +277,15 @@ def test_wide_blue_icons_are_not_mistaken_for_checked_boxes():
 
 @pytest.mark.parametrize("region", [(0, 0, 1921, 1080), (0, 0, 20000, 20000),
                                    (0, 0, 1920, 1080), (0, 0, 1919, 1080)])
-def test_extra_boxes_permission_uses_clipped_region_and_actual_frame(region):
+def test_extra_boxes_permission_uses_clipped_region_and_actual_frame(region, monkeypatch):
     frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-    assert dfu_flow._allows_extra_boxes(frame, dfu_flow._clip(frame, region)) == (region[2] < 1920)
+    clipped = dfu_flow._window(None, frame, None, "window", fixed=region)
+
+    def redundant_clip(*args):
+        pytest.fail("already-clipped region must not be clipped again")
+
+    monkeypatch.setattr(dfu_flow, "_clip", redundant_clip)
+    assert dfu_flow._allows_extra_boxes(frame, clipped) == (region[2] < 1920)
 
 
 @pytest.mark.parametrize("width,height", [(1921, 1080), (20000, 20000)])
@@ -340,3 +349,35 @@ def test_locked_slot_must_have_a_unique_position_match():
     slot = (40, 50, BOX, BOX)
     with pytest.raises(FlowError, match="identity changed"):
         dfu_flow._verify_slots([slot], [{"box": slot}, {"box": slot}])
+
+
+@pytest.mark.parametrize("region", [(1920, 0, 10, 10), (0, 1080, 10, 10)])
+def test_outside_region_is_rejected_before_allowing_extras(region):
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    with pytest.raises(FlowError, match="outside") as excinfo:
+        dfu_flow._window(None, frame, None, "window", fixed=region)
+    assert excinfo.value.code == "hid_failed"
+
+
+@pytest.mark.parametrize("side,tol", [(8, 2.0), (20, 3)])
+def test_slot_identity_failure_logs_all_slots_and_candidates(caplog, side, tol):
+    slots = [(40, 50, side, side), (100, 50, side, side)]
+    boxes = [{"box": (44, 45, side, side)}, {"box": slots[1]}]
+    with caplog.at_level("WARNING", logger="dfu_flow"):
+        with pytest.raises(FlowError) as excinfo:
+            dfu_flow._verify_slots(slots, boxes)
+    assert excinfo.value.code == "hid_failed"
+    assert str(excinfo.value) == "DFU checkbox slot identity changed during verification"
+    messages = [r.getMessage() for r in caplog.records if "candidate_center=" in r.getMessage()]
+    assert len(messages) == 4
+    assert all(m.isascii() and f"tol={tol}" in m for m in messages)
+    assert f"expected_center={(40 + side / 2, 50 + side / 2)}" in messages[0]
+    assert f"candidate_center={(44 + side / 2, 45 + side / 2)}" in messages[0]
+    assert f"bounds={boxes[0]['box']} dx=4.0 dy=-5.0" in messages[0]
+    assert "slot=2" in messages[-1]
+
+
+@pytest.mark.parametrize("side,offset", [(8, 2), (20, 3)])
+def test_slot_identity_accepts_exact_tolerance_boundary(side, offset):
+    dfu_flow._verify_slots([(40, 50, side, side)],
+                           [{"box": (40 + offset, 50 - offset, side, side)}])
