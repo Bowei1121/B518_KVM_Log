@@ -686,8 +686,11 @@ def test_monitor_start_continues_after_winerror32_reset(tmp_path, monkeypatch, r
         assert wait_for_history()
     import json
     summaries = list(canonical.parent.glob("*/summary.json"))
-    summary = next(json.loads(path.read_text()) for path in summaries
-                   if path.read_text() != "stale invalid JSON")
+    summary = next(
+        json.loads(text)
+        for path in summaries
+        if (text := path.read_text(encoding="utf-8")) != "stale invalid JSON"
+    )
     assert summary["ok"] is True
     assert summary["operation"] == "monitor_start"
 
