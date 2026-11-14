@@ -23,8 +23,14 @@ class _Frame:
     height = 2
     pts = 1
     time_base = 0.5
+    colorspace = None
+    color_range = None
+    format = type("Format", (), {"name": "bgr24"})()
 
-    def to_ndarray(self, format):
+    def reformat(self, **kwargs):
+        return self
+
+    def to_ndarray(self, format="bgr24"):
         return np.zeros((2, 4, 3), dtype=np.uint8)
 
 
@@ -134,3 +140,30 @@ def test_real_track_end_reaches_health_through_the_wiring(kind, healthy):
         return verdict
 
     assert asyncio.run(_run()) is healthy
+
+
+@pytest.mark.parametrize("failure", ["decode", "colorspace", "color_range"])
+def test_bad_frame_only_makes_device_unhealthy(failure):
+    class BadFrame(_Frame):
+        format = type("Format", (), {"name": "bgr24"})()
+
+        def to_ndarray(self, format):
+            if failure == "decode":
+                raise ValueError("bad frame")
+            return super().to_ndarray(format)
+
+        @property
+        def colorspace(self):
+            if failure == "colorspace":
+                raise ValueError("bad colorspace")
+            return None
+
+        @property
+        def color_range(self):
+            raise ValueError("bad color range")
+
+    client = _connected_client()
+    client.src_colorspace = "auto"
+    assert asyncio.run(client._pump_video(_Track([BadFrame()]))) is None
+    assert client.is_healthy() is False
+    assert client.frame is None

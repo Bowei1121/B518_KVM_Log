@@ -15,6 +15,7 @@ The pool relies on this client contract and nothing else:
 from __future__ import annotations
 
 import asyncio
+from task_supervisor import supervise_background
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -339,7 +340,7 @@ class KVMConnectionPool:
             if ip in self._retry_pending:
                 continue
             self._retry_pending.add(ip)
-            task = loop.create_task(self._retry_one(ip))
+            task = supervise_background(loop.create_task(self._retry_one(ip)))
             self._retry_tasks.add(task)
             task.add_done_callback(self._retry_tasks.discard)
             tasks.append(task)
@@ -361,9 +362,6 @@ class KVMConnectionPool:
                 self._start_retries()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            logger.exception("Unexpected error in KVM pool reconnect worker",
-                             extra={"zh": "KVM 連線池重連工作發生未預期錯誤"})
 
     async def perform_heartbeat(self) -> int:
         """Ask every pooled connection whether it is still healthy; evict or defer the ones that are not.
@@ -480,9 +478,6 @@ class KVMConnectionPool:
                 await self.prune_idle_connections()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            logger.exception("Unexpected error in KVM pool maintenance worker",
-                             extra={"zh": "KVM 連線池維護工作發生未預期錯誤"})
         finally:
             logger.info("KVM pool background worker stopped.", extra={"zh": "KVM 連線池背景工作已停止。"})
 
@@ -492,8 +487,8 @@ class KVMConnectionPool:
             return
         self._is_running = True
         loop = asyncio.get_running_loop()
-        self._worker_task = loop.create_task(self._maintenance_worker())
-        self._retry_worker_task = loop.create_task(self._retry_worker())
+        self._worker_task = supervise_background(loop.create_task(self._maintenance_worker()))
+        self._retry_worker_task = supervise_background(loop.create_task(self._retry_worker()))
 
     async def stop(self) -> None:
         """Stop the background maintenance worker."""

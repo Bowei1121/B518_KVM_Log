@@ -13,6 +13,7 @@ JetKVM 可重用連線模組
 協定細節見 [[jetkvm-direct-client]]: WebSocket signaling + 韌體 0.4.6 走 rpc JSON-RPC。
 """
 import asyncio
+from task_supervisor import supervise_background
 import base64
 import json
 import logging
@@ -230,7 +231,7 @@ class JetKVMClient:
             except Exception:
                 return
 
-        self._recv_task = asyncio.ensure_future(recv_loop())
+        self._recv_task = supervise_background(asyncio.ensure_future(recv_loop()))
         # 先確認控制通道 (rpc) 開啟 -> 代表已連上裝置
         try:
             await asyncio.wait_for(rpc_open.wait(), timeout=15)
@@ -254,7 +255,7 @@ class JetKVMClient:
         @pc.on("track")
         def on_track(track):
             if track.kind == "video":
-                asyncio.ensure_future(self._pump_video(track, first_frame))
+                supervise_background(asyncio.ensure_future(self._pump_video(track, first_frame)))
 
     async def _pump_video(self, track, first_frame=None):
         """Decode the video track into self.frame until it ends. The end of the track is a death signal."""
@@ -266,14 +267,20 @@ class JetKVMClient:
                 logger.warning("KVM video track ended (host=%s): %s", self.host, exc,
                                extra={"zh": "KVM 影像軌道結束 (host=%s): %s"})
                 return
-            decoded = decode_frame_bgr(f, self.src_colorspace)
-            tag = colorspace_name(f.colorspace)
-            if not self._first_frame_logged:
-                self._first_frame_logged = True
-                logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
-                            self.host, tag, colorspace_name(f.color_range, ranges=True), f.format.name,
-                            self.src_colorspace,
-                            extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
+            try:
+                decoded = decode_frame_bgr(f, self.src_colorspace)
+                tag = colorspace_name(f.colorspace)
+                if not self._first_frame_logged:
+                    self._first_frame_logged = True
+                    logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
+                                self.host, tag, colorspace_name(f.color_range, ranges=True), f.format.name,
+                                self.src_colorspace,
+                                extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
+            except Exception as exc:
+                self._track_ended = True
+                logger.warning("KVM video frame decode failed (host=%s): %s", self.host, exc,
+                               extra={"zh": "KVM 影格解碼失敗 (host=%s): %s"})
+                return
             presentation_time = None
             if f.pts is not None and f.time_base is not None:
                 presentation_time = float(f.pts * f.time_base)

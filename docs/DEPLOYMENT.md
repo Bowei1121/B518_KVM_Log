@@ -123,3 +123,19 @@ Core 狀態檔的失敗原因包含 `devices_missing`、`devices_invalid`、`inv
 ## 8. 未驗證與待現場確認
 
 所有待現場驗證項目已集中到 [`docs/FIELD_VERIFICATION.md`](FIELD_VERIFICATION.md)，到現場時逐項執行並記錄結果。
+
+## 可選 Core watchdog（#204）
+
+開發環境可執行 `python host-app/core_daemon.py watchdog`；打包環境可執行
+`Core.exe watchdog`，以前景常駐程序監督 `run` 子程序。預設在 600 秒時間窗內
+最多重啟 3 次，依 5、10、20 秒退避；`--cooldown-sec` 預設 60，限制最長退避。
+可用 `--max-restarts`、`--window-sec`、`--backoff-sec` 調整。
+非零退出才重啟，正常 shutdown 或偵測另一個 Core 已回 ping（exit 0）就停止監督。
+超限會寫英文錯誤並停止，須由 TE 排除原因後重新執行；重新執行有新的重啟額度。
+
+此選項不修改 `B518 Core` 每分鐘 `Core.exe start` 排程，也不取代 port 5000 單一實例鎖。
+排程或橋接程式若先帶起 Core，watchdog 的子程序按既有重複啟動規則正常退出。
+watchdog 的額度只涵蓋自己監督的子程序，不限制排程或橋接程式的獨立啟動。
+每次子程序都重新執行 Core，`status.core_uptime_sec` 沿既有規格從零重新累計。
+背景工作未處理例外會寫入 `failed/internal_error` 狀態與 ASCII 英文日誌後立即非零退出；
+此時不等待可能卡住的 KVM 清理，PID 檔可能殘留，後續啟動仍以 ping 與 port 鎖判斷。
