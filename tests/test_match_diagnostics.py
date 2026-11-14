@@ -8,6 +8,7 @@ from unittest import mock
 
 import cv2
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host-app"))
 import match_diagnostics
@@ -364,6 +365,7 @@ class QueueBoundTests(unittest.TestCase):
 import sys, time, json
 from pathlib import Path
 import numpy as np
+import pytest
 sys.path.insert(0, sys.argv[1])
 import match_diagnostics as md
 flag_ready, flag_go = Path(sys.argv[3]), Path(sys.argv[4])
@@ -557,3 +559,248 @@ class NoteForLanguageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These locks are simulated on every platform; no real Windows file handles are needed.
+
+
+def _reset_error(kind):
+    if kind == "winerror32":
+        error = PermissionError(13, "sharing violation: \u6a94\u6848\u4f7f\u7528\u4e2d")
+        error.winerror = 32
+        return error
+    if kind == "permission":
+        return PermissionError(13, "access denied")
+    return OSError(16, "resource busy")
+
+
+@pytest.mark.parametrize("kind", ["permission", "winerror32", "oserror"])
+@pytest.mark.parametrize("outcome", ["retry", "rename", "isolated"])
+def test_latest_reset_lock_preserves_new_round(tmp_path, monkeypatch, caplog, kind, outcome):
+    root = tmp_path / "template"
+    old = _run(root, "old", False, time.time())
+    canonical = old.directory
+    stale_summary = (canonical / "summary.json").read_bytes()
+    real_rmtree = match_diagnostics.shutil.rmtree
+    real_rename = Path.rename
+    calls, sleeps = [], []
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == canonical:
+            calls.append(path)
+            if outcome != "retry" or len(calls) == 1:
+                raise _reset_error(kind)
+        return real_rmtree(path, *args, **kwargs)
+
+    def rename(path, target):
+        if path == canonical and outcome == "isolated":
+            raise _reset_error(kind)
+        return real_rename(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        patch.setattr(Path, "rename", rename)
+        patch.setattr(match_diagnostics.time, "sleep", sleeps.append)
+        recorder = MatchDiagnostics(root, "BT")
+        assert recorder.records == []
+        assert MatchDiagnostics.load(root, "BT") is None
+        assert list(recorder.directory.iterdir()) == []
+        recorder.record("step", 0.95, 0.8, np.full((60, 80, 3), 255, dtype=np.uint8), (1, 1, 10, 10))
+        recorder.record("next", 0.95, 0.8, np.zeros((60, 80, 3), dtype=np.uint8), (1, 1, 10, 10))
+        recorder.finalize(True, "monitor_start")
+        assert wait_for_history()
+
+    assert len(calls) == (2 if outcome == "retry" else 3)
+    assert sleeps == ([0.05] if outcome == "retry" else [0.05, 0.10])
+    latest = MatchDiagnostics.load(root, "BT")
+    assert latest["ok"] is True
+    assert [r["key"] for r in latest["records"]] == ["step", "next"]
+    assert MatchDiagnostics.latest_directory(root, "BT") == recorder.directory
+    for record in latest["records"]:
+        assert cv2.imread(str(recorder.directory / record["image"])) is not None
+    assert len(_history(root)) == 2
+    if outcome == "isolated":
+        assert (canonical / "summary.json").read_bytes() == stale_summary
+        assert recorder.directory != canonical
+    assert all(record.getMessage().isascii() for record in caplog.records)
+    assert any("sharing violation" in record.getMessage() for record in caplog.records)
+    if kind == "winerror32":
+        assert any("winerror=32" in record.getMessage() for record in caplog.records)
+    # Once the lock goes away, normal layout and readers recover on the next round.
+    following = MatchDiagnostics(root, "BT")
+    assert following.directory == canonical
+    assert MatchDiagnostics.load(root, "BT") is None
+    following.record("fresh", None, 0.8)
+    following.finalize(True, "check")
+    assert wait_for_history()
+    assert [r["key"] for r in MatchDiagnostics.load(root, "BT")["records"]] == ["fresh"]
+
+
+@pytest.mark.parametrize("failure", [None, "mkdir", "write", "replace", "mkdir_replace"])
+@pytest.mark.parametrize("winerror", [32, 5])
+@pytest.mark.parametrize("rename_locked", [False, True])
+def test_monitor_start_continues_after_winerror32_reset(tmp_path, monkeypatch, rename_locked, failure, winerror):
+    import asyncio
+    from types import SimpleNamespace
+    from protocol_helpers import LogSolutionKVM
+    from log_solution_reader import MarkerState
+    import monitor_flow
+
+    canonical = MatchDiagnostics(tmp_path, "DFU-01").directory
+    (canonical / "summary.json").write_text("stale invalid JSON", encoding="ascii")
+    (canonical.parent / "latest_directory.txt").write_text("latest", encoding="ascii")
+    real_rmtree, real_rename = match_diagnostics.shutil.rmtree, Path.rename
+    from template_catalog import TemplateCatalog
+    seed = LogSolutionKVM()
+    frame = seed.latest_frame().image
+    x, y, w, h = seed.dock_icon_box()
+    TemplateCatalog(tmp_path).save_crop(frame[y:y + h, x:x + w].copy(), (0, 0, w, h),
+                                      "COMMON", "log_solution_dock_icon")
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == canonical:
+            raise _reset_error("winerror32")
+        return real_rmtree(path, *args, **kwargs)
+
+    def rename(path, target):
+        if path == canonical and rename_locked:
+            raise _reset_error("winerror32")
+        return real_rename(path, target)
+
+    async def inline_thread(function, *args):
+        return function(*args)
+
+    with monkeypatch.context() as patch:
+        if failure is not None:
+            _inject_publish_error(patch, failure, winerror)
+        patch.setattr(monitor_flow.asyncio, "to_thread", inline_thread)
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        patch.setattr(Path, "rename", rename)
+        patch.setattr(match_diagnostics.time, "sleep", lambda _: None)
+        patch.setattr(LogSolutionKVM, "is_healthy", lambda _: True)
+        patch.setattr(monitor_flow, "observe_latest_round_frame", lambda *_: SimpleNamespace(
+            kind="reading", state=MarkerState.MONITORING, capacity=10))
+        result = asyncio.run(monitor_flow.run_monitor_start(
+            LogSolutionKVM(state="standby"), SimpleNamespace(stats=None), "DFU-01", template_root=tmp_path))
+        assert result == {"state": "monitoring", "capacity": 10}
+        assert wait_for_history()
+    import json
+    summaries = list(canonical.parent.glob("*/summary.json"))
+    summary = next(
+        json.loads(text)
+        for path in summaries
+        if (text := path.read_text(encoding="utf-8")) != "stale invalid JSON"
+    )
+    assert summary["ok"] is True
+    assert summary["operation"] == "monitor_start"
+
+
+def _inject_publish_error(patch, failure, winerror):
+    real_mkdir, real_write, real_replace = Path.mkdir, Path.write_text, match_diagnostics.os.replace
+
+    def denied():
+        error = PermissionError(13, "拒絕存取：私人路徑")
+        error.winerror = winerror
+        return error
+
+    def mkdir(path, *args, **kwargs):
+        if path.name == "latest" or (failure == "all_mkdir" and path.name.startswith("latest_round_")):
+            raise denied()
+        return real_mkdir(path, *args, **kwargs)
+
+    def write(path, *args, **kwargs):
+        if path.name.startswith("latest_selector_"):
+            real_write(path, "partial", encoding="ascii")
+            raise denied()
+        return real_write(path, *args, **kwargs)
+
+    def replace(src, dst):
+        if Path(src).name.startswith("latest_selector_"):
+            raise denied()
+        return real_replace(src, dst)
+
+    if failure in ("mkdir", "all_mkdir", "mkdir_replace"):
+        patch.setattr(Path, "mkdir", mkdir)
+    if failure == "write":
+        patch.setattr(Path, "write_text", write)
+    if failure in ("replace", "mkdir_replace"):
+        patch.setattr(match_diagnostics.os, "replace", replace)
+
+
+@pytest.mark.parametrize("winerror", [32, 5])
+@pytest.mark.parametrize("failure", ["mkdir", "all_mkdir", "write", "replace", "mkdir_replace"])
+def test_latest_publish_errors_do_not_escape(tmp_path, monkeypatch, caplog, failure, winerror):
+    parent = tmp_path / "_captures" / "match_diagnostics" / "BT"
+    parent.mkdir(parents=True)
+    (parent / "latest_directory.txt").write_text("latest", encoding="ascii")
+    with monkeypatch.context() as patch:
+        _inject_publish_error(patch, failure, winerror)
+        recorder = MatchDiagnostics(tmp_path, "BT")
+    assert recorder.records == []
+    if failure in ("mkdir", "mkdir_replace"):
+        assert recorder.directory.name.startswith("latest_round_")
+        assert recorder.directory.is_dir()
+    assert not list(parent.glob("latest_selector_*"))
+    assert caplog.records
+    assert all(record.getMessage().isascii() for record in caplog.records)
+    assert any(f"winerror={winerror}" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("rename_locked", [False, True])
+def test_latest_cleanup_across_locked_rounds(tmp_path, monkeypatch, caplog, rename_locked):
+    canonical = MatchDiagnostics(tmp_path, "BT").directory
+    real_rmtree, real_rename = match_diagnostics.shutil.rmtree, Path.rename
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == canonical:
+            raise _reset_error("winerror32")
+        return real_rmtree(path, *args, **kwargs)
+
+    def rename(path, target):
+        if path == canonical and rename_locked:
+            raise _reset_error("winerror32")
+        return real_rename(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        patch.setattr(Path, "rename", rename)
+        patch.setattr(match_diagnostics.time, "sleep", lambda _: None)
+        for _ in range(2):
+            current = MatchDiagnostics(tmp_path, "BT")
+            (current.directory / "frame.png").write_bytes(b"round pixels")
+            leftovers = list(canonical.parent.glob("latest_round_*")) + list(canonical.parent.glob("latest_locked_*"))
+            assert leftovers == ([current.directory] if rename_locked else [])
+            assert (current.directory / "frame.png").read_bytes() == b"round pixels"
+    recovered = MatchDiagnostics(tmp_path, "BT")
+    assert recovered.directory == canonical
+    if rename_locked:
+        assert (canonical.parent / "latest_directory.txt").read_text(encoding="ascii") == "latest"
+    assert not list(canonical.parent.glob("latest_round_*"))
+    assert not list(canonical.parent.glob("latest_locked_*"))
+    assert all(record.getMessage().isascii() for record in caplog.records)
+
+
+def test_obsolete_round_cleanup_failure_is_ascii_and_retried(tmp_path, monkeypatch, caplog):
+    canonical = MatchDiagnostics(tmp_path, "BT").directory
+    locked = canonical.with_name("latest_locked_old")
+    locked.mkdir()
+    (locked / "frame.png").write_bytes(b"locked pixels")
+    real_rmtree = match_diagnostics.shutil.rmtree
+    attempts = []
+
+    def rmtree(path, *args, **kwargs):
+        if Path(path) == locked:
+            attempts.append(path)
+            raise _reset_error("winerror32")
+        return real_rmtree(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(match_diagnostics.shutil, "rmtree", rmtree)
+        for _ in range(2):
+            assert MatchDiagnostics(tmp_path, "BT").directory == canonical
+    assert len(attempts) == 2
+    assert (locked / "frame.png").exists()
+    assert any("obsolete round cleanup failed" in record.getMessage() for record in caplog.records)
+    assert all(record.getMessage().isascii() for record in caplog.records)
+    MatchDiagnostics(tmp_path, "BT")
+    assert not locked.exists()
