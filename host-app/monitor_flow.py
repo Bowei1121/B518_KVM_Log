@@ -158,13 +158,14 @@ def _kvm_lost_waiting():
 
 async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
-                            log=print, on_preparing=None, on_shortcut=None):
+                            log=print, on_preparing=None, on_shortcut=None, on_accept=None):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
     ``gate`` is the device's RoundFrameGate; a Monitoring reading arms its round once a start was requested
     (Preparing or the shortcut, through the callbacks below). ``diagnostics_key`` is the
     device ID; match diagnostics are kept per device (ADR-0007). Raises ``FlowError`` with the
     protocol error code otherwise. Callbacks record the round-start request; a timeout does not undo them.
+    ``on_accept`` clears the previous round only after all busy refusals have been ruled out.
     """
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
@@ -222,12 +223,14 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
                 raise _busy(observation.state)
             if observation.state == MarkerState.REVIEW:
                 raise _review("after Dock click")
-            if observation.may_open_round:
-                async def note_shortcut():
-                    if on_shortcut is not None:
-                        on_shortcut()
+        if on_accept is not None:
+            on_accept()
+        if observation.may_open_round:
+            async def note_shortcut():
+                if on_shortcut is not None:
+                    on_shortcut()
 
-                await session.press_command_shift_m(failure="Shortcut HID failed", after=note_shortcut)
+            await session.press_command_shift_m(failure="Shortcut HID failed", after=note_shortcut)
 
         if observation.reliable and observation.state == MarkerState.PREPARING:
             preparing()

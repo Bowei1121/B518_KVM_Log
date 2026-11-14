@@ -1,16 +1,20 @@
 """monitor_start 1.0 over the socket on a synthetic ATE screen (ticket #23).
 
-Each test drives a real Core socket against LogSolutionKVM. The fake records the Dock click and
+Socket tests drive a real Core socket against LogSolutionKVM; the busy-state regression calls the handler directly.
+The fake records the Dock click and
 the Cmd+Shift+M key, so the tests assert the order of HID actions as well as the JSON reply.
 Confirm and start timeouts are injected short; no test waits for the production 3 s / 10 s.
 """
 
+import asyncio
 import json
 import socket
 import sys
 import threading
 import time
+from copy import deepcopy
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -21,7 +25,7 @@ from protocol_helpers import recv_reply  # noqa: E402
 
 from freeze_guard import FrameFreezeGuard  # noqa: E402
 from protocol_helpers import LogSolutionKVM, make_log_solution_pool, make_registry  # noqa: E402
-from tcp_server import TcpJsonServer  # noqa: E402
+from tcp_server import CommandContext, TcpJsonServer  # noqa: E402
 from template_catalog import TemplateCatalog  # noqa: E402
 
 STATIONS = ["DFU-01", "FCT-01", "BT-01"]
@@ -156,6 +160,55 @@ def test_monitoring_is_busy_and_nothing_is_sent(serve, device):
     assert resp["status"] == "error"
     assert resp["error"] == "log_solution_busy"
     assert kvm.events == []
+
+
+@pytest.mark.parametrize("device", STATIONS)
+@pytest.mark.parametrize("after_dock", [False, True])
+@pytest.mark.parametrize("start_requested", [False, True])
+def test_log_solution_busy_preserves_round_state(tmp_path, monkeypatch, device, after_dock, start_requested):
+    kvm = LogSolutionKVM(state="monitoring")
+    kvm.connected = True
+    if after_dock:
+        kvm.close_window()
+        kvm.restore_on_dock = True
+        kvm.state_on_dock = "monitoring"
+    _save_dock_template(tmp_path, LogSolutionKVM())
+    registry = make_registry()
+    srv = TcpJsonServer(device_registry=registry, template_root=tmp_path, monitor_confirm_sec=CONFIRM_SEC)
+    # The freeze/disconnect/heartbeat guard has already admitted this request.
+    monkeypatch.setattr(srv, "_picture_refusal", AsyncMock(return_value=None))
+    rnd = srv._device_round(device)
+    rnd.armed = True
+    rnd.taken = True
+    rnd.armed_capacity = 4
+    rnd.delivered_signature = ("previous delivery", 4)
+    rnd.delivered_results = ((1, "PASS"),)
+    rnd._candidate_signature = ("pending confirmation", 4)
+    rnd._candidate_count = 1
+    rnd.start_requested = start_requested
+    rnd.input_released = True
+    rnd.activity.previous = ("previous activity", 1)
+    rnd.activity.last_active = (1,)
+    before = deepcopy({key: value for key, value in vars(rnd).items() if key != "activity"})
+    activity_before = deepcopy(vars(rnd.activity))
+    begin_start = Mock(wraps=rnd.begin_start)
+    clear_delivery = Mock(wraps=rnd.clear_delivery)
+    monkeypatch.setattr(rnd, "begin_start", begin_start)
+    monkeypatch.setattr(rnd, "clear_delivery", clear_delivery)
+
+    ctx = CommandContext(entry=registry.get(device), kvm=kvm, slot=srv._slot(device))
+    try:
+        resp = asyncio.run(srv._handle_monitor_start(ctx, 1))
+    finally:
+        srv._inspector.shutdown(wait=True)
+
+    assert resp["status"] == "error"
+    assert resp["error"] == "log_solution_busy"
+    assert {key: getattr(rnd, key) for key in before} == before
+    assert vars(rnd.activity) == activity_before
+    begin_start.assert_not_called()
+    clear_delivery.assert_not_called()
+    assert kvm.events == (_dock_recovery(kvm) if after_dock else [])
 
 
 @pytest.mark.parametrize("device", STATIONS)
