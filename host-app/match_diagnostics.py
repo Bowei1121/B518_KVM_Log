@@ -53,14 +53,40 @@ def _reset_latest(directory):
             except OSError as rename_exc:
                 _latest_warning("rename failed; using isolated round directory", rename_exc)
                 directory = directory.with_name("latest_round_" + uuid.uuid4().hex)
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _latest_warning("mkdir failed; using isolated round directory", exc)
+        directory = directory.with_name("latest_round_" + uuid.uuid4().hex)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as fallback_exc:
+            _latest_warning("isolated round mkdir failed", fallback_exc)
+            return directory
     # A sibling selector also works when Windows denies renaming the entire latest directory.
     # Publish before recording so readers cannot mistake an old summary for this round.
     selector = directory.parent / "latest_directory.txt"
-    if directory.name != "latest" or selector.exists():
-        staging = selector.with_name("latest_selector_" + uuid.uuid4().hex)
-        staging.write_text(directory.name, encoding="ascii")
-        os.replace(str(staging), str(selector))
+    staging = selector.with_name("latest_selector_" + uuid.uuid4().hex)
+    try:
+        if directory.name != "latest" or selector.exists():
+            staging.write_text(directory.name, encoding="ascii")
+            os.replace(str(staging), str(selector))
+    except OSError as exc:
+        _latest_warning("selector publish failed", exc)
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError as cleanup_exc:
+            _latest_warning("selector staging cleanup failed", cleanup_exc)
+    # Each round removes all obsolete fallback directories once, without retries.
+    try:
+        for old in directory.parent.iterdir():
+            if old != directory and old.name.startswith(("latest_locked_", "latest_round_")):
+                try:
+                    shutil.rmtree(str(old))
+                except OSError as exc:
+                    _latest_warning("obsolete round cleanup failed", exc)
+    except OSError as exc:
+        _latest_warning("obsolete round scan failed", exc)
     return directory
 
 
