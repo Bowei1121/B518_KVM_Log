@@ -267,14 +267,20 @@ class JetKVMClient:
                 logger.warning("KVM video track ended (host=%s): %s", self.host, exc,
                                extra={"zh": "KVM 影像軌道結束 (host=%s): %s"})
                 return
-            decoded = decode_frame_bgr(f, self.src_colorspace)
-            tag = colorspace_name(f.colorspace)
-            if not self._first_frame_logged:
-                self._first_frame_logged = True
-                logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
-                            self.host, tag, colorspace_name(f.color_range, ranges=True), f.format.name,
-                            self.src_colorspace,
-                            extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
+            try:
+                decoded = decode_frame_bgr(f, self.src_colorspace)
+                tag = colorspace_name(f.colorspace)
+                if not self._first_frame_logged:
+                    self._first_frame_logged = True
+                    logger.info("First video frame (host=%s): colorspace=%s color_range=%s format=%s; decoding with %s",
+                                self.host, tag, colorspace_name(f.color_range, ranges=True), f.format.name,
+                                self.src_colorspace,
+                                extra={"zh": "第一張影格 (host=%s)：colorspace=%s color_range=%s format=%s；解碼採用 %s"})
+            except Exception as exc:
+                self._track_ended = True
+                logger.warning("KVM video frame decode failed (host=%s): %s", self.host, exc,
+                               extra={"zh": "KVM 影格解碼失敗 (host=%s): %s"})
+                return
             presentation_time = None
             if f.pts is not None and f.time_base is not None:
                 presentation_time = float(f.pts * f.time_base)

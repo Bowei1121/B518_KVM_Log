@@ -1412,9 +1412,6 @@ class TcpJsonServer:
         fatal = getattr(self, "on_fatal", None)
         if fatal is not None:
             self._loop.core_fatal = fatal
-            self._loop.set_exception_handler(
-                lambda loop, context: fatal(context.get("exception") or
-                                           RuntimeError("Unhandled Core async error")))
 
         # Handle termination signals gracefully
         for sig in (signal.SIGINT, signal.SIGTERM):

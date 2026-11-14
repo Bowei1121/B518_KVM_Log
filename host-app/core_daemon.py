@@ -30,6 +30,7 @@ if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
 from core_protocol import build_request, dumps_request, read_reply  # noqa: E402
+from bilingual_log import BilingualFormatter  # noqa: E402
 
 # Ensure repo root is discoverable
 _REPO_ROOT = _HOST_APP_DIR.parent
@@ -64,6 +65,11 @@ def default_status_file() -> Path:
 def default_log_file() -> Path:
     """Return the user log path when frozen, otherwise the source log path."""
     return _user_log_dir() / "core_service.log" if getattr(sys, "frozen", False) else _DEFAULT_LOG_FILE
+
+
+def default_watchdog_log_file() -> Path:
+    """Return a watchdog log beside the Core log, with an independent rotation."""
+    return default_log_file().with_name("core-watchdog.log")
 
 
 def default_pid_file() -> Path:
@@ -125,12 +131,7 @@ def setup_rotating_logging(
     target_logger = logging.getLogger(logger_name)
     target_logger.setLevel(level)
 
-    class AsciiFormatter(logging.Formatter):
-        def format(self, record):
-            return super().format(record).encode("ascii", "backslashreplace").decode("ascii")
-    formatter = AsciiFormatter(
-        "%(asctime)s | %(message)s | %(message)s", datefmt="%H:%M:%S"
-    )
+    formatter = BilingualFormatter()
 
     if log_file is not None:
         log_path = Path(log_file).resolve()
@@ -731,7 +732,10 @@ def run_service_foreground(
     server.on_started = started
     def fatal(error):
         try:
-            log.error("Fatal Core background task: %s", ascii(error))
+            log.error("Fatal Core background task: %s", ascii(error),
+                      exc_info=(type(error), error, error.__traceback__)
+                      if isinstance(error, BaseException) else None,
+                      extra={"zh": "Core 背景工作發生致命錯誤：%s"})
             write_status(status_path, "failed", "internal_error", ascii(error),
                          devices_path, actual_port, current_pid, started_at)
         finally:
@@ -822,6 +826,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
     p_watch = subparsers.add_parser("watchdog", help="Supervise foreground Core with bounded restarts")
     _add_common_server_args(p_watch)
+    p_watch.add_argument("--watchdog-log-file", default=str(default_watchdog_log_file()))
     p_watch.add_argument("--max-restarts", type=int, default=3)
     p_watch.add_argument("--window-sec", type=float, default=600)
     p_watch.add_argument("--backoff-sec", type=float, default=5)
@@ -867,7 +872,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     cmd = args.command or "run"
 
     if cmd == "watchdog":
-        setup_rotating_logging(args.log_file, args.log_level, args.backup_count, console=False)
+        setup_rotating_logging(args.watchdog_log_file, args.log_level, args.backup_count, console=False)
         child_args = []
         for key in ("host", "port", "log_file", "log_level", "backup_count", "pid_file",
                     "status_file", "devices_file"):

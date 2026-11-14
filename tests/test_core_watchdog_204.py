@@ -72,7 +72,7 @@ from kvm_pool import KVMConnectionPool
 from core_daemon import run_service_foreground
 async def broken(self):
     await asyncio.sleep(0.01)
-    raise RuntimeError('fatal worker')
+    raise RuntimeError('fatal worker 中文')
 KVMConnectionPool._maintenance_worker = broken
 run_service_foreground(port=0, devices_file=sys.argv[1], status_file=sys.argv[2],
                        log_file=sys.argv[3], pid_file=sys.argv[4], console=False)
@@ -83,8 +83,9 @@ run_service_foreground(port=0, devices_file=sys.argv[1], status_file=sys.argv[2]
     assert result.returncode == 1
     assert json.loads(status.read_text())['state'] == 'failed'
     assert 'fatal worker' in json.loads(status.read_text())['detail']
-    assert 'Fatal Core background task' in log.read_text()
-    assert log.read_text().isascii()
+    assert 'Fatal Core background task' in log.read_text(encoding='utf-8')
+    assert 'Traceback (most recent call last)' in log.read_text(encoding='utf-8')
+    assert json.loads(status.read_text())['detail'].isascii()
 
 
 def test_watchdog_window_expires_and_delay_is_capped():
@@ -103,15 +104,70 @@ def test_watchdog_window_expires_and_delay_is_capped():
     assert delays == [5, 5, 5]
 
 
-def test_core_ascii_formatter_ignores_chinese_extra_and_escapes_error(tmp_path):
-    import logging
+def test_core_bilingual_formatter_preserves_chinese_extra(tmp_path):
     from core_daemon import setup_rotating_logging
-    log = tmp_path / 'ascii.log'
+    log = tmp_path / 'bilingual.log'
     target = setup_rotating_logging(log, console=False, logger_name='test204')
     try:
-        target.error('Worker failed: %s', '錯誤', extra={'zh': '中文'})
-        assert log.read_text().isascii()
+        target.error('Worker failed: %s', ascii(RuntimeError('錯誤')), extra={'zh': '中文：%s'})
+        _, english, chinese = log.read_text(encoding='utf-8').strip().split(' | ')
+        assert english.isascii()
+        assert english.startswith('Worker failed: ')
+        assert chinese == '中文：' + ascii(RuntimeError('錯誤'))
     finally:
         for handler in list(target.handlers):
             handler.close()
             target.removeHandler(handler)
+
+
+def test_loop_transport_exception_does_not_invoke_core_fatal(monkeypatch):
+    from unittest.mock import AsyncMock
+    from tcp_server import TcpJsonServer
+
+    async def scenario():
+        server = TcpJsonServer(port=0)
+        server.on_fatal = Mock()
+        listener = Mock(sockets=[])
+        listener.wait_closed = AsyncMock()
+        monkeypatch.setattr(asyncio, 'start_server', AsyncMock(return_value=listener))
+        server.kvm_pool.start = AsyncMock()
+        server.kvm_pool.close_all = AsyncMock()
+        def started():
+            asyncio.get_running_loop().call_exception_handler(
+                {'message': 'x', 'exception': ConnectionResetError()})
+            server._shutdown_event.set()
+        server.on_started = started
+        await server._run_server_async()
+        server.on_fatal.assert_not_called()
+    asyncio.run(scenario())
+
+
+def test_default_watchdog_log_is_separate(monkeypatch, tmp_path):
+    import core_daemon as daemon
+    for frozen in (False, True):
+        monkeypatch.setattr(sys, 'frozen', frozen, raising=False)
+        monkeypatch.setattr(daemon, '_user_log_dir', lambda: tmp_path)
+        assert daemon.default_watchdog_log_file() != daemon.default_log_file()
+        assert daemon.default_watchdog_log_file().parent == daemon.default_log_file().parent
+        assert daemon.parse_args(['watchdog']).watchdog_log_file == str(daemon.default_watchdog_log_file())
+
+
+def test_watchdog_main_separates_parent_and_child_logs(monkeypatch, tmp_path):
+    import pytest
+    import core_daemon as daemon
+    core_log = str(tmp_path / 'core.log')
+    watchdog_log = str(tmp_path / 'watchdog.log')
+    args = daemon.parse_args(['watchdog', '--log-file', core_log,
+                              '--watchdog-log-file', watchdog_log])
+    setup = Mock()
+    launch = Mock(return_value=['child'])
+    monkeypatch.setattr(daemon, 'setup_rotating_logging', setup)
+    monkeypatch.setattr(daemon, 'core_launch_command', launch)
+    monkeypatch.setattr(daemon, 'watch_core', Mock(return_value=0))
+    with pytest.raises(SystemExit) as exc:
+        daemon.main(args)
+    assert exc.value.code == 0
+    setup.assert_called_once_with(watchdog_log, args.log_level, args.backup_count, console=False)
+    child_args = launch.call_args.args[0]
+    assert child_args[child_args.index('--log-file') + 1] == core_log
+    assert '--watchdog-log-file' not in child_args
