@@ -236,7 +236,7 @@ KVM IP 不回給 LabVIEW，LabVIEW 也不需要知道。
 
 因此，交付後簽章變了、沒有新一輪的信號、請求已清除時，依第 4 步回 `monitor_not_ready`，不會再交付一次。
 
-新一輪的信號是看到準備中或監控中，或收到新的 `monitor_start`。出現任一個，就清掉「上一次交付的簽章」。準備中本身不建立本輪開始請求；只有 `monitor_start` 建立。
+新一輪的信號是看到準備中或監控中，或接受新一輪的 `monitor_start`。出現任一個，就清掉「上一次交付的簽章」；`monitor_start` 回 `log_solution_busy` 時不清除輪次狀態。準備中本身不建立本輪開始請求；只有 `monitor_start` 建立。
 
 `check_start` 在沒有本輪開始請求時，即使已有兩張活動影格，也回 `monitor_not_ready`，不回 `started`。有請求時，可交付畫面優先於 `started`：兩張穩定完成畫面回 `taken`。重複 `check_start` 看到活動通道會一直回 `started`，不消耗本輪，之後的 `check_finish` 仍可 `taken`。
 
@@ -308,7 +308,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | --- | --- | --- | --- |
 | `timeout_sec` | number | 是 | 等候監控中的秒數，1–300。缺少、布林或超出範圍回 `invalid_argument`，不送 HID |
 
-上鎖。收到合法的 `monitor_start` 即視為新一輪信號，清掉上一次交付簽章。等候預算是這次請求的 `timeout_sec`，不是固定 10 秒。
+上鎖。只有在接受新一輪時才清除上一輪狀態與交付簽章；初次判讀或點擊 Dock 後讀到監控中而回 `log_solution_busy` 時，不改動 `armed`、交付紀錄、`start_requested` 或 `input_released`。等候預算是這次請求的 `timeout_sec`，不是固定 10 秒。
 
 流程（依序，任一步失敗即停止）：
 

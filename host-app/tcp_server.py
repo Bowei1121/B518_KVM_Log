@@ -807,13 +807,13 @@ class TcpJsonServer:
             code, message = refusal
             return {"status": "error", "error": code, "message": message}
         slot = ctx.slot
-        slot.round.begin_start()
         template_root = self._template_root()
         try:
             result = await run_monitor_start(
                 ctx.kvm, slot.gate, template_root=template_root,
                 confirm_sec=self.monitor_confirm_sec, start_timeout_sec=args,
                 log=_flow_log, diagnostics_key=ctx.entry.device_id,
+                on_accept=slot.round.begin_start,
                 on_preparing=slot.round.note_start, on_shortcut=slot.round.note_start)
         except FlowError as exc:
             # monitor_not_started keeps the round-start request. Only a later taken or
