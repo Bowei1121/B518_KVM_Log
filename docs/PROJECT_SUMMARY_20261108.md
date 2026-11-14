@@ -62,7 +62,7 @@ PR 內容：Log Solution 設定頁在 macOS 改用 `osascript choose folder ... 
 ### 4.3 建議路線（strangler fig，沿著 ADR-0004 的 TCP 接縫）
 
 1. **先做不需要換語言的穩定性改善**（候選，尚未開票）：
-   - `host-app/AtlasKVM.spec` 第 45、62、70 行的 `upx=True` 改成 `False`，避免防毒誤判。
+   - 停用 `host-app/AtlasKVM.spec` 的 UPX 壓縮，避免防毒誤判；現由 #202 實作，Monitor UI、Core 與共用收集目錄皆設定 `upx=False`。
    - Core 用 WinSW／NSSM 包成 Windows Service，搭配 `sc.exe failure` 自動重啟（`manage_core.bat` 目前沒有看門狗）。
    - OS 端：考慮 Win11 IoT Enterprise LTSC 2024；控管 Windows Update；網卡關閉省電；設定高效能電源計畫；Defender 排除 `dist\AtlasKVM\` 與 template 目錄。
    - Core 的 `create_task` 統一加上 done callback，task 例外時寫 log 並 `os._exit(1)` 交給服務重啟（fail-fast＋supervisor）。
