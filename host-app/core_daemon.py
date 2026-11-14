@@ -30,7 +30,6 @@ if str(_HOST_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_HOST_APP_DIR))
 
 from core_protocol import build_request, dumps_request, read_reply  # noqa: E402
-from bilingual_log import BilingualFormatter  # noqa: E402
 
 # Ensure repo root is discoverable
 _REPO_ROOT = _HOST_APP_DIR.parent
@@ -110,7 +109,7 @@ def setup_rotating_logging(
     console: bool = True,
     logger_name: Optional[str] = None,
 ) -> logging.Logger:
-    """Configure rotating file logging with timestamp and log levels.
+    """Configure rotating logging with the existing time | message | message layout.
 
     Args:
         log_file: File path for the rotating log file.
@@ -126,7 +125,12 @@ def setup_rotating_logging(
     target_logger = logging.getLogger(logger_name)
     target_logger.setLevel(level)
 
-    formatter = BilingualFormatter()
+    class AsciiFormatter(logging.Formatter):
+        def format(self, record):
+            return super().format(record).encode("ascii", "backslashreplace").decode("ascii")
+    formatter = AsciiFormatter(
+        "%(asctime)s | %(message)s | %(message)s", datefmt="%H:%M:%S"
+    )
 
     if log_file is not None:
         log_path = Path(log_file).resolve()
@@ -725,6 +729,16 @@ def run_service_foreground(
                  current_pid, host, actual_port, log_path,
                  extra={"zh": "無頭模式 CoreDaemon 已啟動 (PID: %d)，監聽 %s:%d。Log 檔: %s"})
     server.on_started = started
+    def fatal(error):
+        try:
+            log.error("Fatal Core background task: %s", ascii(error))
+            write_status(status_path, "failed", "internal_error", ascii(error),
+                         devices_path, actual_port, current_pid, started_at)
+        finally:
+            logging.shutdown()
+            os._exit(1)
+    server.on_fatal = fatal
+    threading.excepthook = lambda exc: fatal(exc.exc_value)
     def stop(signum, frame):
         server.stop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -739,6 +753,33 @@ def run_service_foreground(
         remove_pid_file(pid_path)
     write_status(status_path, "stopped", None, "", devices_path, actual_port, current_pid, started_at)
     log.info("CoreDaemon stopped cleanly.", extra={"zh": "CoreDaemon 已正常停止。"})
+
+
+def watch_core(command, *, spawn=subprocess.Popen, sleep=time.sleep, clock=time.monotonic,
+               max_restarts=3, window_sec=600, backoff_sec=5, cooldown_sec=60):
+    """Supervise foreground Core; stop at the window limit for operator intervention.
+
+    Cooldown caps exponential delay. A fresh invocation starts a fresh budget.
+    The child retains the existing port lock and duplicate-Core exit-zero behavior.
+    """
+    import math
+    if (max_restarts < 0 or any(not math.isfinite(v) or v <= 0
+                              for v in (window_sec, backoff_sec, cooldown_sec))):
+        raise ValueError("Invalid watchdog restart policy")
+    restarts = []
+    while True:
+        code = spawn(command).wait()
+        if code == 0:
+            return 0
+        now = clock()
+        restarts = [stamp for stamp in restarts if now - stamp < window_sec]
+        if len(restarts) >= max_restarts:
+            logger.error("Core watchdog restart limit reached; supervision stopped")
+            return 1
+        delay = min(backoff_sec * 2 ** len(restarts), cooldown_sec)
+        logger.warning("Core exited with code %d; watchdog retry in %.1f seconds", code, delay)
+        sleep(delay)
+        restarts.append(clock())
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -779,6 +820,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     p_run = subparsers.add_parser("run", help="Run Core Service in foreground (blocking)")
     _add_common_server_args(p_run)
 
+    p_watch = subparsers.add_parser("watchdog", help="Supervise foreground Core with bounded restarts")
+    _add_common_server_args(p_watch)
+    p_watch.add_argument("--max-restarts", type=int, default=3)
+    p_watch.add_argument("--window-sec", type=float, default=600)
+    p_watch.add_argument("--backoff-sec", type=float, default=5)
+    p_watch.add_argument("--cooldown-sec", type=float, default=60)
+
     # start command (background daemon)
     p_start = subparsers.add_parser("start", help="Start Core Service in background daemon mode")
     _add_common_server_args(p_start)
@@ -818,7 +866,18 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     args = parse_args() if args is None else args
     cmd = args.command or "run"
 
-    if cmd == "run":
+    if cmd == "watchdog":
+        setup_rotating_logging(args.log_file, args.log_level, args.backup_count, console=False)
+        child_args = []
+        for key in ("host", "port", "log_file", "log_level", "backup_count", "pid_file",
+                    "status_file", "devices_file"):
+            value = getattr(args, key)
+            if value is not None:
+                child_args.extend(["--" + key.replace("_", "-"), str(value)])
+        raise SystemExit(watch_core(core_launch_command(child_args),
+                                   max_restarts=args.max_restarts, window_sec=args.window_sec,
+                                   backoff_sec=args.backoff_sec, cooldown_sec=args.cooldown_sec))
+    elif cmd == "run":
         run_service_foreground(
             host=args.host,
             port=args.port,

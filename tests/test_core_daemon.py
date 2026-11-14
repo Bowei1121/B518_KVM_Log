@@ -480,8 +480,8 @@ def test_send_tcp_command_half_line_then_disconnect():
     thread.join(timeout=2)
 
 
-def test_rotating_logging_installs_bilingual_formatter(tmp_path: Path):
-    """Both the file and the console handler render the bilingual ``HH:MM:SS | EN | 中文`` line."""
+def test_rotating_logging_installs_ascii_formatter(tmp_path: Path):
+    """Core file and console handlers enforce ASCII even for dynamic error text."""
     logger = setup_rotating_logging(
         log_file=tmp_path / "bilingual.log",
         console=True,
@@ -492,7 +492,14 @@ def test_rotating_logging_installs_bilingual_formatter(tmp_path: Path):
         assert any(isinstance(h, TimedRotatingFileHandler) for h in handlers)
         assert any(isinstance(h, logging.StreamHandler) and not isinstance(h, TimedRotatingFileHandler)
                    for h in handlers)
-        assert all(isinstance(h.formatter, BilingualFormatter) for h in handlers)
+        record = logging.LogRecord("Core", logging.ERROR, __file__, 1, "Failure: %s", ("錯誤",), None)
+        record.zh = "中文"
+        for handler in handlers:
+            line = handler.formatter.format(record)
+            assert line.isascii()
+            timestamp, first, second = line.split(" | ")
+            assert re.fullmatch(r"\d{2}:\d{2}:\d{2}", timestamp)
+            assert first == second == r"Failure: \u932f\u8aa4"
     finally:
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
