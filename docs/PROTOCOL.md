@@ -351,7 +351,7 @@ DFU、BT 依序完成監控就緒與開測；FCT 不支援，落地後回 `unsup
 | 有限 JSON number，1–300（含端點及小數） | 接受，作為共用監控等待 T |
 | 缺少、null、布林、字串、非有限數、低於 1 或高於 300 | `invalid_argument`，無預設值 |
 
-回覆固定第 3 節九欄；`data` 固定只有 `kind`，預設 `fault`，允許 `started`、`paused`、`fault`。外層 `status` 只有 `ok`、`error`、`timeout`，不得使用內部 busy 或 kind 作為 status。`started` 為 `ok` 且 error/message 為空；`paused` 使用 `error` 與原因碼；`fault` 保留原始 error 與英文 message，絕不轉為產品 FAIL。錯誤原因沿用 envelope 的 `error/message`；`data` 僅含 `kind` 及預設值、`paused` 的 status 與原因碼：使用者 2026-11-17 定案。舊 `check_*` 語意不變。以下為完整範例：
+回覆固定第 3 節九欄；`data` 固定只有 `kind`，預設 `fault`，允許 `started`、`paused`、`fault`。外層 `status` 只有 `ok`、`error`、`timeout`，不得使用內部 busy 或 kind 作為 status。`started` 為 `ok` 且 error/message 為空；`paused` 使用 `error` 與原因碼；`fault` 保留原始 error 與英文 message，絕不轉為產品 FAIL。錯誤原因沿用 envelope 的 `error/message`；`data` 僅含 `kind` 及預設值、`paused` 的 status 與原因碼：使用者 2026-11-17 定案。舊 `check_*` 語意不變。LabVIEW 的 `start_round` 分支必須辨識 `kind=paused` 並交人工處理，不得將所有 `status=error` 視為可重試（使用者 2026-11-17 定案）。以下為完整範例：
 
 ```json
 {"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"ok","error":"","message":"","elapsed_sec":12.0,"data":{"kind":"started"}}

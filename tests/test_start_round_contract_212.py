@@ -61,6 +61,7 @@ def test_retry_and_confirmation_contract():
 
 
 def test_final_decisions_and_poll_budget():
+    assert 'LabVIEW 的 `start_round` 分支必須辨識 `kind=paused` 並交人工處理，不得將所有 `status=error` 視為可重試（使用者 2026-11-17 定案）' in SECTION
     adr = (ROOT / 'docs/adr/0002-per-device-lock-and-fail-fast.md').read_text(encoding='utf-8')
     for doc in (SECTION, adr):
         for term in ('使用者 2026-11-17 定案', '110 秒', '硬上限', 'ICE 等待',
