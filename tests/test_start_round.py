@@ -541,7 +541,8 @@ def _short_deadline(monkeypatch):
     real_timeout = asyncio.timeout
     boundaries = []
     def timeout(seconds):
-        assert 73 < seconds <= 74
+        # D = T+73 = 74; allow a tiny ulp above 74 on Windows monotonic math.
+        assert 73 < seconds <= 74.001
         boundary = real_timeout(.05)
         boundaries.append(boundary)
         return boundary
