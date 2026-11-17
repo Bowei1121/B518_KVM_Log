@@ -331,10 +331,11 @@ def test_real_connect_path_cancellation_cleans_each_wait(monkeypatch, phase, ter
         if termination == 'deadline':
             import start_round
             observed_timeouts = []
-            async def controlled_wait(awaitable, timeout):
-                observed_timeouts.append(timeout)
-                return await asyncio.wait_for(awaitable, min(timeout, .1))
-            monkeypatch.setattr(start_round, 'asyncio', SimpleNamespace(wait_for=controlled_wait, TimeoutError=asyncio.TimeoutError, CancelledError=asyncio.CancelledError))
+            real_timeout = asyncio.timeout
+            def controlled_timeout(seconds):
+                observed_timeouts.append(seconds)
+                return real_timeout(min(seconds, .1))
+            monkeypatch.setattr(start_round, 'asyncio', SimpleNamespace(timeout=controlled_timeout, wait_for=asyncio.wait_for, TimeoutError=asyncio.TimeoutError, CancelledError=asyncio.CancelledError))
         task = asyncio.create_task(send(srv))
         if termination == 'cancel':
             await asyncio.sleep(.1)
@@ -515,3 +516,236 @@ def test_real_standby_monitor_sends_dock_and_shortcut_once(tmp_path):
     _write_evidence('213-budget-log-dock.json', json.dumps({
         'source': 'real Log Solution Dock/shortcut initialization; synthetic KVM; launch stub',
         'events': kvm.events, 'measurements': record.measurements}, indent=2))
+
+
+def test_connection_handshake_timeout_before_deadline_is_fault(monkeypatch):
+    import time
+    srv, kvm = setup_server(monkeypatch)
+    async def connect(ip):
+        raise TimeoutError('握手逾時')
+    srv.kvm_pool.acquire_connection = connect
+    result = run_async(send(srv))
+    rec = srv._slot('DFU-01').start_round_records['round1']
+    assert time.monotonic() < rec.deadline
+    assert (result['status'], result['error'], result['data']) == ('error', 'kvm_connect_failed', {'kind': 'fault'})
+    assert result['message'].isascii()
+    assert not rec.accepted and not rec.sent and not kvm.events
+    assert not srv.lock_manager.is_locked('DFU-01')
+    assert srv.kvm_pool.active_count() == 0
+
+
+def _short_deadline(monkeypatch):
+    """Keep the production deadline construction, but control its scheduled expiry."""
+    import start_round as flow
+    from types import SimpleNamespace
+    real_timeout = asyncio.timeout
+    boundaries = []
+    def timeout(seconds):
+        assert 73 < seconds <= 74
+        boundary = real_timeout(.05)
+        boundaries.append(boundary)
+        return boundary
+    monkeypatch.setattr(flow, 'asyncio', SimpleNamespace(
+        timeout=timeout, wait_for=asyncio.wait_for,
+        TimeoutError=asyncio.TimeoutError, CancelledError=asyncio.CancelledError))
+    return boundaries
+
+
+@pytest.mark.parametrize('code', ['monitor_not_ready', 'hid_failed'])
+@pytest.mark.parametrize('sent', [False, True])
+def test_actual_deadline_preserves_pre_start_error(monkeypatch, code, sent):
+    srv, kvm = setup_server(monkeypatch)
+    boundaries = _short_deadline(monkeypatch)
+    async def stall(ctx, rec):
+        rec.accepted = True
+        rec.last_error = (code, 'Original failure')
+        if sent:
+            rec.mark_sent()
+            kvm.events.append(('start',))
+        await asyncio.Event().wait()
+    srv._handle_start_round = stall
+    result = run_async(send(srv))
+    assert boundaries[0].expired()
+    assert (result['status'], result['error'], result['data']) == (
+        'error', code, {'kind': 'paused' if sent else 'fault'})
+    assert result['message'] == 'Original failure'
+    assert kvm.events.count(('start',)) == int(sent)
+    assert not srv.lock_manager.is_locked('DFU-01')
+    assert srv.kvm_pool.get_connection_info(srv.device_registry.get('DFU-01').kvm_ip)['in_use'] == 0
+
+
+@pytest.mark.parametrize('sent', [False, True])
+def test_actual_deadline_without_error_is_timeout(monkeypatch, sent):
+    srv, kvm = setup_server(monkeypatch)
+    boundaries = _short_deadline(monkeypatch)
+    async def stall(ctx, rec):
+        rec.accepted = True
+        if sent:
+            rec.mark_sent()
+            kvm.events.append(('start',))
+        await asyncio.Event().wait()
+    srv._handle_start_round = stall
+    result = run_async(send(srv))
+    assert boundaries[0].expired()
+    assert (result['status'], result['error'], result['data']) == (
+        ('error', 'hid_failed', {'kind': 'paused'}) if sent else
+        ('timeout', 'timeout', {'kind': 'fault'}))
+    assert kvm.events.count(('start',)) == int(sent)
+    assert not srv.lock_manager.is_locked('DFU-01')
+    assert srv.kvm_pool.get_connection_info(srv.device_registry.get('DFU-01').kvm_ip)['in_use'] == 0
+
+
+def _pre_start_failure(monkeypatch, station='DFU', hid='dock', reason=None, post_start=False):
+    srv, kvm = setup_server(monkeypatch, station)
+    calls = []
+    async def monitor(wrapped, gate, key, **kw):
+        kw['on_accept']()
+        kw['on_preparing']()
+        if hid == 'dock':
+            await wrapped.click(10, 10)
+        elif hid == 'shortcut':
+            await wrapped.press_command_shift_m()
+        kvm.show('monitoring')
+    async def launch(wrapped, **kw):
+        calls.append(1)
+        if post_start:
+            kw['on_start_hid']()
+            kvm.events.append(('start',))
+        raise FlowError('hid_failed', 'Start button not found', reason=reason)
+    monkeypatch.setattr('monitor_flow.run_monitor_start', monitor)
+    srv._commands['start_round'].stations[station] = launch
+    return srv, kvm, calls
+
+
+@pytest.mark.parametrize('station', ['DFU', 'BT'])
+def test_pre_start_hid_failed_after_dock_is_fault(monkeypatch, station):
+    srv, kvm, calls = _pre_start_failure(monkeypatch, station)
+    result = run_async(send(srv, device=station + '-01'))
+    assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'fault'})
+    rec = srv._slot(station + '-01').start_round_records['round1']
+    assert rec.side_effect and not rec.sent and calls == [1]
+    assert sum(e[0] == 'click' for e in kvm.events) == 1
+    assert ('start',) not in kvm.events
+
+
+def test_pre_start_hid_failed_after_shortcut_is_fault(monkeypatch):
+    srv, kvm, calls = _pre_start_failure(monkeypatch, hid='shortcut')
+    result = run_async(send(srv))
+    assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'fault'})
+    assert calls == [1] and kvm.events.count(('key', 'cmd+shift+m')) == 1
+    assert not srv._slot('DFU-01').start_round_records['round1'].sent
+    assert ('start',) not in kvm.events
+
+
+@pytest.mark.parametrize('hid', ['dock', 'shortcut'])
+def test_pre_start_no_frame_after_unclassified_hid_does_not_retry(monkeypatch, hid):
+    srv, kvm, calls = _pre_start_failure(monkeypatch, hid=hid, reason='no_frame')
+    result = run_async(send(srv))
+    assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'fault'})
+    assert calls == [1] and len(kvm.events) == 1
+    rec = srv._slot('DFU-01').start_round_records['round1']
+    assert rec.side_effect and not rec.sent
+
+
+@pytest.mark.parametrize('remaining', [75., .4])
+def test_pre_start_structured_no_frame_without_hid_retries_within_budget(monkeypatch, remaining):
+    import start_round as flow
+    from types import SimpleNamespace
+    from tcp_server import CommandContext
+    srv, kvm, calls = _pre_start_failure(monkeypatch, hid=None, reason='no_frame')
+    kvm.connected = True
+    now, sleeps = [0.], []
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+    async def read(*args):
+        from log_solution_reader import MarkerState
+        return SimpleNamespace(kind='waiting', state=MarkerState.MONITORING)
+    monkeypatch.setattr(flow, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    # to_thread is kept for the monitor readiness precondition.
+    monkeypatch.setattr(flow, 'asyncio', SimpleNamespace(sleep=sleep, to_thread=asyncio.to_thread))
+    monkeypatch.setattr(flow, 'read', read)
+    srv._monitor_refusal = lambda *a: None
+    rec = flow.Record(2, remaining)
+    ctx = CommandContext(srv.device_registry.get('DFU-01'), kvm, srv._slot('DFU-01'),
+                         srv._commands['start_round'].stations['DFU'])
+    result = run_async(flow.run(srv, ctx, rec))
+    assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'fault'})
+    assert len(calls) == (3 if remaining == 75 else 1)
+    assert sleeps == ([.5, .5] if remaining == 75 else [])
+    assert rec.deadline == remaining and rec.timeout == 2
+    assert not rec.sent and not rec.side_effect and not kvm.events
+    assert [row[2] for row in rec.measurements if row[0] == 'start_hid_flow'] == (
+        [75., 74.5, 74.] if remaining == 75 else [.4])
+
+
+def test_post_start_hid_failed_remains_paused_without_resend(monkeypatch):
+    srv, kvm, calls = _pre_start_failure(monkeypatch, post_start=True)
+    async def scenario():
+        for key in ['round1', 'round1', 'next']:
+            result = await send(srv, req_id=key)
+            assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'paused'})
+        assert calls == [1] and kvm.events.count(('start',)) == 1
+    run_async(scenario())
+
+
+async def _assert_new_keys_blocked(srv, kvm, original):
+    import copy
+    records = srv._slot('DFU-01').start_round_records
+    rec = records['round1']
+    assert rec.accepted and not rec.sent
+    assert rec.result['error'] == original['error'] and rec.result['data'] == original['data']
+    previous = copy.deepcopy(rec.result)
+    events = list(kvm.events)
+    round_state = srv._slot('DFU-01').round
+    def snapshot():
+        return copy.deepcopy({**vars(round_state), 'activity': vars(round_state.activity)})
+    rnd = snapshot()
+    assert not srv.lock_manager.is_locked('DFU-01')
+    async def forbidden(*a, **kw):
+        pytest.fail('Blocked request must not connect, monitor or start')
+    srv.kvm_pool.acquire_connection = forbidden
+    srv._handle_start_round = forbidden
+    for key in ['next', 'another']:
+        result = await send(srv, req_id=key)
+        assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'paused'})
+        assert result['message'] == 'Start round blocked: this req_id cannot start a new round'
+        assert all(result[name].isascii() for name in ['status', 'error', 'message'])
+        assert list(records) == ['round1'] and records['round1'] is rec
+        assert rec.result == previous and kvm.events == events
+        assert srv._slot('DFU-01').round is round_state
+        assert snapshot() == rnd
+        assert not srv.lock_manager.is_locked('DFU-01')
+
+
+@pytest.mark.parametrize('code', ['monitor_not_started', 'frame_frozen', 'kvm_connect_failed'])
+def test_accepted_fault_blocks_new_key_without_release(monkeypatch, code):
+    srv, kvm = setup_server(monkeypatch)
+    async def monitor(kvm, gate, key, **kw):
+        kw['on_accept']()
+        kw['on_preparing']()
+        raise FlowError(code, 'Accepted round failed')
+    monkeypatch.setattr('monitor_flow.run_monitor_start', monitor)
+    async def scenario():
+        result = await send(srv)
+        assert (result['status'], result['error'], result['data']) == ('error', code, {'kind': 'fault'})
+        assert srv.kvm_pool.get_connection_info(srv.device_registry.get('DFU-01').kvm_ip)['in_use'] == 0
+        await _assert_new_keys_blocked(srv, kvm, result)
+    run_async(scenario())
+
+
+def test_accepted_timeout_blocks_new_key_without_release(monkeypatch):
+    srv, kvm = setup_server(monkeypatch)
+    boundaries = _short_deadline(monkeypatch)
+    async def monitor(kvm, gate, key, **kw):
+        kw['on_accept']()
+        kw['on_preparing']()
+        await asyncio.Event().wait()
+    monkeypatch.setattr('monitor_flow.run_monitor_start', monitor)
+    async def scenario():
+        result = await send(srv)
+        assert boundaries[0].expired()
+        assert (result['status'], result['error'], result['data']) == ('timeout', 'timeout', {'kind': 'fault'})
+        assert srv.kvm_pool.get_connection_info(srv.device_registry.get('DFU-01').kvm_ip)['in_use'] == 0
+        await _assert_new_keys_blocked(srv, kvm, result)
+    run_async(scenario())

@@ -21,6 +21,7 @@ class Record:
     accepted: bool = False
     sent: bool = False
     last_error: tuple = None
+    # Conservative retry barrier for unclassified preparatory HID; not a reply kind.
     side_effect: bool = False
     result: dict = None
     measurements: list = field(default_factory=list)
@@ -55,7 +56,7 @@ async def dispatch(server, req_id, admitted, reader, writer):
             return uncertain(rec.result['error'], rec.result['message'])
         return uncertain()  # Undefined resume/cache policy: never repeat side effects.
     if any(r.accepted and r.result and r.result['data']['kind'] != 'started' for r in records.values()):
-        return uncertain()
+        return uncertain(message='Start round blocked: this req_id cannot start a new round')
     if not server.lock_manager.try_acquire(entry.device_id, holder='start_round'):
         return reply('device_busy', 'Device is busy')
     rec = Record(admitted.args, time.monotonic() + admitted.args + 73)
@@ -70,11 +71,16 @@ async def dispatch(server, req_id, admitted, reader, writer):
         wrapped = _HandoverKvm(raw, lambda: server._neutralize_manual_hid_async(entry.device_id, raw))
         ctx = CommandContext(entry, wrapped, slot, admitted.spec.stations[entry.station], reader, writer)
         return await server._handle_start_round(ctx, rec)
+    deadline_timeout = asyncio.timeout(max(0, rec.deadline - time.monotonic()))
     try:
         # No per-step timeout resets. Pool cancellation closes its half-built client.
-        rec.result = await asyncio.wait_for(lifecycle(), max(0, rec.deadline - time.monotonic()))
+        async with deadline_timeout:
+            rec.result = await lifecycle()
     except asyncio.TimeoutError:
-        if rec.last_error:
+        if not deadline_timeout.expired():
+            code = 'kvm_connect_failed' if raw is None else 'internal_error'
+            rec.result = uncertain(code, 'Start round failed') if rec.sent else reply(code, 'Start round failed')
+        elif rec.last_error:
             rec.result = uncertain(*rec.last_error) if rec.sent else reply(*rec.last_error)
         else:
             rec.result = uncertain() if rec.sent else reply('timeout', 'Start round deadline expired', status='timeout')
@@ -207,7 +213,7 @@ async def run(server, ctx, rec):
             except FlowError as exc:
                 rec.last_error = (exc.code, str(exc))
                 if (exc.code != 'hid_failed' or exc.reason != 'no_frame' or rec.side_effect
-                        or rec.sent or attempt == 2):
+                        or rec.sent or attempt == 2 or time.monotonic() + .5 >= rec.deadline):
                     raise
                 await asyncio.sleep(.5)
         rec.last_error = None
@@ -228,6 +234,6 @@ async def run(server, ctx, rec):
                 await asyncio.sleep(min(.05, max(0, rec.deadline - time.monotonic())))
             return uncertain()
     except FlowError as exc:
-        if exc.code == 'log_solution_review' or rec.sent or exc.code == 'log_solution_busy' or (rec.side_effect and exc.code == 'hid_failed'):
+        if exc.code == 'log_solution_review' or rec.sent or exc.code == 'log_solution_busy':
             return uncertain(exc.code, str(exc))
         return reply(exc.code, str(exc))

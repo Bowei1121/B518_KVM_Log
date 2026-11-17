@@ -787,6 +787,8 @@ Protocol round-trip error/status text, including JSON `message` fields, MUST be 
 
 契約未定的同鍵不同參數、fault／timeout 續跑、進行中重送，以及 paused 後新鍵開始，均保守回 paused 交人工，不重送 HID。紀錄在 Core 行程內保留。初次 busy 的重呼與 Dock 副作用分類未定，不重呼 monitor_start，回 paused；poll timeout 僅觀察的定案維持不變。已送後斷線依 #211「保留原碼」回 kvm_connect_failed／paused。TCP 斷線不觸發重送，既有工作在同一截止內結束並記錄；重送只讀紀錄。
 
+已受理且未 started 的 fault／timeout 紀錄目前也會阻擋新 req_id；阻擋回覆為 error/hid_failed/paused，訊息明示無法開始新輪，解除方式待使用者決定。
+
 預算證據：每設備 `start_round_records[req_id].measurements` 記錄 connection、monitor_poll 的次數、實際耗時與剩餘 D。HID、模板處理、真實連線取消／清理與完整預算帳仍待 #213 實作時量測；假設備測試不代表實機，約 7 秒仍未分配，不延長 D。
 
 #### #213 合成畫面預算量測（非實機）
