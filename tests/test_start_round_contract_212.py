@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOC = (ROOT / 'docs/PROTOCOL.md').read_text()
+DOC = (ROOT / 'docs/PROTOCOL.md').read_text(encoding='utf-8')
 SECTION = DOC.split('### 5.6a `start_round`', 1)[1].split('### 5.7', 1)[0]
 
 
@@ -34,7 +34,7 @@ def test_contract_tables_and_boundaries():
     assert {'not_ready', 'no_frame', 'busy', '外部鎖衝突', 'poll timeout', 'review', 'HID 不確定', 'fault'} <= retry
     for term in ('D = T + 73', '110', '145', '480', '510', '>=106', '不重設 T', 'Core 重啟', 'on_accept → begin_start', '沒有時間上限'):
         assert term in SECTION
-    adr = (ROOT / 'docs/adr/0002-per-device-lock-and-fail-fast.md').read_text()
+    adr = (ROOT / 'docs/adr/0002-per-device-lock-and-fail-fast.md').read_text(encoding='utf-8')
     assert all(term in adr for term in ('start_round', 'device_busy', '不同設備獨立'))
     assert '尚待 #213 實作' in DOC and 'unknown_command' in DOC
 
