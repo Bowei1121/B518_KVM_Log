@@ -170,7 +170,9 @@ def test_ping_returns_pong_and_core_version(server):
     assert resp["status"] == "ok"
     assert resp["error"] == ""
     assert resp["message"] == ""
-    assert resp["data"] == {"pong": True, "core_version": resp["data"]["core_version"]}
+    assert resp["data"] == {"pong": True, "core_version": resp["data"]["core_version"],
+                            "supported_commands": sorted(server._commands)}
+    assert not {"start_round", "check", "button"} & set(resp["data"]["supported_commands"])
     assert resp["data"]["core_version"] != ""
 
 
@@ -309,7 +311,7 @@ COMMAND_ROWS = [
     ("hid", True, False),
 ]
 EXPECTED_DEFAULT_DATA = {
-    "ping": {"pong": False, "core_version": ""},
+    "ping": {"pong": False, "core_version": "", "supported_commands": []},
     "status": {"core_uptime_sec": 0, "devices": []},
     "core_status": {},
     "shutdown": {},
@@ -404,3 +406,19 @@ def test_one_registered_spec_drives_validation_dispatch_and_envelope(server):
     unknown = _send(server, {"protocol_version": "1.0", "req_id": "e3", "device": "", "cmd": "echo_text",
                              "text": "hi", "typo": 1})
     assert unknown["error"] == "unknown_field"
+
+
+def test_ping_tracks_new_registered_command(server):
+    server.register_handler(CommandSpec("echo_capability", lambda ctx, args: {}))
+    data = _send(server, {"protocol_version": "1.0", "req_id": "p2", "device": "", "cmd": "ping"})["data"]
+    assert data["supported_commands"] == sorted(set(server._commands))
+    assert "echo_capability" in data["supported_commands"]
+
+
+@pytest.mark.parametrize("device", ["DFU-01", "BT-01", "FCT-01"])
+def test_start_round_is_unknown_without_side_effects(server, device):
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "r", "device": device,
+                          "cmd": "start_round", "timeout_sec": 30})
+    assert resp["error"] == "unknown_command"
+    assert server.kvm_pool.active_count() == 0
+    assert not server.lock_manager.is_locked(device)

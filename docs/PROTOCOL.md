@@ -31,7 +31,7 @@ JSON 內不使用 `null`。字串欄位沒有值時為 `""`，數字為 `0`，�
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `protocol_version` | string | 是 | 固定 `"1.0"` |
-| `req_id` | string | 是 | LabVIEW 產生，1–64 字元，每筆請求不重複（建議用 GUID）。Core 原樣回傳。**不是輪次 UUID** |
+| `req_id` | string | 是 | LabVIEW 產生，1–64 字元，每筆請求不重複（建議用 GUID）；`start_round` 同輪重送例外，沿用原值。Core 原樣回傳。**不是輪次 UUID** |
 | `device` | string | 是 | 設備 ID，必須與 Core 設備清單**完全相同**（區分大小寫），例如 `DFU-01`。`ping`、`status` 填 `""` |
 | `cmd` | string | 是 | 指令名稱，見第 4 節 |
 
@@ -67,6 +67,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `monitor_start` | 喚起 Log Solution 並確認進入監控中，建立本輪開始請求 | 是 | ✔ | ✔ | ✔ |
+| `start_round` | 開始監控並開測（尚待 #213 實作） | 是 | ✔ | ✘ | ✔ |
 | `start_test` | 開始測試：DFU 點 OK、BT 點 Start All | 是 | ✔ | ✘ | ✔ |
 | `check_start` | 測試開始確認：活動通道，或直接交付已完成的本輪 | 是 | ✔ | ✔ | ✔ |
 | `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
@@ -110,6 +111,9 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | --- | --- | --- |
 | `pong` | boolean | 固定 `true` |
 | `core_version` | string | Core Service 版本 |
+| `supported_commands` | array of string | 實際 registry 命令名稱的全量清單，去重並排序；錯誤時預設 `[]` |
+
+錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用（使用者 2026-11-17 定案）。LabVIEW 只判斷清單是否包含 `start_round`，其他名稱忽略，仍遵守站別與用途限制。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。目前尚未註冊 `start_round`，三站皆回 `unknown_command`；#213 落地後 FCT 才回 `unsupported_command`。
 
 ### 5.2 `status`
 
@@ -330,6 +334,88 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `state` | string | 成功時為 `monitoring`；失敗為 `""` |
 | `capacity` | number | 成功時畫面上的結果格數；失敗為 `0` |
 
+### 5.6a `start_round`（契約，尚待 #213 實作）
+
+DFU、BT 依序完成監控就緒與開測；FCT 不支援，落地後回 `unsupported_command`。Core 不負責 MES。請求：
+
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","timeout_sec":30}
+```
+
+共同欄位型別及設備查表依第 2 節；未知欄位回 `unknown_field`，`kvm_ip`／`station` 回 `forbidden_field`。驗證必須先於設備鎖、KVM 連線及 HID。
+
+`timeout_sec` 必填、1–300 秒、可帶小數及無缺值預設：使用者 2026-11-17 定案。
+
+| `timeout_sec` 輸入 | 結果 |
+| --- | --- |
+| 有限 JSON number，1–300（含端點及小數） | 接受，作為共用監控等待 T |
+| 缺少、null、布林、字串、非有限數、低於 1 或高於 300 | `invalid_argument`，無預設值 |
+
+回覆固定第 3 節九欄；`data` 固定只有 `kind`，預設 `fault`，允許 `started`、`paused`、`fault`。外層 `status` 只有 `ok`、`error`、`timeout`，不得使用內部 busy 或 kind 作為 status。`started` 為 `ok` 且 error/message 為空；`paused` 使用 `error` 與原因碼；`fault` 保留原始 error 與英文 message，絕不轉為產品 FAIL。錯誤原因沿用 envelope 的 `error/message`；`data` 僅含 `kind` 及預設值、`paused` 的 status 與原因碼：使用者 2026-11-17 定案。舊 `check_*` 語意不變。LabVIEW 的 `start_round` 分支必須辨識 `kind=paused` 並交人工處理，不得將所有 `status=error` 視為可重試（使用者 2026-11-17 定案）。以下為完整範例：
+
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"ok","error":"","message":"","elapsed_sec":12.0,"data":{"kind":"started"}}
+```
+
+Review 暫停：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"log_solution_review","message":"Review required","elapsed_sec":2.0,"data":{"kind":"paused"}}
+```
+
+HID 已送未確認，暫停人工核對：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"hid_failed","message":"HID outcome requires review","elapsed_sec":3.0,"data":{"kind":"paused"}}
+```
+
+原碼 fault：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"frame_frozen","message":"Frame frozen","elapsed_sec":2.0,"data":{"kind":"fault"}}
+```
+
+開測 HID 送出前，只有 D 截止且沒有原始錯誤碼時，回 `status=timeout`、`error=timeout`、`kind=fault`（使用者 2026-11-17 定案）：
+
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"timeout","error":"timeout","message":"Start round deadline reached","elapsed_sec":103.0,"data":{"kind":"fault"}}
+```
+
+FCT 拒絕（#213 落地後）：
+```json
+{"protocol_version":"1.0","req_id":"round-fct01-001","device":"FCT-01","cmd":"start_round","status":"error","error":"unsupported_command","message":"start_round is not supported for FCT","elapsed_sec":0.0,"data":{"kind":"fault"}}
+```
+
+#### 等待預算與重試
+
+使用者 2026-11-17 定案：已核准公式 **D = T + 73 秒**；T=30 時 D=103 秒，110 秒是硬上限，KVM 連線與 ICE 等待算進這 110 秒；LabVIEW TCP Read timeout 145 秒不變。103 與 110 秒之間約 7 秒為未分配餘裕，不得宣稱已驗證用途。只對 `start_round` 加整體截止，由 #213 實作，不動共用連線池；截止時須正確取消並釋放設備鎖，不可拖住其他設備。其他 T 的 LabVIEW 等待須配合調整。CheckFinish 保持 480 秒、TCP Read 510 秒、餘裕 >=106 秒。
+
+| 預算項目 | 秒 | 對照與規則 |
+| --- | --- | --- |
+| 監控就緒 | T | 整輪共用，不重設 T；在共用 T 內預先分配最多三次嘗試（含首次），含間隔的總等待不得超過 T |
+| 固定額度 | 73 | 是共用剩餘額度，不是每步各取得 73 秒；凍結預檢最多 2 秒、心跳取樣每次最多 2.5 秒、Log Solution Dock 確認 3 秒（含點擊後新影格等待）、其他新影格等待預設 2 秒、監控 poll 間隔 0.05 秒；重試間隔另計但仍受共用 T／D 約束。HID 點擊、停留與模板處理等項目待 #213 實作時量測 |
+| 截止時間 | D | 整體截止含連線／ICE，T=30 時硬上限 110 秒；#213 實作；共用連線池不變。驗證完成、取得設備鎖後設定單一單調時鐘截止，涵蓋後續 KVM 連線與 ICE 等待；各等待取原有等待及剩餘預算的較小值，重試不得重設 T 或 D |
+
+| 分類 | 來源階段 | 實際錯誤碼／觀察 | 允許重試前提 | 次數／間隔 | 預算 | 停止條件與最終回覆 |
+| --- | --- | --- | --- | --- | --- | --- |
+| not_ready | 開測前 | `monitor_not_ready`，未送 HID | 本輪監控可確認且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_ready` |
+| no_frame | 監控開始前 | `hid_failed` 且可靠證明僅暫無影格、尚未送有副作用 HID（使用者 2026-11-17 定案） | 只有結構化原因及階段紀錄能確認暫無影格且尚未送有副作用 HID 才重試；不可比對 message，不能重試所有 `hid_failed`，已送未確認必須 paused | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 無證據或次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `hid_failed` |
+| busy | 監控開始 | `log_solution_busy` | 先核對本輪階段，尚未送出有副作用 HID 且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `log_solution_busy` |
+| 外部鎖衝突 | 接受前 | `device_busy` | 不在命令內等待 | 1 次 | 不重試 | fail-fast，保留原碼 fault |
+| poll timeout | 監控等待 | `monitor_not_started` | 只重讀畫面、繼續等待；不重新呼叫 `monitor_start`、不再點 Dock、不再送快捷鍵（含 Cmd+Shift+M），不重設 T | 最多三次含首次，間隔 0.5 秒；每次最多 T/3，最後一次使用當時剩餘的 T | 同一 T、D，0.5 秒間隔計入，總等待不得超過 T | 次數或分到的 T 用盡仍未看到監控中，回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_started`；畫面三種處理見下文 |
+| review | 任一階段 | `log_solution_review` | 不自動重試 | 1 次 | 同一 D | paused，保留原碼 |
+| HID 不確定 | 開測 HID 已送未確認 | `hid_failed` 或連線中斷 | 不得自動重送 | 1 次 | 同一 D | paused，人工核對 |
+| fault | 設備、設定、協定或其他失敗 | 原始錯誤碼 | 不自動重試 | 1 次 | 同一 D | fault，保留原碼 |
+
+poll timeout 採用使用者 2026-11-17 定案的分配方式：同一輪 T 不重設，在共用 T 內預先分配最多三次嘗試（含首次）；每次嘗試最多分到 T/3，最後一次使用當時剩餘的 T。三次加間隔的總等待不得超過 T，0.5 秒間隔計入同一 T／D，不另外加時間，也不可把 73 秒固定額度挪來當額外 T。重試動作限制為只重讀畫面、繼續等待，不重新呼叫 `monitor_start`、不再點 Dock、不再送快捷鍵（含 Cmd+Shift+M）。重試含後續等待看到畫面時：
+
+- 監控中：本階段成功，進入後續開測流程；這是同一輪 `start_round` 已送出的監控啟動，不得當成 `log_solution_busy`。
+- 待命：繼續只重讀畫面直到本次嘗試的 T 份額用盡；不得再點 Dock 或送快捷鍵。所有嘗試用盡仍為待命，回 `status=error`、`kind=fault`，保留 `monitor_not_started`。
+- 待確認：立即停止重試，回 `status=error`、`kind=paused`、`error=log_solution_review`。
+
+開測 HID 送出前（使用者 2026-11-17 定案）：重試次數用完，回 `status=error`、`kind=fault`，保留最後原碼；T 用完，回 `status=error`、`kind=fault`，保留 `monitor_not_started`。D 截止且已有原碼，回 `status=error`、`kind=fault`，保留原碼；只有 D 截止且沒有原始錯誤碼時，回 `status=timeout`、`error=timeout`、`kind=fault`。LabVIEW 必須依命令分支處理，不得讀取不存在的 `data.state`；舊命令語意不變。
+
+同一設備以 `req_id` 記錄開始階段，同輪重送沿用，下一輪換新值；不同設備不共用。開測 HID 送出後，在 D 剩餘時間內觀察本輪至少一個通道的可信測試活動或有效結果，才確認開始並回 started；`start_test` 成功及監控就緒均不足以確認。HID 已送出指開測操作已發送至設備，即使回覆遺失亦算；確認窗口即剩餘 D，不另加秒數。確認窗口內未觀察到開始，依使用者 2026-11-17 定案：開測 HID 送出後，不論有沒有原碼，D 截止或確認窗口結束一律回 `status=error`、`kind=paused`，`error` 保留原碼；沒有原碼時使用 `hid_failed`，message 為 "HID outcome requires review"。人工核對，不重送。Core 重啟清除紀錄，不保證跨重啟冪等。沿用 `on_accept → begin_start` 安全接受界線：未接受的失敗請求不得清除前輪狀態、交付簽章或輸入放行紀錄。
+
+命令內部持 per-device lock 進行有界等待；同設備外部衝突維持 `device_busy` fail-fast，`input`／`check_finish` 可能暫時被拒。其他設備獨立執行，不設全域鎖；八設備並行實作及驗證屬 #213。
+
 ### 5.7 `start_test`（DFU、BT）
 
 無專屬請求欄位。上鎖。FCT 回 `unsupported_command`。
@@ -424,10 +510,10 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `unknown_device` | error | `device` 不在設備清單 | 檢查設備 ID |
 | `unknown_field` | error | 帶了未定義欄位 | 修正程式 |
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
-| `invalid_argument` | error | 欄位值不合法。`check_start`／`check_finish`／`inspect` 的 `timeout_sec` 須為 0–3600；`monitor_start` 須為 1–300 | 修正程式 |
+| `invalid_argument` | error | 欄位值不合法。`check_start`／`check_finish`／`inspect` 的 `timeout_sec` 須為 0–3600；`monitor_start` 須為 1–300；`start_round` 必填、1–300 秒，可帶小數、無缺值預設；拒絕缺值、null、布林、字串、非有限數與超範圍（使用者 2026-11-17 定案） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
 | `log_solution_busy` | error | `monitor_start` 時已在監控中；或 `input` 時為監控中／準備中／待確認，或完成（含人工停止完成）但本輪尚未交付也沒回過 `manual_verification_required` | 先完成本輪或等人工核對 |
-| `log_solution_review` | error | `monitor_start` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
+| `log_solution_review` | error | `monitor_start`／`start_round` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
 | `capacity_mismatch` | error | 可交付畫面的格數與設定通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
 | `kvm_connect_failed` | error | 無法連線該設備的 JetKVM；或**指令進行中 KVM 斷線**（影像軌道結束，或 peer connection 變成 `failed`／`closed`，#58）。死亡訊號出現時立即回覆，包括 Freeze Guard 等待期間。拔線這類情況要等 ICE 逾時（數十秒）才會出現死亡訊號，在這之前仍可能回 `frame_frozen`。畫面靜止本身不是斷線 | 設備／網路異常，暫停。KVM 已確定死亡；下一個指令會自動重連，不要只重試畫面 |
@@ -441,7 +527,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `log_solution_not_visible` | error | `check_start`／`check_finish` 連續 30 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 暫停，復位後整輪 NG，交 TE 重測 |
 | `manual_verification_required` | error | 有本輪開始請求，但沒看到本次監控中，畫面卻已可交付（準備逾時、或快捷鍵後直接人工停止） | 不交付、不自動重測；暫停並請人員核對。此回覆清除本輪開始請求 |
 | `round_lost` | error | 本輪已見監控中之後 Log Solution 回到待命 | 本輪結果已無法取得，暫停 |
-| `timeout` | timeout | `check_start`／`check_finish`／`inspect` 長輪詢逾時 | 依 `data.state` 決定再查或交人工 |
+| `timeout` | timeout | `check_start`／`check_finish`／`inspect` 長輪詢逾時；`start_round` 僅開測 HID 送出前 D 截止且無原碼時回 `kind=fault`（使用者 2026-11-17 定案） | 依命令分支：舊查詢依 `data.state` 決定再查或交人工；`start_round` 不讀 `data.state`，交人工 |
 | `server_shutting_down` | error | Core 正在關閉 | 重連後重試 |
 | `internal_error` | error | Core 內部例外 | 記錄並通報 |
 
@@ -457,7 +543,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | typedef | 內容 |
 | --- | --- |
 | `Envelope` | 第 3 節除 `data` 外欄位 |
-| `PingResp` | Envelope + `data{pong, core_version}` |
+| `PingResp` | Envelope + `data{pong, core_version, supported_commands[]}` |
 | `StatusResp` | Envelope + `data{core_uptime_sec, devices[]{device, station, connected, busy, frozen, channels, connect_failed, connect_fail_count}}`；`connect_failed` 缺少時視為 `false`，`connect_fail_count` 缺少時視為 `0` |
 | `SnapshotResp` | Envelope + `data{width, height, format, image_base64}` |
 | `CheckStartResp` | Envelope + `data{kind, state, reason, capacity, active[]{slot, evidence}, results[]{slot, status}}` |
@@ -465,6 +551,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `InspectResp` | 與 `CheckStartResp` 相同；不會出現 `taken`／`already_taken`。僅 Monitor UI |
 | `InputResp` | Envelope + `data{entered[]}` |
 | `MonitorStartResp` | Envelope + `data{state, capacity}` |
+| `StartRoundResp` | Envelope + `data{kind}` |
 | `StartTestResp` | Envelope + `data{action}` |
 
 ## 9. 完整範例
@@ -479,7 +566,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0001","device":"","cmd":"ping",
  "status":"ok","error":"","message":"","elapsed_sec":0.0,
- "data":{"pong":true,"core_version":"2.0.0"}}
+ "data":{"pong":true,"core_version":"2.0.0","supported_commands":["check_finish","check_start","core_status","hid","input","inspect","monitor_start","ping","shutdown","snapshot","start_test","status"]}}
 ```
 
 ### 9.2 `status`

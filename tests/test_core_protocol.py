@@ -157,3 +157,15 @@ def test_flatten_reply_error_with_data_keeps_envelope_error():
     assert flat["message"] == "busy"
     assert flat["stations"] == [{"device": "BT-01"}]
     assert "data" not in flat
+
+
+@pytest.mark.parametrize("commands, expected", [(None, False), (["ping"], False), (["ping", "start_round"], True)])
+def test_ping_capability_compatibility(commands, expected):
+    data = {"pong": True, "core_version": "1"}
+    if commands is not None:
+        data["supported_commands"] = commands
+    raw = (json.dumps({"protocol_version": "1.0", "req_id": "p", "status": "ok", "data": data}) + "\n").encode()
+    reply = read_reply(ChunkSocket([raw]))
+    assert req_id_matches(reply, "p")
+    assert flatten_reply(reply).get("supported_commands") == commands
+    assert ("start_round" in reply["data"].get("supported_commands", [])) is expected
