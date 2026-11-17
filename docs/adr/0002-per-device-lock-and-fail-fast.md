@@ -15,3 +15,7 @@ Accepted
 ## Consequences
 - **Pros**: 完美支援多 KVM 平行測試。能提早暴露 LabVIEW 端不合理的非同步指令序列。
 - **Cons**: LabVIEW 必須有完善的狀態管理機制，不能隨意向正在忙碌的 KVM 連發指令。
+
+## 補充：start_round 內部等待（#212 契約，待 #213 實作）
+
+`start_round` 可在持有單一設備鎖期間進行共用截止時間的有界內部等待與安全重試；其他外部同設備衝突仍立即回 `device_busy`，包括 `input`／`check_finish`。不同設備獨立，不使用全域鎖。指令路徑 KVM 建立連線既有行為沒有時間上限，是否納入截止時間待 #213 或後續釐清；詳見 PROTOCOL 5.6a。

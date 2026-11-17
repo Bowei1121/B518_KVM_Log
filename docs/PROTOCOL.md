@@ -31,7 +31,7 @@ JSON 內不使用 `null`。字串欄位沒有值時為 `""`，數字為 `0`，�
 | 欄位 | 型別 | 必填 | 說明 |
 | --- | --- | --- | --- |
 | `protocol_version` | string | 是 | 固定 `"1.0"` |
-| `req_id` | string | 是 | LabVIEW 產生，1–64 字元，每筆請求不重複（建議用 GUID）。Core 原樣回傳。**不是輪次 UUID** |
+| `req_id` | string | 是 | LabVIEW 產生，1–64 字元，每筆請求不重複（建議用 GUID）；`start_round` 同輪重送例外，沿用原值。Core 原樣回傳。**不是輪次 UUID** |
 | `device` | string | 是 | 設備 ID，必須與 Core 設備清單**完全相同**（區分大小寫），例如 `DFU-01`。`ping`、`status` 填 `""` |
 | `cmd` | string | 是 | 指令名稱，見第 4 節 |
 
@@ -67,6 +67,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `monitor_start` | 喚起 Log Solution 並確認進入監控中，建立本輪開始請求 | 是 | ✔ | ✔ | ✔ |
+| `start_round` | 開始監控並開測（尚待 #213 實作） | 是 | ✔ | ✘ | ✔ |
 | `start_test` | 開始測試：DFU 點 OK、BT 點 Start All | 是 | ✔ | ✘ | ✔ |
 | `check_start` | 測試開始確認：活動通道，或直接交付已完成的本輪 | 是 | ✔ | ✔ | ✔ |
 | `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
@@ -110,6 +111,9 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | --- | --- | --- |
 | `pong` | boolean | 固定 `true` |
 | `core_version` | string | Core Service 版本 |
+| `supported_commands` | array of string | 實際 registry 命令名稱，去重並排序；錯誤時預設 `[]` |
+
+錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。目前尚未註冊 `start_round`，三站皆回 `unknown_command`；#213 落地後 FCT 才回 `unsupported_command`。
 
 ### 5.2 `status`
 
@@ -329,6 +333,77 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | --- | --- | --- |
 | `state` | string | 成功時為 `monitoring`；失敗為 `""` |
 | `capacity` | number | 成功時畫面上的結果格數；失敗為 `0` |
+
+### 5.6a `start_round`（契約，尚待 #213 實作）
+
+DFU、BT 依序完成監控就緒與開測；FCT 不支援，落地後回 `unsupported_command`。Core 不負責 MES。請求：
+
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","timeout_sec":30}
+```
+
+共同欄位型別及設備查表依第 2 節；未知欄位回 `unknown_field`，`kvm_ip`／`station` 回 `forbidden_field`。驗證必須先於設備鎖、KVM 連線及 HID。
+
+| `timeout_sec` 輸入 | 結果 |
+| --- | --- |
+| 有限 JSON number，1–300（含端點及小數） | 接受，作為共用監控等待 T |
+| 缺少、null、布林、字串、非有限數、低於 1 或高於 300 | `invalid_argument`，無預設值 |
+
+回覆固定第 3 節九欄；`data` 固定只有 `kind`，預設 `fault`，允許 `started`、`paused`、`fault`。外層 `status` 只有 `ok`、`error`、`timeout`，不得使用內部 busy 或 kind 作為 status。`started` 為 `ok` 且 error/message 為空；`paused` 使用 `error` 與原因碼；`fault` 保留原始 error 與英文 message，絕不轉為產品 FAIL。以下為完整範例：
+
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"ok","error":"","message":"","elapsed_sec":12.0,"data":{"kind":"started"}}
+```
+
+Review 暫停：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"log_solution_review","message":"Review required","elapsed_sec":2.0,"data":{"kind":"paused"}}
+```
+
+HID 已送未確認，暫停人工核對：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"hid_failed","message":"HID outcome requires review","elapsed_sec":3.0,"data":{"kind":"paused"}}
+```
+
+原碼 fault：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"error","error":"frame_frozen","message":"Frame frozen","elapsed_sec":2.0,"data":{"kind":"fault"}}
+```
+
+等待預算耗盡：
+```json
+{"protocol_version":"1.0","req_id":"round-dfu01-001","device":"DFU-01","cmd":"start_round","status":"timeout","error":"timeout","message":"Start budget exhausted","elapsed_sec":103.0,"data":{"kind":"fault"}}
+```
+
+FCT 拒絕（#213 落地後）：
+```json
+{"protocol_version":"1.0","req_id":"round-fct01-001","device":"FCT-01","cmd":"start_round","status":"error","error":"unsupported_command","message":"start_round is not supported for FCT","elapsed_sec":0.0,"data":{"kind":"fault"}}
+```
+
+#### 等待預算與重試
+
+已核准公式 **D = T + 73 秒**；T=30 時 Core 最長約 110 秒，LabVIEW TCP Read timeout 145 秒。這是規劃值：指令路徑 KVM 建立連線目前沒有時間上限，屬既有行為，尚未證明包含連線的硬性 110 秒牆鐘上限；連線是否納入同一截止時間留待 #213 或後續釐清。CheckFinish 保持 480 秒、TCP Read 510 秒、餘裕 >=106 秒。
+
+| 預算項目 | 秒 | 對照與規則 |
+| --- | --- | --- |
+| 監控就緒 | T | 既有 monitor_start 等待，整輪共用，不重設 |
+| 固定額度 | 73 | 涵蓋既有凍結檢查最多 2、心跳取樣約 2.5、Dock 確認 3、開測操作與重試間隔等；是共用剩餘額度，不是每步各取得 73 秒 |
+| 截止時間 | D | #213 於驗證完成、取得設備鎖後設定單一單調時鐘截止；各等待取原有等待及剩餘預算的較小值，重試不得重設 T 或 D；連線未受此上限保證 |
+
+| 分類 | 來源階段 | 實際錯誤碼／觀察 | 允許重試前提 | 次數／間隔 | 預算 | 停止條件與最終回覆 |
+| --- | --- | --- | --- | --- | --- | --- |
+| not_ready | 開測前 | `monitor_not_ready`，未送 HID | 本輪監控可確認且仍有預算 | 最多三次含首次，間隔 0.5 秒 | 同一 T、D | 次數或預算耗盡回 timeout/fault |
+| no_frame | 監控開始前 | `hid_failed` 且可靠證明僅暫無影格、尚未送有副作用 HID | 有階段證據，不可比對 message | 最多三次含首次，間隔 0.5 秒 | 同一 T、D | 無證據或耗盡則保留原碼 fault；D 耗盡回 timeout/fault |
+| busy | 監控開始 | `log_solution_busy` | 不能證明本輪，不自動重試 | 1 次 | 同一 D | 停止，保留原碼 fault |
+| 外部鎖衝突 | 接受前 | `device_busy` | 不在命令內等待 | 1 次 | 不重試 | fail-fast，保留原碼 fault |
+| poll timeout | 監控等待 | `monitor_not_started`；check 長輪詢 `timeout` | 不重設 T | 1 次 | 同一 T、D | 停止，保留原碼；D 耗盡回 timeout/fault |
+| review | 任一階段 | `log_solution_review` | 不自動重試 | 1 次 | 同一 D | paused，保留原碼 |
+| HID 不確定 | 開測 HID 已送未確認 | `hid_failed` 或連線中斷 | 不得自動重送 | 1 次 | 同一 D | paused，人工核對 |
+| fault | 設備、設定、協定或其他失敗 | 原始錯誤碼 | 不自動重試 | 1 次 | 同一 D | fault，保留原碼 |
+
+同一設備以 `req_id` 記錄開始階段，同輪重送沿用，下一輪換新值；不同設備不共用。已確認開始回 started；已送 HID 未確認回 paused，不重送。Core 重啟清除紀錄，不保證跨重啟冪等。沿用 `on_accept → begin_start` 安全接受界線：未接受的失敗請求不得清除前輪狀態、交付簽章或輸入放行紀錄。
+
+命令內部持 per-device lock 進行有界等待；同設備外部衝突維持 `device_busy` fail-fast，`input`／`check_finish` 可能暫時被拒。其他設備獨立執行，不設全域鎖；八設備並行實作及驗證屬 #213。
 
 ### 5.7 `start_test`（DFU、BT）
 

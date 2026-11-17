@@ -443,7 +443,7 @@ class TcpJsonServer:
     def _default_specs(self) -> list[CommandSpec]:
         """The protocol 1.0 command table: one CommandSpec per command, the only place its rules live."""
         return [
-            CommandSpec("ping", self._handle_ping, default_data={"pong": False, "core_version": ""}),
+            CommandSpec("ping", self._handle_ping, default_data={"pong": False, "core_version": "", "supported_commands": []}),
             CommandSpec("status", self._handle_status, default_data={"core_uptime_sec": 0, "devices": []}),
             CommandSpec("core_status", self._handle_core_status),
             CommandSpec("shutdown", self._handle_shutdown),
@@ -472,7 +472,7 @@ class TcpJsonServer:
         ]
 
     async def _handle_ping(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
-        return {"pong": True, "core_version": CORE_VERSION}
+        return {"pong": True, "core_version": CORE_VERSION, "supported_commands": sorted(self._commands)}
 
     def _device_health(self) -> list[DeviceHealth]:
         """Update stored health records and return copies in registry order.
