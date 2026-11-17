@@ -347,7 +347,7 @@ async def run_dfu_input(kvm, channels, items, template_root=None, threshold=MATC
         diagnostics.finalize(ok, "dfu_input")
 
 
-async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="DFU"):
+async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="DFU", on_start_hid=None):
     """Bring the DFU window forward and click OK once. Returns ``{"action": "ok"}``.
 
     Raises ``FlowError`` (hid_failed) when the Dock icon, window or OK button cannot be found or HID fails.
@@ -368,7 +368,7 @@ async def run_dfu_ok(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=pri
             return _control(session, image, found, templates["button"], "button" + suffix)
 
         frame, button_box = await session.match_with_retry(frame, find_button)
-        await session.click(button_box, failure="OK HID failed", after=lambda: session.park_pointer(frame))
+        await session.click(button_box, failure="OK HID failed", before_send=on_start_hid, after=lambda: session.park_pointer(frame))
         ok = True
         return {"action": "ok"}
     except FlowError as exc:

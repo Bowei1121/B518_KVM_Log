@@ -36,7 +36,7 @@ def test_contract_tables_and_boundaries():
         assert term in SECTION
     adr = (ROOT / 'docs/adr/0002-per-device-lock-and-fail-fast.md').read_text(encoding='utf-8')
     assert all(term in adr for term in ('start_round', 'device_busy', '不同設備獨立'))
-    assert '尚待 #213 實作' in DOC and 'unknown_command' in DOC
+    assert '尚待 #213 實作' not in DOC and 'start_round' in DOC
 
 
 def test_retry_and_confirmation_contract():
@@ -57,7 +57,7 @@ def test_retry_and_confirmation_contract():
     assert 'data{pong, core_version, supported_commands[]}' in DOC
     assert 'StartRoundResp' in DOC and 'data{kind}' in DOC
     ping = DOC.split('### 9.1 `ping`', 1)[1].split('### 9.2', 1)[0]
-    assert 'supported_commands' in ping and 'start_round' not in ping
+    assert 'supported_commands' in ping and 'start_round' in ping
 
 
 def test_final_decisions_and_poll_budget():

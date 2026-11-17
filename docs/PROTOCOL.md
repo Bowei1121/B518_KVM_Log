@@ -67,7 +67,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `status` | 取得 Core 與各設備連線狀態（供 LabVIEW 人機畫面顯示） | 否 | — | — | — |
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `monitor_start` | 喚起 Log Solution 並確認進入監控中，建立本輪開始請求 | 是 | ✔ | ✔ | ✔ |
-| `start_round` | 開始監控並開測（尚待 #213 實作） | 是 | ✔ | ✘ | ✔ |
+| `start_round` | 開始監控並開測 | 是 | ✔ | ✘ | ✔ |
 | `start_test` | 開始測試：DFU 點 OK、BT 點 Start All | 是 | ✔ | ✘ | ✔ |
 | `check_start` | 測試開始確認：活動通道，或直接交付已完成的本輪 | 是 | ✔ | ✔ | ✔ |
 | `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
@@ -91,6 +91,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | BT | `monitor_start` → `start_test` → `check_start`（可省略）→ `check_finish` |
 | FCT | 治具推入前設備發訊號 → `monitor_start` → `check_start`（可省略）→ `check_finish` |
 
+- DFU／BT 在 `ping.supported_commands` 包含 `start_round` 時，分別改用 `input → start_round → check_finish` 與 `start_round → check_finish`；錯誤及 `paused` 先依 §5.6a 處理。未宣告支援時依 §5.1 回退既有兩段流程。FCT 維持表列流程。
 - FCT 沒有 `start_test`。治具推入後由 ATE 自行開測，LabVIEW 必須在推入前完成 `monitor_start`。
 - `monitor_start` 成功只代表 Log Solution 已準備好收集本輪資料，不代表 ATE 已開始測試。每一輪都要重新 `monitor_start`。
 - `check_start` 確認 ATE 真的開始測試，並回已開始的通道。可省略、可重複；重複呼叫不消耗結果。
@@ -113,7 +114,9 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `core_version` | string | Core Service 版本 |
 | `supported_commands` | array of string | 實際 registry 命令名稱的全量清單，去重並排序；錯誤時預設 `[]` |
 
-錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用（使用者 2026-11-17 定案）。LabVIEW 只判斷清單是否包含 `start_round`，其他名稱忽略，仍遵守站別與用途限制。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。目前尚未註冊 `start_round`，三站皆回 `unknown_command`；#213 落地後 FCT 才回 `unsupported_command`。
+錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用（使用者 2026-11-17 定案）。LabVIEW 只判斷清單是否包含 `start_round`，其他名稱忽略，仍遵守站別與用途限制。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。舊 LabVIEW typedef 不需因新增欄位修改，但解析方式必須容忍額外欄位，不得啟用遇到多餘欄位即報錯的選項；實際 VI 相容性由 #214 驗證，本票不宣稱已驗證。
+
+`start_round` 已註冊；DFU／BT 可執行，FCT 回 `unsupported_command`。
 
 ### 5.2 `status`
 
@@ -334,7 +337,7 @@ Log Solution 在狀態標記右側有 2×2 黑白心跳方塊（顯示契約 1.3
 | `state` | string | 成功時為 `monitoring`；失敗為 `""` |
 | `capacity` | number | 成功時畫面上的結果格數；失敗為 `0` |
 
-### 5.6a `start_round`（契約，尚待 #213 實作）
+### 5.6a `start_round`
 
 DFU、BT 依序完成監控就緒與開測；FCT 不支援，落地後回 `unsupported_command`。Core 不負責 MES。請求：
 
@@ -380,7 +383,7 @@ HID 已送未確認，暫停人工核對：
 
 FCT 拒絕（#213 落地後）：
 ```json
-{"protocol_version":"1.0","req_id":"round-fct01-001","device":"FCT-01","cmd":"start_round","status":"error","error":"unsupported_command","message":"start_round is not supported for FCT","elapsed_sec":0.0,"data":{"kind":"fault"}}
+{"protocol_version":"1.0","req_id":"round-fct01-001","device":"FCT-01","cmd":"start_round","status":"error","error":"unsupported_command","message":"'start_round' is not supported for FCT","elapsed_sec":0.0,"data":{"kind":"fault"}}
 ```
 
 #### 等待預算與重試
@@ -393,13 +396,32 @@ FCT 拒絕（#213 落地後）：
 | 固定額度 | 73 | 是共用剩餘額度，不是每步各取得 73 秒；凍結預檢最多 2 秒、心跳取樣每次最多 2.5 秒、Log Solution Dock 確認 3 秒（含點擊後新影格等待）、其他新影格等待預設 2 秒、監控 poll 間隔 0.05 秒；重試間隔另計但仍受共用 T／D 約束。HID 點擊、停留與模板處理等項目待 #213 實作時量測 |
 | 截止時間 | D | 整體截止含連線／ICE，T=30 時硬上限 110 秒；#213 實作；共用連線池不變。驗證完成、取得設備鎖後設定單一單調時鐘截止，涵蓋後續 KVM 連線與 ICE 等待；各等待取原有等待及剩餘預算的較小值，重試不得重設 T 或 D |
 
+以下是既有設定來源，不是 73 秒逐項拆帳；各項可重疊。#213 須補齊實際次數、耗時及剩餘預算，不能相加當作可靠總上限。連線池背景重連的 10 秒不是指令路徑上限。
+
+| 項目 | 來源／設定 | 計帳與量測狀態 |
+| --- | --- | --- |
+| 凍結預檢 | §5.6 第 0 步，最多 2 秒 | 待 #213 實作時量測次數及耗時 |
+| 心跳取樣 | `log_solution_heartbeat.py` `PROBE_MAX_SEC=2.5` | 待 #213 實作時量測次數及耗時 |
+| Dock 確認 | `monitor_flow.py` `MONITOR_CONFIRM_SEC=3` | 自點擊起算，含其後新影格等待，不重複計帳；待 #213 實作時量測 |
+| 其他新影格等待 | `hid_session.py` `FRESH_FRAME_TIMEOUT_SEC=2` | 各次裁切至剩餘預算；待 #213 實作時量測 |
+| 監控 poll | `monitor_flow.py`，間隔 0.05 秒 | 計入所屬窗口；待 #213 實作時量測 |
+| 安全重試 | #211 定案，間隔 0.5 秒，最多三次含首次 | poll 的間隔扣自同一 T／D；待 #213 實作時量測 |
+| KVM 登入 | `jetkvm_core.py` `_login_cookie`，`requests timeout=5` | 同步工作；不是總截止保證，現行阻塞證據見 `PROJECT_SUMMARY_20261117.md` |
+| WebSocket 握手 | `jetkvm_core.py` `open_timeout=25` | 須受剩餘 D 約束；待 #213 實作時量測 |
+| RPC 開啟／首張影格 | `jetkvm_core.py`，各 15 秒 | 須受剩餘 D 約束；待 #213 實作時量測 |
+| 連線成功後等待 | `jetkvm_core.py`，0.3 秒 | 計入 D；待 #213 實作時量測 |
+| ICE | `jetkvm_core.py` `_wait_ice`，無獨立逾時 | 須受剩餘 D 約束；待 #213 實作時量測 |
+| HID、停留、模板、取消、清理 | 尚無完整實測 | 待 #213 實作時量測，不編造分配 |
+| 開測後確認 | 剩餘 D | 不另加秒數；待 #213 實作時量測 |
+| T=30 的流程／整體／上位機 | D=103／硬上限 110／TCP Read 145 秒 | 約 7 秒未分配；尚未完成整體實測 |
+
 | 分類 | 來源階段 | 實際錯誤碼／觀察 | 允許重試前提 | 次數／間隔 | 預算 | 停止條件與最終回覆 |
 | --- | --- | --- | --- | --- | --- | --- |
 | not_ready | 開測前 | `monitor_not_ready`，未送 HID | 本輪監控可確認且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_ready` |
 | no_frame | 監控開始前 | `hid_failed` 且可靠證明僅暫無影格、尚未送有副作用 HID（使用者 2026-11-17 定案） | 只有結構化原因及階段紀錄能確認暫無影格且尚未送有副作用 HID 才重試；不可比對 message，不能重試所有 `hid_failed`，已送未確認必須 paused | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 無證據或次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `hid_failed` |
 | busy | 監控開始 | `log_solution_busy` | 先核對本輪階段，尚未送出有副作用 HID 且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `log_solution_busy` |
 | 外部鎖衝突 | 接受前 | `device_busy` | 不在命令內等待 | 1 次 | 不重試 | fail-fast，保留原碼 fault |
-| poll timeout | 監控等待 | `monitor_not_started` | 只重讀畫面、繼續等待；不重新呼叫 `monitor_start`、不再點 Dock、不再送快捷鍵（含 Cmd+Shift+M），不重設 T | 最多三次含首次，間隔 0.5 秒；每次最多 T/3，最後一次使用當時剩餘的 T | 同一 T、D，0.5 秒間隔計入，總等待不得超過 T | 次數或分到的 T 用盡仍未看到監控中，回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_started`；畫面三種處理見下文 |
+| poll timeout | 監控等待 | `monitor_not_started` | 只重讀畫面、繼續等待；不重新呼叫 `monitor_start`、不再點 Dock、不再送快捷鍵（含 Cmd+Shift+M），不重設 T | 最多三次含首次，間隔 0.5 秒；每次最多 T/3，最後一次使用當時剩餘的 T | 同一 T、D，0.5 秒間隔計入，總等待不得超過 T | 次數或分到的 T 用盡仍未看到監控中，回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_started`；畫面處理見下文 |
 | review | 任一階段 | `log_solution_review` | 不自動重試 | 1 次 | 同一 D | paused，保留原碼 |
 | HID 不確定 | 開測 HID 已送未確認 | `hid_failed` 或連線中斷 | 不得自動重送 | 1 次 | 同一 D | paused，人工核對 |
 | fault | 設備、設定、協定或其他失敗 | 原始錯誤碼 | 不自動重試 | 1 次 | 同一 D | fault，保留原碼 |
@@ -409,10 +431,12 @@ poll timeout 採用使用者 2026-11-17 定案的分配方式：同一輪 T 不�
 - 監控中：本階段成功，進入後續開測流程；這是同一輪 `start_round` 已送出的監控啟動，不得當成 `log_solution_busy`。
 - 待命：繼續只重讀畫面直到本次嘗試的 T 份額用盡；不得再點 Dock 或送快捷鍵。所有嘗試用盡仍為待命，回 `status=error`、`kind=fault`，保留 `monitor_not_started`。
 - 待確認：立即停止重試，回 `status=error`、`kind=paused`、`error=log_solution_review`。
+- 準備中：依 §5.6 第 7 步繼續只重讀並保留本輪開始請求，不重送 Dock／快捷鍵。
+- 凍結／斷線：依 §5.6 第 7 步立即停止，斷線優先並保留既有凍結 latch 規則；開測 HID 前分別以 `frame_frozen`／`kvm_connect_failed` 回 fault。此 fault 規則不適用於開測 HID 已送後的不確定結果。
 
-開測 HID 送出前（使用者 2026-11-17 定案）：重試次數用完，回 `status=error`、`kind=fault`，保留最後原碼；T 用完，回 `status=error`、`kind=fault`，保留 `monitor_not_started`。D 截止且已有原碼，回 `status=error`、`kind=fault`，保留原碼；只有 D 截止且沒有原始錯誤碼時，回 `status=timeout`、`error=timeout`、`kind=fault`。LabVIEW 必須依命令分支處理，不得讀取不存在的 `data.state`；舊命令語意不變。
+開測 HID 送出前（使用者 2026-11-17 定案）：重試次數用完，回 `status=error`、`kind=fault`，保留最後原碼；T 用完，回 `status=error`、`kind=fault`，保留 `monitor_not_started`。D 截止且已有原碼，回 `status=error`、`kind=fault`，保留原碼；只有 D 截止且沒有原始錯誤碼時，回 `status=timeout`、`error=timeout`、`kind=fault`。LabVIEW 必須依命令分支處理，不得讀取不存在的 `data.state`；舊命令語意與錯誤碼不因 `start_round` 改變。
 
-同一設備以 `req_id` 記錄開始階段，同輪重送沿用，下一輪換新值；不同設備不共用。開測 HID 送出後，在 D 剩餘時間內觀察本輪至少一個通道的可信測試活動或有效結果，才確認開始並回 started；`start_test` 成功及監控就緒均不足以確認。HID 已送出指開測操作已發送至設備，即使回覆遺失亦算；確認窗口即剩餘 D，不另加秒數。確認窗口內未觀察到開始，依使用者 2026-11-17 定案：開測 HID 送出後，不論有沒有原碼，D 截止或確認窗口結束一律回 `status=error`、`kind=paused`，`error` 保留原碼；沒有原碼時使用 `hid_failed`，message 為 "HID outcome requires review"。人工核對，不重送。Core 重啟清除紀錄，不保證跨重啟冪等。沿用 `on_accept → begin_start` 安全接受界線：未接受的失敗請求不得清除前輪狀態、交付簽章或輸入放行紀錄。
+同一設備以 `req_id` 記錄開始階段，同輪重送沿用，下一輪換新值；不同設備不共用。開測 HID 送出後，在 D 剩餘時間內觀察本輪至少一個通道的可信測試活動或有效結果，才確認開始並回 started；`start_test` 成功及監控就緒均不足以確認。開始證據引用 §5.4 `check_start` 的既有判準：連續兩張新鮮影格、同輪性、`TESTING`／`COMPLETING` 活動或有效結果；`NOTEST` 等不算。確認不得呼叫會交付 `taken` 的完整查詢而提前消耗結果或放行下一批輸入。HID 已送出指開測操作已發送至設備，即使回覆遺失亦算；確認窗口即剩餘 D，不另加秒數。確認窗口內未觀察到開始，依使用者 2026-11-17 定案：開測 HID 送出後，不論有沒有原碼，D 截止或確認窗口結束一律回 `status=error`、`kind=paused`，`error` 保留原碼；沒有原碼時使用 `hid_failed`，message 為 "HID outcome requires review"。人工核對，不重送。Core 重啟清除紀錄，不保證跨重啟冪等。沿用 `on_accept → begin_start` 安全接受界線：未接受的失敗請求不得清除前輪狀態、交付簽章或輸入放行紀錄。
 
 命令內部持 per-device lock 進行有界等待；同設備外部衝突維持 `device_busy` fail-fast，`input`／`check_finish` 可能暫時被拒。其他設備獨立執行，不設全域鎖；八設備並行實作及驗證屬 #213。
 
@@ -454,7 +478,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 
 - 其他 `method`、缺少或多餘的 `params` 鍵、型別不符一律 `invalid_argument`，不送任何 HID。
 - 選填 `release_only`（boolean，預設 false）：Monitor UI 收到 `device_busy` 後合成的報告會帶 `true`。Core 先把它與目標機**目前**持有的鍵／按鈕取交集，只會放開、不會按下；若沒有可放開的項目，回 `ok` 且不送 HID。非 boolean 回 `invalid_argument`。
-- 不拿 Device Lock，因此連續的滑鼠移動不會讓 LabVIEW 指令回 `device_busy`。但只在自動指令可能送 HID 時才擋（`start_test`／`input`／`monitor_start` 一取得鎖就擋，連等待 KVM 連線或預檢也擋，採保守策略）：該設備的 Device Lock 被 `monitor_start`／`start_test`／`input` 持有，或 `check_start`／`check_finish` 正在點 Dock 恢復（`dock_recovering`）時，回 `device_busy` 並丟棄這筆 HID（不送出）。`check_start`／`check_finish` 只是在等畫面時放行手動 HID。
+- 不拿 Device Lock，因此連續的滑鼠移動不會讓 LabVIEW 指令回 `device_busy`。但只在自動指令可能送 HID 時才擋（`start_test`／`input`／`monitor_start`（及 `start_round` 落地後）一取得鎖就擋，連等待 KVM 連線或預檢也擋，採保守策略）：該設備的 Device Lock 被 `monitor_start`／`start_test`／`input`／`start_round` 持有，或 `check_start`／`check_finish` 正在點 Dock 恢復（`dock_recovering`）時，回 `device_busy` 並丟棄這筆 HID（不送出）。`check_start`／`check_finish` 只是在等畫面時放行手動 HID。
 - 不碰輪次、閘門或畫面狀態，不影響 `check_*` 的交付。
 - `kvm.call` 失敗回 `hid_failed`。成功 `data` 為空物件。
 - LabVIEW 不得使用。
@@ -512,7 +536,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `forbidden_field` | error | 帶了 `kvm_ip` 或 `station` | 修正程式 |
 | `invalid_argument` | error | 欄位值不合法。`check_start`／`check_finish`／`inspect` 的 `timeout_sec` 須為 0–3600；`monitor_start` 須為 1–300；`start_round` 必填、1–300 秒，可帶小數、無缺值預設；拒絕缺值、null、布林、字串、非有限數與超範圍（使用者 2026-11-17 定案） | 修正程式 |
 | `unsupported_command` | error | 站別不支援此指令 | 修正程式 |
-| `log_solution_busy` | error | `monitor_start` 時已在監控中；或 `input` 時為監控中／準備中／待確認，或完成（含人工停止完成）但本輪尚未交付也沒回過 `manual_verification_required` | 先完成本輪或等人工核對 |
+| `log_solution_busy` | error | `monitor_start` 時已在監控中；`start_round` 初次監控受理前已在監控中（本輪 poll 後看到監控中則成功，不是 busy）；或 `input` 時為監控中／準備中／待確認，或完成（含人工停止完成）但本輪尚未交付也沒回過 `manual_verification_required` | 先完成本輪或等人工核對 |
 | `log_solution_review` | error | `monitor_start`／`start_round` 時畫面為待確認 | 報警、暫停；人員排除並復位後才能再 `monitor_start` |
 | `capacity_mismatch` | error | 可交付畫面的格數與設定通道數不同 | 檢查 Log Solution 設定，暫停 |
 | `device_busy` | error | 同設備已有上鎖指令執行中 | 稍後重試，勿並行送 |
@@ -520,9 +544,9 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 | `no_frame` | error | 尚未收到畫面 | 稍後重試 |
 | `frame_frozen` | error | 畫面時間戳不再前進，或畫面沒有 PTS（ADR-0005）。`input`、`start_test`、`monitor_start` 送 HID 前檢查，`monitor_start` 等待中也會檢查；這三個指令回此碼時未送出任何 HID | 設備異常，暫停，不得判產品 FAIL |
 | `log_solution_heartbeat_stopped` | error | Log Solution 畫面心跳停止：連續 3 張有效觀察的心跳四格相同（約 2 秒內判定）。`check_start`／`check_finish`／`inspect` 長輪詢中途回覆；`input`、`start_test`、`monitor_start` 送 HID 前或等待中回覆，這三個指令回此碼時未送出任何 HID。message「Display heartbeat stopped; ask an operator to check the test computer and Log Solution」。各指令逐次判斷不變；Core 心跳停止狀態鎖定至再次計入四格變化，無效觀察不解除 | 暫停，不得判產品 FAIL；不自動重試、不重新開測。人員檢查測試電腦與 Log Solution |
-| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚 | 設備異常，暫停 |
+| `hid_failed` | error | 鍵盤／滑鼠操作失敗、視窗或按鈕定位失敗、模板缺失；`input`／`monitor_start` 沒有影格或狀態看不清楚；`start_round` 開測 HID 已送出且無原碼可用時，以此碼及 `kind=paused` 交人工核對 | 設備異常，暫停 |
 | `log_solution_not_found` | error | Dock 上找不到 Log Solution，或點擊後 3 秒內找不到視窗 | 停線檢查 |
-| `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
+| `monitor_not_started` | error | `monitor_start` 在 `timeout_sec` 內、或 `start_round` 在共用監控 T 內沒看到監控中。不清除本輪開始請求 | 暫停並通知人員 |
 | `monitor_not_ready` | error | `check_start`／`check_finish` 沒有本輪開始請求（含交付後簽章已變、又沒有新一輪信號）；或 `start_test` 時不是監控中 | 先完成本輪的 `monitor_start` |
 | `log_solution_not_visible` | error | `check_start`／`check_finish` 連續 30 秒看不到 Log Solution，點 Dock 3 次仍看不到 | 暫停，復位後整輪 NG，交 TE 重測 |
 | `manual_verification_required` | error | 有本輪開始請求，但沒看到本次監控中，畫面卻已可交付（準備逾時、或快捷鍵後直接人工停止） | 不交付、不自動重測；暫停並請人員核對。此回覆清除本輪開始請求 |
@@ -566,7 +590,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0001","device":"","cmd":"ping",
  "status":"ok","error":"","message":"","elapsed_sec":0.0,
- "data":{"pong":true,"core_version":"2.0.0","supported_commands":["check_finish","check_start","core_status","hid","input","inspect","monitor_start","ping","shutdown","snapshot","start_test","status"]}}
+ "data":{"pong":true,"core_version":"2.0.0","supported_commands":["check_finish","check_start","core_status","hid","input","inspect","monitor_start","ping","shutdown","snapshot","start_round","start_test","status"]}}
 ```
 
 ### 9.2 `status`
@@ -756,3 +780,35 @@ Log Solution 仍在準備中時：
 ## Protocol text language
 
 Protocol round-trip error/status text, including JSON `message` fields, MUST be English-only. Keep error codes stable. Monitor UI translations and bilingual log `extra["zh"]` sidecars are separate and remain unchanged.
+
+#### #213 保守實作邊界
+
+依 #211 定案，開測 HID 發送界線在 DFU OK／BT Start All 的 await 前記錄；回覆遺失仍視為已送。確認使用 `check_start` 的 `Reading.from_decision`／ActivityTracker 與兩張新鮮影格規則，使用輪次副本，不能交付結果或放行輸入。
+
+契約未定的同鍵不同參數、fault／timeout 續跑、進行中重送，以及 paused 後新鍵開始，均保守回 paused 交人工，不重送 HID。紀錄在 Core 行程內保留。初次 busy 的重呼與 Dock 副作用分類未定，不重呼 monitor_start，回 paused；poll timeout 僅觀察的定案維持不變。已送後斷線依 #211「保留原碼」回 kvm_connect_failed／paused。TCP 斷線不觸發重送，既有工作在同一截止內結束並記錄；重送只讀紀錄。
+
+預算證據：每設備 `start_round_records[req_id].measurements` 記錄 connection、monitor_poll 的次數、實際耗時與剩餘 D。HID、模板處理、真實連線取消／清理與完整預算帳仍待 #213 實作時量測；假設備測試不代表實機，約 7 秒仍未分配，不延長 D。
+
+#### #213 合成畫面預算量測（非實機）
+
+以下使用正式 flow、模板辨識與契約 1.3 合成畫面，T=1；各列是同一次 flow 的階段或內含取樣，**不得逐列相加**。開測 flow 已包含 Dock、模板與新影格；picture_precheck 已包含凍結與心跳取樣。JSON 每筆保留原始次數、耗時、剩餘 D；來源為 `tests/test_start_round.py::test_full_real_flows_with_contract_frames_and_budget`，證據 `213-budget-DFU.json`／`213-budget-BT.json`（本輪交辦目錄）。
+
+| 項目 | DFU 次數／秒 | BT 次數／秒 | 計帳方式 |
+| --- | --- | --- | --- |
+| `connection` | 1／0.000034 | 1／0.000039 | 階段總耗時，受共用 D 約束 |
+| `picture_precheck` | 1／0.900880 | 1／0.909483 | 階段總耗時，受共用 D 約束 |
+| `monitor_initialize` | 1／0.013441 | 1／0.014816 | 階段總耗時，受共用 D 約束 |
+| `monitor_poll` | 1／0.095130 | 1／0.095583 | 階段總耗時，受共用 D 約束 |
+| `start_hid_flow` | 1／0.439171 | 1／0.620974 | 階段總耗時，受共用 D 約束 |
+| `start_confirmation` | 1／0.088142 | 1／0.095394 | 階段總耗時，受共用 D 約束 |
+| `manual_reconcile` | 1／0.000026 | 1／0.000022 | 階段總耗時，受共用 D 約束 |
+| `lease_release` | 1／0.000014 | 1／0.000012 | 階段總耗時，受共用 D 約束 |
+| `freeze_precheck` | 1／0.054035 | 1／0.053430 | 已含於上方階段，不重複加計 |
+| `heartbeat_probe` | 1／0.846818 | 1／0.856029 | 已含於上方階段，不重複加計 |
+| `load` | 2／0.000214 | 3／0.000306 | 已含於上方階段，不重複加計 |
+| `find` | 2／0.110337 | 3／0.092721 | 已含於上方階段，不重複加計 |
+| `wait_fresh_frame` | 1／0.023186 | 1／0.023269 | 已含於上方階段，不重複加計 |
+
+兩站各兩次實際 fake KVM click（站別 Dock、開測按鈕），座標／各次耗時與 frame 次數保留於上述 JSON。Log Solution Dock／快捷鍵另由 `test_real_standby_monitor_sends_dock_and_shortcut_once` 覆蓋，證據 `213-budget-log-dock.json`；該 case 的開測 operation 為 stub，不能當站別開測成本。
+
+正式 T=30 八台測試中，慢設備卡在連線時 103.003998 秒回覆並釋鎖，其他七台 0.343017～0.415800 秒完成；監控等待案例 30 秒內保留 monitor_not_started；開始確認案例 103 秒後 paused。八台紀錄與 envelope 分別保存於 `213-concurrency-evidence.json`、`213-concurrency-monitor.json`、`213-concurrency-confirmation.json`。這些為直接派送測試；八條 TCP socket 與接續 check_finish 必須由外層測試，不將假設備推為實機。實機連線／HID 耗時及完整跨功能回歸仍待外層與 #214 驗證，約 7 秒未分配餘裕維持不變。
