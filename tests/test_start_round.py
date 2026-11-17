@@ -157,22 +157,34 @@ def test_poll_budget_three_shares_including_retry_intervals(monkeypatch):
 
 
 def test_structured_no_frame_retries_exactly_three(monkeypatch):
+    import start_round as flow
+    from types import SimpleNamespace
+    from tcp_server import CommandContext
+
     srv, kvm = setup_server(monkeypatch)
+    now = [0.]
     calls = []
+    sleeps = []
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
     async def no_frame(*a, **kw):
-        calls.append(time.monotonic())
+        calls.append(now[0])
         raise FlowError('hid_failed', 'No image', reason='no_frame')
-    import time
     monkeypatch.setattr('monitor_flow.run_monitor_start', no_frame)
-    async def scenario():
-        # T=2 admits two 0.5s intervals without resetting the retry window.
-        req = wire(dict(cmd='start_round', device='DFU-01', timeout_sec=2))
-        result = json.loads(await srv._process_line(json.dumps(req).encode()))
-        assert result['error'] == 'hid_failed' and result['data'] == {'kind': 'fault'}
-        assert len(calls) == 3
-        assert all(b - a >= .49 for a, b in zip(calls, calls[1:]))
-        assert not kvm.events
-    run_async(scenario())
+    monkeypatch.setattr(flow, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(flow, 'asyncio', SimpleNamespace(sleep=sleep))
+    ctx = CommandContext(srv.device_registry.get('DFU-01'), kvm, srv._slot('DFU-01'))
+    # T=2 admits two 0.5s intervals without resetting the retry window.
+    record = flow.Record(2, 75)
+    result = run_async(flow.run(srv, ctx, record))
+    assert result['error'] == 'hid_failed' and result['data'] == {'kind': 'fault'}
+    assert calls == [0., .5, 1.]
+    assert sleeps == [.5, .5]
+    attempts = [row for row in record.measurements if row[0] == 'monitor_initialize']
+    assert [row[2] for row in attempts] == [75., 74.5, 74.]
+    assert record.deadline == 75
+    assert not kvm.events
 
 
 def test_unstructured_hid_failure_not_retried(monkeypatch):
