@@ -163,7 +163,7 @@ class JetKVMClient:
         raise KVMLoginFailed(f"Login failed (HTTP {r.status_code})")
 
     async def connect(self):
-        cookie = self._login_cookie()
+        cookie = await asyncio.to_thread(self._login_cookie)
         pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self.pc = pc
         self.rpc = pc.createDataChannel("rpc")

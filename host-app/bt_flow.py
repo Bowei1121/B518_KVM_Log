@@ -47,7 +47,7 @@ def find_start_all(session, template, frame, window, suffix=""):
         raise
 
 
-async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="BT"):
+async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=print, diagnostics_key="BT", on_start_hid=None):
     """Click BT Start All once. Returns ``{"action": "start_all"}`` or raises ``FlowError``."""
     catalog = TemplateCatalog(template_root)
     diagnostics = MatchDiagnostics(catalog.root, diagnostics_key)
@@ -75,7 +75,7 @@ async def run_start_all(kvm, template_root=None, threshold=MATCH_THRESHOLD, log=
 
         # One retry on fresh frames; the Dock is never clicked twice.
         frame, start = await session.match_with_retry(frame, locate_start_all)
-        await session.click(start, failure="Start All HID failed", settle=0,
+        await session.click(start, failure="Start All HID failed", before_send=on_start_hid, settle=0,
                             after=lambda: session.park_pointer(frame))
         ok = True
         return {"action": "start_all"}

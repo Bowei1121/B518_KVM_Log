@@ -140,7 +140,7 @@ async def bring_log_solution_forward(kvm, diagnostics_key, template_root=None, t
     try:
         frame, _observation = read_latest_app_frame_recorded(kvm, stats)
         if frame is None:
-            raise FlowError("hid_failed", "No JetKVM frame available")
+            raise FlowError("hid_failed", "No JetKVM frame available", reason="no_frame")
         session = HidSession(kvm, template_root, diagnostics, threshold=threshold)
         ok, _score = await click_dock_icon(kvm, frame, session)
         return ok
@@ -158,7 +158,7 @@ def _kvm_lost_waiting():
 
 async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, threshold=MATCH_THRESHOLD,
                             confirm_sec=MONITOR_CONFIRM_SEC, start_timeout_sec=MONITOR_START_TIMEOUT_SEC,
-                            log=print, on_preparing=None, on_shortcut=None, on_accept=None):
+                            log=print, on_preparing=None, on_shortcut=None, on_accept=None, observe_only=False):
     """Start Log Solution monitoring. Returns ``{"state": "monitoring", "capacity": n}``.
 
     ``gate`` is the device's RoundFrameGate; a Monitoring reading arms its round once a start was requested
@@ -179,7 +179,7 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
     try:
         frame, observation = read_latest_app_frame_recorded(kvm, gate.stats)
         if frame is None:
-            raise FlowError("hid_failed", "No JetKVM frame available")
+            raise FlowError("hid_failed", "No JetKVM frame available", reason="no_frame")
         if observation.reliable and observation.state == MarkerState.MONITORING:
             # Busy refusal is not "seen monitoring for this round": the request stays unanswered.
             raise _busy(observation.state)
@@ -234,6 +234,9 @@ async def run_monitor_start(kvm, gate, diagnostics_key, template_root=None, thre
 
         if observation.reliable and observation.state == MarkerState.PREPARING:
             preparing()
+
+        if observe_only:
+            return {"state": "pending", "capacity": 0}
 
         deadline = time.monotonic() + start_timeout_sec
         while True:

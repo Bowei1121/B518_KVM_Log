@@ -39,8 +39,9 @@ class FlowError(Exception):
     match missed, so a caller can turn that into a different error code.
     """
 
-    def __init__(self, code, message, entered=()):
+    def __init__(self, code, message, entered=(), *, reason=None):
         super().__init__(message)
+        self.reason = reason
         self.code = code
         self.entered = sorted(entered)
         self.score = None
@@ -276,7 +277,7 @@ class HidSession:
     def frame(self, missing="No JetKVM frame available"):
         snapshot = self.kvm.latest_frame()
         if snapshot is None:
-            raise FlowError("hid_failed", missing)
+            raise FlowError("hid_failed", missing, reason="no_frame")
         return snapshot.image
 
     def find(self, key, template, frame, *, within=None, downscale=False, color=(0, 200, 255),
@@ -319,7 +320,7 @@ class HidSession:
                 errors.clear()
             raise FlowError("hid_failed", f"{failure}: {error}", entered)
 
-    async def click(self, box, *, failure, settle=0.0, after=None, entered=()):
+    async def click(self, box, *, failure, settle=0.0, after=None, entered=(), before_send=None):
         """Raise a leftover HID error, then clear, click the box center, and raise ``FlowError("hid_failed")``."""
         self._raise_if_hid(failure, entered)
         errors = getattr(self.kvm, "rpc_errors", None)
@@ -330,6 +331,11 @@ class HidSession:
         else:
             left, top, width, height = box
             point = int(left + width / 2), int(top + height / 2)
+        if before_send is not None:
+            prepare = getattr(self.kvm, "prepare_automated_hid", None)
+            if prepare is not None:
+                await prepare()
+            before_send()
         await self.kvm.click(*point)
         if after is not None:
             await after()

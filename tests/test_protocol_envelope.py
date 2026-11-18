@@ -172,7 +172,8 @@ def test_ping_returns_pong_and_core_version(server):
     assert resp["message"] == ""
     assert resp["data"] == {"pong": True, "core_version": resp["data"]["core_version"],
                             "supported_commands": sorted(server._commands)}
-    assert not {"start_round", "check", "button"} & set(resp["data"]["supported_commands"])
+    assert "start_round" in resp["data"]["supported_commands"]
+    assert not {"check", "button"} & set(resp["data"]["supported_commands"])
     assert resp["data"]["core_version"] != ""
 
 
@@ -308,7 +309,7 @@ COMMAND_ROWS = [
     ("ping", False, True), ("status", False, True), ("core_status", False, True), ("shutdown", False, True),
     ("snapshot", True, False), ("check_start", True, True), ("check_finish", True, True),
     ("inspect", True, False), ("input", True, True), ("start_test", True, True), ("monitor_start", True, True),
-    ("hid", True, False),
+    ("hid", True, False), ("start_round", True, True),
 ]
 EXPECTED_DEFAULT_DATA = {
     "ping": {"pong": False, "core_version": "", "supported_commands": []},
@@ -323,6 +324,7 @@ EXPECTED_DEFAULT_DATA = {
     "start_test": {"action": ""},
     "monitor_start": {"state": "", "capacity": 0},
     "hid": {},
+    "start_round": {"kind": "fault"},
 }
 
 
@@ -415,10 +417,23 @@ def test_ping_tracks_new_registered_command(server):
     assert "echo_capability" in data["supported_commands"]
 
 
-@pytest.mark.parametrize("device", ["DFU-01", "BT-01", "FCT-01"])
-def test_start_round_is_unknown_without_side_effects(server, device):
-    resp = _send(server, {"protocol_version": "1.0", "req_id": "r", "device": device,
+def test_start_round_is_unsupported_for_fct_without_side_effects(server, monkeypatch):
+    from unittest.mock import Mock
+
+    # Reject before acquiring a lock or connection, so no HID can be sent.
+    acquire_connection = Mock(side_effect=AssertionError("FCT must not connect or send HID"))
+    try_acquire = Mock(side_effect=AssertionError("FCT must not acquire a device lock"))
+    monkeypatch.setattr(server.kvm_pool, "acquire_connection", acquire_connection)
+    monkeypatch.setattr(server.lock_manager, "try_acquire", try_acquire)
+
+    resp = _send(server, {"protocol_version": "1.0", "req_id": "r", "device": "FCT-01",
                           "cmd": "start_round", "timeout_sec": 30})
-    assert resp["error"] == "unknown_command"
+
+    _assert_envelope(resp)
+    assert resp["status"] == "error"
+    assert resp["error"] == "unsupported_command"
+    assert resp["data"] == {"kind": "fault"}
+    acquire_connection.assert_not_called()
+    try_acquire.assert_not_called()
     assert server.kvm_pool.active_count() == 0
-    assert not server.lock_manager.is_locked(device)
+    assert not server.lock_manager.is_locked("FCT-01")

@@ -213,6 +213,9 @@ class _HandoverKvm:
         self._kvm = kvm
         self._release = release
 
+    async def prepare_automated_hid(self):
+        await self._release()
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._kvm, name)
         if name in self._HID and inspect.iscoroutinefunction(attr):
@@ -443,6 +446,10 @@ class TcpJsonServer:
     def _default_specs(self) -> list[CommandSpec]:
         """The protocol 1.0 command table: one CommandSpec per command, the only place its rules live."""
         return [
+            CommandSpec("start_round", self._handle_start_round, fields=frozenset({"timeout_sec"}),
+                        device_bound=True, needs_slot=True, parse=lambda req, entry: _timeout_arg(req, 1, 300),
+                        stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"kind": "fault"},
+                        unsupported_message="'start_round' is not supported for FCT"),
             CommandSpec("ping", self._handle_ping, default_data={"pong": False, "core_version": "", "supported_commands": []}),
             CommandSpec("status", self._handle_status, default_data={"core_uptime_sec": 0, "devices": []}),
             CommandSpec("core_status", self._handle_core_status),
@@ -779,6 +786,10 @@ class TcpJsonServer:
             return None
         state = observation.state.value if observation.reliable else "unreadable"
         return "monitor_not_ready", f"Log Solution is not monitoring ({state}); no HID sent"
+
+    async def _handle_start_round(self, ctx, args):
+        from start_round import run
+        return await run(self, ctx, args)
 
     async def _handle_start_test(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         """start_test 1.0: DFU clicks OK, BT clicks Start All. Both only while Log Solution is monitoring."""
@@ -1141,6 +1152,10 @@ class TcpJsonServer:
         entry = admitted.entry
         # Check per-device locking. Only the device ID is trusted from the wire: KVM IP and station come from the registry.
         device_id: Optional[str] = entry.device_id if entry is not None else None
+
+        if spec.name == "start_round":
+            from start_round import dispatch
+            return await dispatch(self, req_id, admitted, reader, writer)
 
         if device_id is not None and spec.takes_lock:
             if not self.lock_manager.try_acquire(device_id, holder=spec.name):
