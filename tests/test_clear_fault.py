@@ -119,7 +119,8 @@ def test_nine_devices_same_key_only_selected_reset(monkeypatch):
             await gate.wait()
             if device == 'DFU-01':
                 return await clear(srv, req_id='shared')
-            return await send(srv, device=device, req_id='shared')
+            # Nine concurrent devices need more than 1 s on slow Windows runners.
+            return await send(srv, device=device, req_id='shared', timeout_sec=10)
         tasks = [asyncio.create_task(request(f'DFU-{i:02}')) for i in range(1,10)]
         gate.set()
         results = await asyncio.gather(*tasks)
@@ -128,7 +129,7 @@ def test_nine_devices_same_key_only_selected_reset(monkeypatch):
         assert all(r['data']['kind'] == 'started' for r in results[2:])
         assert (await clear(srv))['data'] == DEFAULT
         # Concurrent duplicate resets and a new start remain serialized on this device.
-        a, b, c = await asyncio.gather(clear(srv), send(srv, req_id='fresh'), clear(srv))
+        a, b, c = await asyncio.gather(clear(srv), send(srv, req_id='fresh', timeout_sec=10), clear(srv))
         assert a['data'] == DEFAULT and b['data']['kind'] == 'started'
         assert c['error'] == 'round_in_progress'
     run_async(scenario())

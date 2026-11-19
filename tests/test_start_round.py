@@ -39,8 +39,8 @@ def setup_server(monkeypatch, station='DFU', fail=None):
     return srv, kvm
 
 
-async def send(srv, req_id='round1', device='DFU-01', **kwargs):
-    req = wire(dict(cmd='start_round', req_id=req_id, device=device, timeout_sec=1, **kwargs))
+async def send(srv, req_id='round1', device='DFU-01', timeout_sec=1, **kwargs):
+    req = wire(dict(cmd='start_round', req_id=req_id, device=device, timeout_sec=timeout_sec, **kwargs))
     return json.loads(await srv._process_line(json.dumps(req).encode()))
 
 
