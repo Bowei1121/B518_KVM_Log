@@ -71,6 +71,22 @@ def test_lost_hid_reply_is_paused_and_never_repeated(monkeypatch):
     run_async(scenario())
 
 
+def test_first_log_solution_busy_is_paused_without_retry(monkeypatch):
+    srv, kvm = setup_server(monkeypatch)
+    attempts = []
+
+    async def busy(*args, **kwargs):
+        attempts.append(1)
+        raise FlowError('log_solution_busy', 'Log Solution is busy')
+
+    monkeypatch.setattr('monitor_flow.run_monitor_start', busy)
+    result = run_async(send(srv, timeout_sec=30))
+    assert (result['status'], result['error'], result['data']) == (
+        'error', 'log_solution_busy', {'kind': 'paused'})
+    assert attempts == [1]
+    assert not kvm.events
+
+
 def test_review_before_accept_preserves_previous_round(monkeypatch):
     async def scenario():
         srv, kvm = setup_server(monkeypatch)

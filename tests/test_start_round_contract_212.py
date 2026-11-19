@@ -41,9 +41,12 @@ def test_contract_tables_and_boundaries():
 
 def test_retry_and_confirmation_contract():
     rows = {r[0].strip(): r for r in (line.split('|')[1:-1] for line in SECTION.splitlines() if line.startswith('|')) if len(r) == 7}
-    for name in ('not_ready', 'no_frame', 'busy', 'poll timeout'):
+    for name in ('not_ready', 'no_frame', 'poll timeout'):
         assert '最多三次' in rows[name][4] and '0.5 秒' in rows[name][4]
         assert 'status=error' in rows[name][6] and 'kind=fault' in rows[name][6]
+    assert '1 次，不重試' in rows['busy'][4]
+    assert all(term in rows['busy'][6] for term in (
+        'status=error', 'error=log_solution_busy', 'kind=paused'))
     assert 'check 長輪詢' not in rows['poll timeout'][2]
     assert '可信測試活動或有效結果' in SECTION and '確認窗口內未觀察到開始' in SECTION
     before = SECTION.split('開測 HID 送出前（使用者 2026-11-17 定案）：', 1)[1].split('同一設備以', 1)[0]

@@ -420,7 +420,7 @@ FCT 拒絕（#213 落地後）：
 | --- | --- | --- | --- | --- | --- | --- |
 | not_ready | 開測前 | `monitor_not_ready`，未送 HID | 本輪監控可確認且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_ready` |
 | no_frame | 監控開始前 | `hid_failed` 且可靠證明僅暫無影格、尚未送有副作用 HID（使用者 2026-11-17 定案） | 只有結構化原因及階段紀錄能確認暫無影格且尚未送有副作用 HID 才重試；不可比對 message，不能重試所有 `hid_failed`，已送未確認必須 paused | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 無證據或次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `hid_failed` |
-| busy | 監控開始 | `log_solution_busy` | 先核對本輪階段，尚未送出有副作用 HID 且仍有預算 | 最多三次含首次，間隔 0.5 秒（使用者 2026-11-17 定案） | 同一 T、D | 次數耗盡回 `status=error`、`kind=fault`，保留最後原碼 `log_solution_busy` |
+| busy | 監控開始 | `log_solution_busy` | 第一次遇到即暫停，交人工核對 | 1 次，不重試（使用者 2026-11-18 定案） | 不重試 | 立即回 `status=error`、`error=log_solution_busy`、`kind=paused` |
 | 外部鎖衝突 | 接受前 | `device_busy` | 不在命令內等待 | 1 次 | 不重試 | fail-fast，保留原碼 fault |
 | poll timeout | 監控等待 | `monitor_not_started` | 只重讀畫面、繼續等待；不重新呼叫 `monitor_start`、不再點 Dock、不再送快捷鍵（含 Cmd+Shift+M），不重設 T | 最多三次含首次，間隔 0.5 秒；每次最多 T/3，最後一次使用當時剩餘的 T | 同一 T、D，0.5 秒間隔計入，總等待不得超過 T | 次數或分到的 T 用盡仍未看到監控中，回 `status=error`、`kind=fault`，保留最後原碼 `monitor_not_started`；畫面處理見下文 |
 | review | 任一階段 | `log_solution_review` | 不自動重試 | 1 次 | 同一 D | paused，保留原碼 |
@@ -823,7 +823,7 @@ Protocol round-trip error/status text, including JSON `message` fields, MUST be 
 
 依 #211 定案，開測 HID 發送界線在 DFU OK／BT Start All 的 await 前記錄；回覆遺失仍視為已送。確認使用 `check_start` 的 `Reading.from_decision`／ActivityTracker 與兩張新鮮影格規則，使用輪次副本，不能交付結果或放行輸入。
 
-契約未定的同鍵不同參數、fault／timeout 續跑、進行中重送，以及 paused 後新鍵開始，均保守回 paused 交人工，不重送 HID。紀錄在 Core 行程內保留。初次 busy 的重呼與 Dock 副作用分類未定，不重呼 monitor_start，回 paused；poll timeout 僅觀察的定案維持不變。已送後斷線依 #211「保留原碼」回 kvm_connect_failed／paused。TCP 斷線不觸發重送，既有工作在同一截止內結束並記錄；重送只讀紀錄。
+契約未定的同鍵不同參數、fault／timeout 續跑、進行中重送，以及 paused 後新鍵開始，均保守回 paused 交人工，不重送 HID。紀錄在 Core 行程內保留。初次遇到 `log_solution_busy` 即回 `status=error`、`error=log_solution_busy`、`kind=paused`，不重呼 `monitor_start`、不重試（使用者 2026-11-18 定案）；poll timeout 僅觀察的定案維持不變。已送後斷線依 #211「保留原碼」回 kvm_connect_failed／paused。TCP 斷線不觸發重送，既有工作在同一截止內結束並記錄；重送只讀紀錄。
 
 已受理且未 started 的 fault／timeout 紀錄目前也會阻擋新 req_id；阻擋回覆為 error/hid_failed/paused，訊息為 `Start round blocked for device; operator reset required`，明示每設備阻擋，僅 DFU 可由操作員明確送出 `clear_fault` 解除（§5.7a）；BT 不支援此復位指令。
 
