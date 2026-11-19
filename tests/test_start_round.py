@@ -39,8 +39,8 @@ def setup_server(monkeypatch, station='DFU', fail=None):
     return srv, kvm
 
 
-async def send(srv, req_id='round1', device='DFU-01', **kwargs):
-    req = wire(dict(cmd='start_round', req_id=req_id, device=device, timeout_sec=1, **kwargs))
+async def send(srv, req_id='round1', device='DFU-01', timeout_sec=1, **kwargs):
+    req = wire(dict(cmd='start_round', req_id=req_id, device=device, timeout_sec=timeout_sec, **kwargs))
     return json.loads(await srv._process_line(json.dumps(req).encode()))
 
 
@@ -346,7 +346,7 @@ def test_real_connect_path_cancellation_cleans_each_wait(monkeypatch, phase, ter
         else:
             result = await task
             assert result['status'] == 'timeout' and result['data'] == {'kind': 'fault'}
-            assert 73 < observed_timeouts[0] <= 74  # T=1, unchanged D=T+73.
+            assert 73 < observed_timeouts[0] <= 74 + 1e-6  # T=1, unchanged D=T+73; tolerate float rounding.
         assert seen and seen[0].closed
         assert not srv.lock_manager.is_locked('DFU-01')
         assert srv.kvm_pool.active_count() == 0
@@ -710,7 +710,7 @@ async def _assert_new_keys_blocked(srv, kvm, original):
     for key in ['next', 'another']:
         result = await send(srv, req_id=key)
         assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'paused'})
-        assert result['message'] == 'Start round blocked: this req_id cannot start a new round'
+        assert result['message'] == 'Start round blocked for device; operator reset required'
         assert all(result[name].isascii() for name in ['status', 'error', 'message'])
         assert list(records) == ['round1'] and records['round1'] is rec
         assert rec.result == previous and kvm.events == events

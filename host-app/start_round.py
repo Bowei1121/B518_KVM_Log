@@ -18,6 +18,8 @@ def reply(code='', message='', kind='fault', status='error'):
 class Record:
     timeout: float
     deadline: float
+    round_generation: int = None
+    fault_cleared: bool = False
     accepted: bool = False
     sent: bool = False
     last_error: tuple = None
@@ -55,8 +57,8 @@ async def dispatch(server, req_id, admitted, reader, writer):
         if rec.result and rec.result.get('error'):
             return uncertain(rec.result['error'], rec.result['message'])
         return uncertain()  # Undefined resume/cache policy: never repeat side effects.
-    if any(r.accepted and r.result and r.result['data']['kind'] != 'started' for r in records.values()):
-        return uncertain(message='Start round blocked: this req_id cannot start a new round')
+    if any(r.accepted and not r.fault_cleared and r.result and r.result['data']['kind'] != 'started' for r in records.values()):
+        return uncertain(message='Start round blocked for device; operator reset required')
     if not server.lock_manager.try_acquire(entry.device_id, holder='start_round'):
         return reply('device_busy', 'Device is busy')
     rec = Record(admitted.args, time.monotonic() + admitted.args + 73)
@@ -143,6 +145,7 @@ async def run(server, ctx, rec):
         def accept():
             if not rec.accepted:
                 slot.round.begin_start()
+                rec.round_generation = slot.round.start_generation
                 rec.accepted = True
         # Only structured no-frame failures before any HID can re-enter initialization.
         class MonitorKvm:

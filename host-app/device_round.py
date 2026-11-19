@@ -42,6 +42,7 @@ class DeviceRound:
         self.stable_complete_frames = max(1, int(stable_complete_frames))
         self.max_frame_gap = float(max_frame_gap)
         # Set by a shortcut or a Preparing seen in monitor_start; spent by taken or manual_verification_required.
+        self.start_generation = 0
         self.start_requested = False
         self._started_since_boot = False
         self.input_released = False
@@ -67,6 +68,7 @@ class DeviceRound:
 
         Keeps a request that monitor_not_started did not clear.
         """
+        self.start_generation += 1
         self._started_since_boot = True
         self.clear_delivery()
         self.input_released = False

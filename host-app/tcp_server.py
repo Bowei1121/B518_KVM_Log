@@ -237,6 +237,12 @@ def _manual_call(kvm: Any, method: str, params: Dict[str, Any]) -> None:
     getattr(kvm, "call_manual", kvm.call)(method, params)
 
 
+def _clear_fault_args(req, entry):
+    if req.get("reason") != "operator_reset":
+        raise FlowError("invalid_argument", "reason must be operator_reset")
+    return None
+
+
 @dataclass(frozen=True)
 class CommandSpec:
     """Every rule of one protocol command: what validation accepts, how dispatch runs it, what the reply carries.
@@ -446,6 +452,10 @@ class TcpJsonServer:
     def _default_specs(self) -> list[CommandSpec]:
         """The protocol 1.0 command table: one CommandSpec per command, the only place its rules live."""
         return [
+            CommandSpec("clear_fault", self._handle_clear_fault, fields=frozenset({"reason"}),
+                        device_bound=True, needs_slot=True, parse=_clear_fault_args,
+                        stations={"DFU": None}, default_data={"cleared": False, "was_blocked": False},
+                        unsupported_message="'clear_fault' is only supported for DFU devices"),
             CommandSpec("start_round", self._handle_start_round, fields=frozenset({"timeout_sec"}),
                         device_bound=True, needs_slot=True, parse=lambda req, entry: _timeout_arg(req, 1, 300),
                         stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"kind": "fault"},
@@ -477,6 +487,22 @@ class TcpJsonServer:
                         device_bound=True, parse=_monitor_timeout, default_data={"state": "", "capacity": 0},
                         needs_slot=True),
         ]
+
+    async def _handle_clear_fault(self, ctx, args):
+        records = list(ctx.slot.start_round_records.values())
+        accepted = [r for r in records if r.accepted]
+        # Failed starts may leave start_requested set; they do not own a live round.
+        active = (any(r.result is None for r in records) or
+                  (ctx.slot.round.start_requested and
+                   (not accepted or accepted[-1].round_generation != ctx.slot.round.start_generation
+                    or accepted[-1].result['data']['kind'] == 'started')))
+        if active:
+            return dict(status="error", error="round_in_progress", message="A round is still in progress")
+        blocked = [r for r in accepted if not r.fault_cleared and r.result['data']['kind'] != 'started']
+        for record in blocked:
+            record.fault_cleared = True
+        return dict(status="ok", message="Fault cleared" if blocked else "",
+                    data={"cleared": bool(blocked), "was_blocked": bool(blocked)})
 
     async def _handle_ping(self, ctx: CommandContext, args: Any) -> Dict[str, Any]:
         return {"pong": True, "core_version": CORE_VERSION, "supported_commands": sorted(self._commands)}
@@ -1153,6 +1179,16 @@ class TcpJsonServer:
         # Check per-device locking. Only the device ID is trusted from the wire: KVM IP and station come from the registry.
         device_id: Optional[str] = entry.device_id if entry is not None else None
 
+        if spec.name == "clear_fault":
+            if not self.lock_manager.try_acquire(device_id, holder=spec.name):
+                running = any(r.result is None for r in self._slot(device_id).start_round_records.values())
+                return dict(status="error", error="round_in_progress" if running else "device_busy",
+                            message="A round is still in progress" if running else "Device is busy")
+            try:
+                return await spec.handler(CommandContext(entry=entry, slot=self._slot(device_id)), admitted.args)
+            finally:
+                self.lock_manager.release(device_id)
+
         if spec.name == "start_round":
             from start_round import dispatch
             return await dispatch(self, req_id, admitted, reader, writer)
@@ -1361,6 +1397,11 @@ class TcpJsonServer:
     ) -> bytes:
         spec = self._commands.get(cmd)
         data = {**(spec.default_data if spec is not None else {}), **payload}
+        if status == "ok":
+            message = "Fault cleared" if cmd == "clear_fault" and data.get("cleared") is True else ""
+        elif not message.isascii():
+            # External RPC errors and OS exceptions may contain localized text.
+            message = "Command failed; see Core logs for details"
         envelope = {
             "protocol_version": PROTOCOL_VERSION,
             "req_id": req_id,
@@ -1368,10 +1409,7 @@ class TcpJsonServer:
             "cmd": cmd,
             "status": status,
             "error": error if status != "ok" else "",
-            # External RPC errors and OS exceptions may contain localized text.
-            # Keep diagnostics in logs; never send localized error text over TCP.
-            "message": (message if message.isascii() else
-                        "Command failed; see Core logs for details") if status != "ok" else "",
+            "message": message,
             "elapsed_sec": round(time.monotonic() - started, 3),
             "data": data,
         }
