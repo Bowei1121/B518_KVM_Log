@@ -68,6 +68,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `snapshot` | 取一張當前畫面 | 否 | ✔ | ✔ | ✔ |
 | `monitor_start` | 喚起 Log Solution 並確認進入監控中，建立本輪開始請求 | 是 | ✔ | ✔ | ✔ |
 | `start_round` | 開始監控並開測 | 是 | ✔ | ✘ | ✔ |
+| `clear_fault` | 操作員明確解除指定設備開始故障阻擋 | 是 | ✔ | ✘ | ✘ |
 | `start_test` | 開始測試：DFU 點 OK、BT 點 Start All | 是 | ✔ | ✘ | ✔ |
 | `check_start` | 測試開始確認：活動通道，或直接交付已完成的本輪 | 是 | ✔ | ✔ | ✔ |
 | `check_finish` | 測試結束確認：取得本輪完整結果 | 是 | ✔ | ✔ | ✔ |
@@ -114,7 +115,7 @@ LabVIEW 建議做法：以送出的 `cmd` 決定用哪一個完整 typedef（env
 | `core_version` | string | Core Service 版本 |
 | `supported_commands` | array of string | 實際 registry 命令名稱的全量清單，去重並排序；錯誤時預設 `[]` |
 
-錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用（使用者 2026-11-17 定案）。LabVIEW 只判斷清單是否包含 `start_round`，其他名稱忽略，仍遵守站別與用途限制。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。舊 LabVIEW typedef 不需因新增欄位修改，但解析方式必須容忍額外欄位，不得啟用遇到多餘欄位即報錯的選項；實際 VI 相容性由 #214 驗證，本票不宣稱已驗證。
+錯誤回覆固定 `pong=false`、`core_version=""`、`supported_commands=[]`。清單表示 Core 有實作，不保證站別或設備當下可執行；可能含管理或 Monitor UI 命令，不代表授權 LabVIEW 使用（使用者 2026-11-17 定案）。LabVIEW 判斷清單是否包含 `start_round` 以選擇開始流程；DFU 操作員復位另判斷 `clear_fault`，其他名稱忽略，仍遵守站別與用途限制。成功 ping 包含 `start_round` 且站別是 DFU／BT 才使用新命令；清單缺少或不含該命令時使用既有 `monitor_start → start_test`。斷線後不得直接重送舊 `start_test`。舊 LabVIEW typedef 不需因新增欄位修改，但解析方式必須容忍額外欄位，不得啟用遇到多餘欄位即報錯的選項；實際 VI 相容性由 #214 驗證，本票不宣稱已驗證。
 
 `start_round` 已註冊；DFU／BT 可執行，FCT 回 `unsupported_command`。
 
@@ -457,6 +458,40 @@ poll timeout 採用使用者 2026-11-17 定案的分配方式：同一輪 T 不�
 | --- | --- | --- |
 | `action` | string | 成功時 DFU 為 `ok`、BT 為 `start_all`；失敗為 `""` |
 
+### 5.7a `clear_fault`（僅 DFU）
+
+`ping.supported_commands` 是全 registry 排序且不重複的清單，包含 `clear_fault`，不表示所有站別都可使用；FCT／BT 回 `unsupported_command`。
+操作員排除故障並按下復位時，由 LabVIEW 明確送出：
+
+```json
+{"protocol_version":"1.0","req_id":"clr-dfu01-001","device":"DFU-01","cmd":"clear_fault","reason":"operator_reset"}
+```
+
+共同欄位與禁止欄位沿用 §2；唯一專屬欄位 `reason` 必填且只接受字串 `operator_reset`，缺值、錯誤型別或其他值回 `invalid_argument`；未知欄位回 `unknown_field`，未知設備回 `unknown_device`。驗證拒絕不改狀態。
+
+完整成功解除回覆（耗時僅為範例）：
+
+```json
+{"protocol_version":"1.0","req_id":"clr-dfu01-001","device":"DFU-01","cmd":"clear_fault","status":"ok","error":"","message":"Fault cleared","elapsed_sec":0.001,"data":{"cleared":true,"was_blocked":true}}
+```
+
+| 情境 | status | error | message | data |
+| --- | --- | --- | --- | --- |
+| 原本被擋、成功解除 | `ok` | `""` | `Fault cleared` | `{"cleared":true,"was_blocked":true}` |
+| 未被擋或重複復位 | `ok` | `""` | `""` | `{"cleared":false,"was_blocked":false}` |
+| 開始指令執行中或正常輪次未結清 | `error` | `round_in_progress` | `A round is still in progress` | `{"cleared":false,"was_blocked":false}` |
+| FCT／BT | `error` | `unsupported_command` | `'clear_fault' is only supported for DFU devices` | `{"cleared":false,"was_blocked":false}` |
+| 其他指令持有設備鎖 | `error` | `device_busy` | `Device is busy` | `{"cleared":false,"was_blocked":false}` |
+| 驗證拒絕 | `error` | 既有驗證錯誤碼 | 英文 ASCII 說明 | `{"cleared":false,"was_blocked":false}` |
+
+所有回覆沿用完整 envelope；錯誤的布林預設值僅表示未執行解除，不代表設備實際無故障。只有本命令成功解除保留成功 message，其他命令的成功 message 維持空字串。
+
+復位生命週期：同設備開始指令尚未完成（含未受理）即拒絕；最新已受理開始結果為 `started` 且 `start_requested` 尚未結清時也拒絕。沒有已受理紀錄、或 `begin_start` 世代已改變的既有兩段流程，仍以 `start_requested` 判斷。已完成失敗開始留下的 `start_requested` 不會永久阻擋復位。其他設備獨立；檢查與解除在同設備鎖內原子完成，不排隊、不取消工作、不釋放其他命令持有的鎖。
+
+已受理 fault／timeout／paused 對同設備所有新 `req_id` 持續阻擋，只有明確復位才解除；等待、畫面恢復、連線成功、換鍵或背景工作都不解除。復位只標記失敗紀錄已解除，不清除冪等紀錄、不變更舊結果、輪次交付或 SN 輸入放行狀態。新鍵仍需通過原有開始前置檢查；舊鍵重送不再送 HID。
+
+此命令不取得 KVM 連線、不讀畫面、不送 HID 或 reconciliation，KVM 離線仍可復位。不操作 ATE／Log Solution reset，不重試、不開測；解除 Core 阻擋不代表實體設備已復原。不跨 Core 重啟持久化。
+
 ### 5.8 `inspect`（僅供 Monitor UI）
 
 欄位與共用 `data` 同 5.4。Monitor UI 手動檢查送這個指令，並把 `state` 顯示成中文（待命、準備中、監控就緒、待確認、一般完成、人工停止完成），`active` 顯示成「通道 N 測試中」或「通道 N 已有結果」。
@@ -521,6 +556,9 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 變更紀錄：版本欄位原為 `version`（固定 `"1.0.0"`），改為 `core_version`（`CORE_VERSION`，即 `ping` 回的版本）。
 
 ## 6. 錯誤碼
+
+`clear_fault` 額外使用 `round_in_progress`（status=`error`）：同設備開始指令執行中或正常輪次尚未結清，未執行解除，固定 data 為 `{"cleared":false,"was_blocked":false}`。
+
 
 | `error` | `status` | 何時發生 | LabVIEW 建議 |
 | --- | --- | --- | --- |
@@ -590,7 +628,7 @@ Monitor UI 的 KVM Streamer pop-out 手動操作目標電腦。欄位 `method` �
 ```json
 {"protocol_version":"1.0","req_id":"6f1d0c2e-0001","device":"","cmd":"ping",
  "status":"ok","error":"","message":"","elapsed_sec":0.0,
- "data":{"pong":true,"core_version":"2.0.0","supported_commands":["check_finish","check_start","core_status","hid","input","inspect","monitor_start","ping","shutdown","snapshot","start_round","start_test","status"]}}
+ "data":{"pong":true,"core_version":"2.0.0","supported_commands":["check_finish","check_start","clear_fault","core_status","hid","input","inspect","monitor_start","ping","shutdown","snapshot","start_round","start_test","status"]}}
 ```
 
 ### 9.2 `status`
@@ -787,7 +825,7 @@ Protocol round-trip error/status text, including JSON `message` fields, MUST be 
 
 契約未定的同鍵不同參數、fault／timeout 續跑、進行中重送，以及 paused 後新鍵開始，均保守回 paused 交人工，不重送 HID。紀錄在 Core 行程內保留。初次 busy 的重呼與 Dock 副作用分類未定，不重呼 monitor_start，回 paused；poll timeout 僅觀察的定案維持不變。已送後斷線依 #211「保留原碼」回 kvm_connect_failed／paused。TCP 斷線不觸發重送，既有工作在同一截止內結束並記錄；重送只讀紀錄。
 
-已受理且未 started 的 fault／timeout 紀錄目前也會阻擋新 req_id；阻擋回覆為 error/hid_failed/paused，訊息明示無法開始新輪，解除方式待使用者決定。
+已受理且未 started 的 fault／timeout 紀錄目前也會阻擋新 req_id；阻擋回覆為 error/hid_failed/paused，訊息為 `Start round blocked for device; operator reset required`，明示每設備阻擋，僅 DFU 可由操作員明確送出 `clear_fault` 解除（§5.7a）；BT 不支援此復位指令。
 
 預算證據：每設備 `start_round_records[req_id].measurements` 記錄 connection、monitor_poll 的次數、實際耗時與剩餘 D。HID、模板處理、真實連線取消／清理與完整預算帳仍待 #213 實作時量測；假設備測試不代表實機，約 7 秒仍未分配，不延長 D。
 

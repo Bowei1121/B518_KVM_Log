@@ -710,7 +710,7 @@ async def _assert_new_keys_blocked(srv, kvm, original):
     for key in ['next', 'another']:
         result = await send(srv, req_id=key)
         assert (result['status'], result['error'], result['data']) == ('error', 'hid_failed', {'kind': 'paused'})
-        assert result['message'] == 'Start round blocked: this req_id cannot start a new round'
+        assert result['message'] == 'Start round blocked for device; operator reset required'
         assert all(result[name].isascii() for name in ['status', 'error', 'message'])
         assert list(records) == ['round1'] and records['round1'] is rec
         assert rec.result == previous and kvm.events == events
