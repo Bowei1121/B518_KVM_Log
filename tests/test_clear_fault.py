@@ -144,7 +144,11 @@ def test_actual_tcp_success_message_and_ping(monkeypatch):
         while srv.server_address[1] == 0 and time.monotonic() < deadline:
             time.sleep(.01)
         with socket.create_connection(srv.server_address, timeout=3) as sock:
-            for cmd in ['clear_fault', 'clear_fault', 'ping']:
+            for cmd, expected_message, expected_data in [
+                ('clear_fault', 'Fault cleared', dict(cleared=True, was_blocked=True)),
+                ('clear_fault', '', dict(cleared=False, was_blocked=False)),
+                ('ping', '', None),
+            ]:
                 sock.sendall(dumps_request(wire(dict(cmd=cmd, device='' if cmd == 'ping' else 'DFU-01', **({'reason':'operator_reset'} if cmd == 'clear_fault' else {})))))
                 result = recv_reply(sock)
                 assert set(result) == {'protocol_version','req_id','device','cmd','status','error','message','elapsed_sec','data'}
@@ -153,10 +157,10 @@ def test_actual_tcp_success_message_and_ping(monkeypatch):
                     assert result['message'] == '' and result['data']['pong']
                     commands = result['data']['supported_commands']
                     assert commands == sorted(set(commands)) and 'clear_fault' in commands
-                elif result['data']['cleared']:
-                    assert result['message'] == 'Fault cleared'
                 else:
-                    assert result['message'] == '' and result['data'] == DEFAULT
+                    assert result['status'] == 'ok'
+                    assert result['message'] == expected_message
+                    assert result['data'] == expected_data
     finally:
         srv.stop()
 
@@ -184,8 +188,6 @@ def test_serialized_contract_evidence(monkeypatch):
         rnd.note_start()
         replies += [await clear(srv), await clear(srv, device='FCT-01'), await clear(srv, device='BT-01')]
         assert [r['error'] for r in replies] == ['', '', 'round_in_progress', 'unsupported_command', 'unsupported_command']
-        from pathlib import Path
-        Path('/tmp/217-envelopes.json').write_text(json.dumps(replies, ensure_ascii=False, indent=2))
         # Previous command success messages still serialize as empty.
         old = json.loads(srv._encode_result(time.monotonic(), 'old', '', 'ping', dict(status='ok', message='Ignored')))
         assert old['message'] == ''
