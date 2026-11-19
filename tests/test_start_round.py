@@ -346,7 +346,7 @@ def test_real_connect_path_cancellation_cleans_each_wait(monkeypatch, phase, ter
         else:
             result = await task
             assert result['status'] == 'timeout' and result['data'] == {'kind': 'fault'}
-            assert 73 < observed_timeouts[0] <= 74  # T=1, unchanged D=T+73.
+            assert 73 < observed_timeouts[0] <= 74 + 1e-6  # T=1, unchanged D=T+73; tolerate float rounding.
         assert seen and seen[0].closed
         assert not srv.lock_manager.is_locked('DFU-01')
         assert srv.kvm_pool.active_count() == 0
