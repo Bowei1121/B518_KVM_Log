@@ -61,7 +61,7 @@ def test_reset_preserves_records_round_and_no_io(monkeypatch, kind, status):
 @pytest.mark.parametrize('extra,code', [({'reason':None},'invalid_argument'), ({'reason':True},'invalid_argument'),
     ({'reason':'reset'},'invalid_argument'), ({'typo':1},'unknown_field'), ({'station':'DFU'},'forbidden_field'),
     ({'kvm_ip':'x'},'forbidden_field'), ({'device':'DFU-99'},'unknown_device'),
-    ({'device':'FCT-01'},'unsupported_command'), ({'device':'BT-01'},'unsupported_command'),
+    ({'device':'FCT-01'},'unsupported_command'),
     ({'protocol_version':'2.0'},'unsupported_protocol_version'), ({'req_id':''},'missing_req_id')])
 def test_rejections_no_io_or_mutation(monkeypatch, extra, code):
     async def scenario():
@@ -188,7 +188,8 @@ def test_serialized_contract_evidence(monkeypatch):
         rnd.begin_start()
         rnd.note_start()
         replies += [await clear(srv), await clear(srv, device='FCT-01'), await clear(srv, device='BT-01')]
-        assert [r['error'] for r in replies] == ['', '', 'round_in_progress', 'unsupported_command', 'unsupported_command']
+        assert [r['error'] for r in replies] == ['', '', 'round_in_progress', 'unsupported_command', '']
+        assert replies[-1]['data'] == DEFAULT
         # Previous command success messages still serialize as empty.
         old = json.loads(srv._encode_result(time.monotonic(), 'old', '', 'ping', dict(status='ok', message='Ignored')))
         assert old['message'] == ''

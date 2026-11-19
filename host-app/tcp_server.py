@@ -454,8 +454,8 @@ class TcpJsonServer:
         return [
             CommandSpec("clear_fault", self._handle_clear_fault, fields=frozenset({"reason"}),
                         device_bound=True, needs_slot=True, parse=_clear_fault_args,
-                        stations={"DFU": None}, default_data={"cleared": False, "was_blocked": False},
-                        unsupported_message="'clear_fault' is only supported for DFU devices"),
+                        stations={"DFU": None, "BT": None}, default_data={"cleared": False, "was_blocked": False},
+                        unsupported_message="'clear_fault' is only supported for DFU and BT devices"),
             CommandSpec("start_round", self._handle_start_round, fields=frozenset({"timeout_sec"}),
                         device_bound=True, needs_slot=True, parse=lambda req, entry: _timeout_arg(req, 1, 300),
                         stations={"DFU": run_dfu_ok, "BT": run_start_all}, default_data={"kind": "fault"},
