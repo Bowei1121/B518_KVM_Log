@@ -30,6 +30,33 @@
 - `check_finish` 取得整輪結果。
 - 每一輪都必須重新 `monitor_start`；不能沿用上一輪。
 
+### 2.1 `start_round` 故障阻擋的解除
+
+依據 PROTOCOL §5.7a 與 §8 後的「#213 保守實作邊界」：已受理的 `start_round` 以 `fault`／`timeout`／`paused` 結束後，會持續阻擋同設備的新 `req_id`；阻擋回覆為 `status="error"`、`error="hid_failed"`、`data.kind="paused"`，`message` 為 `Start round blocked for device; operator reset required`。LabVIEW 應暫停並交操作員處理；等待、畫面恢復、連線成功或換 `req_id` 都不會解除。
+
+LabVIEW 先檢查 `ping` 回覆的 `data.supported_commands` 是否包含 `clear_fault`，再依站別決定是否使用；清單代表 registry 有實作，不保證站別可執行。目前 DFU 支援；**BT 待 #219 合併後適用**（目前仍不支援）；FCT 不支援。
+
+操作員排除故障並按下復位後，LabVIEW 才明確送出下列請求；`reason` 必填且只接受字串 `operator_reset`，共同欄位與驗證規則見 [PROTOCOL.md](PROTOCOL.md) §2、§5.7a：
+
+```json
+{"protocol_version":"1.0","req_id":"clr-dfu01-001","device":"DFU-01","cmd":"clear_fault","reason":"operator_reset"}
+```
+
+原本被擋且成功解除的完整回覆（耗時僅為範例）：
+
+```json
+{"protocol_version":"1.0","req_id":"clr-dfu01-001","device":"DFU-01","cmd":"clear_fault","status":"ok","error":"","message":"Fault cleared","elapsed_sec":0.001,"data":{"cleared":true,"was_blocked":true}}
+```
+
+`data.cleared` 表示本次是否實際解除阻擋，`data.was_blocked` 表示原本是否被擋。未被擋或重複復位時，冪等回覆為 `status="ok"`、`error=""`、`message=""`、`data={"cleared":false,"was_blocked":false}`，不是 `cleared=true`。
+
+| 情形 | `status` | `error` | `message` | `data` |
+| --- | --- | --- | --- | --- |
+| 同設備開始指令執行中或正常輪次未結清 | `error` | `round_in_progress` | `A round is still in progress` | `{"cleared":false,"was_blocked":false}` |
+| 不支援的站別（目前 FCT／BT） | `error` | `unsupported_command` | `'clear_fault' is only supported for DFU devices` | `{"cleared":false,"was_blocked":false}` |
+
+錯誤時的布林預設值僅表示未執行解除，不代表設備實際無故障；其他錯誤與完整 envelope 見 PROTOCOL §5.7a（`round_in_progress` 另見錯誤碼節）。復位只解除 Core 阻擋，不操作 ATE／Log Solution reset、不重試或開測，也不代表實體設備已復原；保留冪等紀錄及舊結果，不變更輪次交付或 SN 輸入放行狀態。新 `req_id` 仍須通過開始前置檢查，舊 `req_id` 重送不再送 HID。
+
 ## 3. `check_start`／`check_finish` 的 `kind`
 
 | `kind` | 意思 | 出現在 | `results` | LabVIEW 該做什麼 |
