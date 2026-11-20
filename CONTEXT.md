@@ -131,4 +131,4 @@ Log Solution 畫面上給人看的計時，本輪受理起算（含來源準備�
 **顯示契約 1.3**：
 Log Solution 狀態辨識畫面的幾何版本（Log Solution `kvm_display_contract.CONTRACT_VERSION`）：左右定位點 (0, 2)／(320, 2)、排數格 (130, 2)、狀態標記 (250, 0)、心跳 (278, 0)、色帶首排 y=34。橋接**只支援 1.3**（2026-10-20 使用者確認），不讀 1.1／1.2；兩定位點距離不是 320 的畫面一律視為不可見。因此橋接與 Log Solution 1.3 必須同時切換部署。不同於 TCP 協定版本（`protocol_version`）。
 
-**Core 開始故障復位**：TCP 1.0 `clear_fault` 僅 DFU，由操作員以 `reason=operator_reset` 明確解除指定設備的已受理失敗 `start_round` 阻擋；保留每設備冪等紀錄與輪次狀態，不接觸 KVM、不代表實體設備已復原，正常輪次未結清時拒絕。
+**Core 開始故障復位**：TCP 1.0 `clear_fault` 適用 DFU／BT，由操作員以 `reason=operator_reset` 明確解除指定設備的已受理失敗 `start_round` 阻擋；保留每設備冪等紀錄與輪次狀態，不接觸 KVM、不代表實體設備已復原，正常輪次未結清時拒絕。
