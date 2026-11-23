@@ -3,7 +3,7 @@
 Date: 2026-11-13
 
 ## Status
-Proposed（純架構決策評估與邊界定義；尚未開立實作票，重寫前優先完成不換語言的 Python 端穩定性改善）
+Accepted（2026-11-23 使用者決定，見 [#221](https://github.com/Bowei1121/B518_KVM_Log/issues/221)：C# UI 現在就開始；開工前先比較「Tk 換主題」與 WPF 對照圖再選定方案。原 Proposed 時寫的「重寫前優先完成 Python 端穩定性改善」順序，由此決定取代。）
 
 ## Context
 依據 `docs/PROJECT_SUMMARY_20261108.md` §4，上位機部署於 Windows 11 工廠環境，穩定性優先於效能。當時盤點 `host-app` 約 1.55 萬行 Python，其中 Monitor UI 約 4,400 行；主要依賴為 `aiortc`／`av`、OpenCV、RapidOCR 與 Tkinter，使用 PyInstaller onedir 打包。九台設備的影像比對主要在 OpenCV 的 C++ 層執行，效能不是換語言的理由。
