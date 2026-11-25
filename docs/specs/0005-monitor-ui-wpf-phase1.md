@@ -2,7 +2,7 @@
 
 GitHub issue：https://github.com/Bowei1121/B518_KVM_Log/issues/221（追蹤票）。
 
-子票待開，開出後補上。
+子票：[#224](https://github.com/Bowei1121/B518_KVM_Log/issues/224)、[#225](https://github.com/Bowei1121/B518_KVM_Log/issues/225)、[#226](https://github.com/Bowei1121/B518_KVM_Log/issues/226)、[#227](https://github.com/Bowei1121/B518_KVM_Log/issues/227)、[#228](https://github.com/Bowei1121/B518_KVM_Log/issues/228)。
 
 相關文件：`CONTEXT.md`、`docs/PROTOCOL.md`（§1～3、§5.1、§5.9、§6～7）、`docs/LOG_SOLUTION_CONTRACT_1.2_HANDOFF.md`（含後續顯示契約修訂）、ADR-0002（device lock／fail-fast）、ADR-0004（Core 與 UI 分離）、ADR-0005（Frame Freeze Guard）、ADR-0008（手動 HID handoff）、ADR-0009（C# WPF 與 Python Core 邊界）、`docs/specs/0004-kvm-connection-command-timing.md`（格式參考）。
 
